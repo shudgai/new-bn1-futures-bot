@@ -85,6 +85,15 @@ class UltimateExitGatekeeper:
             logger.error("ULTIMATE_EXIT_INVALID_PRICE symbol=%s price=%s", symbol, price)
             return False
 
+        from core.gates.ultimate_short_exit_gatekeeper import DEFER, UltimateShortExitGatekeeper
+
+        meme_verdict = UltimateShortExitGatekeeper.evaluate(
+            symbol, position, metadata, reason, exit_price,
+            frame=frame, is_bar_closed=is_bar_closed,
+        )
+        if meme_verdict.verdict != DEFER:
+            return meme_verdict.allowed
+
         from core.services.math_execution_gate import is_emergency_exit
 
         if meme_strategy_disaster_disabled(symbol, reason):

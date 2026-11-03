@@ -1723,7 +1723,18 @@ async def validate_account_entry(account, symbol, side, context):
         opposite_side_close_cooldown_problem, same_bar_close_entry_problem,
         same_side_anti_churn_problem,
     )
-    churn_problem = same_side_anti_churn_problem(
+    meme_priority_channel = None
+    from core.symbol_aliases import is_meme_breakout_symbol
+    if is_meme_breakout_symbol(symbol):
+        from core.gates.master_gate_funnel import MasterGateFunnel, market_snapshot_from_frame
+        try:
+            meme_priority_channel = MasterGateFunnel.priority_channel(
+                market_snapshot_from_frame(frame, symbol, quote), side,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError):
+            meme_priority_channel = None
+    # Meme death-cross/breakdown (and long mirrors) start a new wave: post-exit cooldowns are lifted.
+    churn_problem = None if meme_priority_channel else same_side_anti_churn_problem(
         account, symbol, frame, side, quote,
     )
     if churn_problem:
@@ -1736,6 +1747,7 @@ async def validate_account_entry(account, symbol, side, context):
         raise ValueError('[FORBIDDEN_ENTRY] ' + same_bar_problem)
     opposite_cooldown_problem = (
         None if code in ('BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT') or is_peak_flip
+        or meme_priority_channel
         else opposite_side_close_cooldown_problem(
             account, symbol, frame, side,
         )

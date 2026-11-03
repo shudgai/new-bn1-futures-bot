@@ -117,7 +117,7 @@ def test_execution_entry_validation_prefers_fresh_market_frame_over_signal_cache
         Account(), "CAP/USDT", "LONG", {"frame": stale_bullish},
     ))
     assert not allowed
-    assert reason == "BLOCKED_LONG_KC_DIRECTION"
+    assert reason == "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP"
 
 
 def test_exit_math_true_peak_and_middle_trend_hold_veto():

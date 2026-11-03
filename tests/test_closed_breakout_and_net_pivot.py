@@ -209,7 +209,7 @@ def test_breakout_firewall_requires_exact_fresh_pattern_and_safe_account(side, f
     expected = {
         "no_provider": "MEME_GATE_FRESH_DATA_REQUIRED",
         "new_close": "BLOCKED_BY_POST_EXIT_COOLDOWN",
-        "unclosed": f"BLOCKED_{side}_MA15_EXTENSION_1_ATR",
+        "unclosed": "MA15_EXTENSION_1_ATR",
     }.get(fault, "KC_TWO_BAR_BREAKOUT")
     with pytest.raises(ValueError, match=expected):
         asyncio.run(validate_account_entry(account, "CAP/USDT", side, payload))

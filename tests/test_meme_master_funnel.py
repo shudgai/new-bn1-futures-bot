@@ -65,6 +65,18 @@ def test_bottom_v_long_never_bypasses_global_guards(symbol, fault, reason):
     elif fault == "unclosed":
         m = m._replace(is_closed=False)
     result = MasterGateFunnel.evaluate_open_long(m, fault == "cooldown")
+    if fault == "kc":
+        assert result.can_execute
+        assert result.details["trigger"] == "TRIGGER_1145_EARLY_BREAKOUT"
+        return
+    if fault == "cooldown":
+        # A fresh golden cross above KC middle/MA15 is a new wave start: zero-second cooldown exemption.
+        assert result.can_execute
+        assert result.details["priority_channel"] == "TRIGGER_BOTTOM_PIVOT_CROSS"
+        stale = m._replace(ma5_prev=m.ma15_prev + .01)
+        blocked = MasterGateFunnel.evaluate_open_long(stale, True)
+        assert not blocked.can_execute and blocked.reason == reason
+        return
     assert not result.can_execute and result.reason == reason
 
 
@@ -126,7 +138,22 @@ def test_expansion_never_bypasses_shared_direction_and_safety(symbol, side, faul
         MasterGateFunnel.evaluate_open_long(m, fault == "cooldown") if side == "LONG"
         else MasterGateFunnel.evaluate_open_short(m, fault == "cooldown")
     )
-    assert decision.can_execute is (fault is None or fault == "ma_equal" and side == "LONG"), decision
+    # The fixture is a fresh MA5/MA15 cross beyond KC middle (priority channel): it is exempt
+    # from the lagging KC slope and the cooldown. A close-only bias that is a fresh big-body
+    # rail break is measured from the bar open (early breakout/breakdown channel).
+    assert decision.can_execute is (
+        fault in (None, "opposite_kc", "cooldown", "close_bias")
+        or side == "LONG" and fault == "ma_equal"
+    ), decision
+    if fault == "cooldown":
+        stale = m._replace(ma5_prev=m.ma15_prev + sign * .01)
+        stale_decision = (
+            MasterGateFunnel.evaluate_open_long(stale, True) if side == "LONG"
+            else MasterGateFunnel.evaluate_open_short(stale, True)
+        )
+        assert stale_decision.reason == "BLOCKED_BY_POST_EXIT_COOLDOWN"
+    if fault == "close_bias":
+        assert decision.details["priority_channel"]
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -145,12 +172,12 @@ def test_flat_expansion_body_threshold_is_inclusive(side, offset, allowed):
 
 
 @pytest.mark.parametrize("offset,allowed", [(-0.000001, True), (0, True), (0.000001, False)])
-def test_long_expansion_upper_band_allowance_is_1_2_atr(offset, allowed):
+def test_long_squeeze_upper_band_allowance_is_1_5_atr(offset, allowed):
     m = market(
-        quote=103.4 + offset, close_price=103.2, open_price=101,
+        quote=104 + offset, close_price=103.2, open_price=101,
         high_price=103.5, low_price=100.9, kc_middle=100, kc_middle_prev=100,
-        kc_upper=101, kc_lower=99, ma15_curr=102, ma15_prev=102,
-        ma5_curr=102.5, ma5_prev=102.4,
+        kc_upper=101, kc_lower=99, ma15_curr=102.5, ma15_prev=102.5,
+        ma5_curr=102.6, ma5_prev=102.55,
     )
     assert MasterGateFunnel.evaluate_open_long(m).can_execute is allowed
 
@@ -255,7 +282,10 @@ def test_top_pivot_short_exempts_only_flat_and_squeeze(fault):
     elif fault == "band_extension":
         m = m._replace(kc_lower=99 - .01, kc_middle=99, kc_upper=99.2,
                        quote=99 - .01 - .8 * m.atr - .000001)
-    assert not MasterGateFunnel.evaluate_open_short(m, fault == "cooldown").can_execute
+    # Owner 2026-11-03: a fresh top death cross is also exempt from the lagging KC slope and cooldown.
+    assert MasterGateFunnel.evaluate_open_short(m, fault == "cooldown").can_execute is (
+        fault in ("opposite_kc", "cooldown")
+    )
 
 
 def test_long_pullback_needs_fresh_golden_cross_and_unbroken_middle():
@@ -304,8 +334,10 @@ def test_short_rail_mode_requires_ma15_down_not_just_ma5_down():
 @pytest.mark.parametrize("minute,opened,close,high,low,ma5,prev_ma5,ma15,middle,prev_middle,lower,atr,allowed", [
     ("07:17", .004767, .0047607, .0047671, .0047588, .00476464, .00476716, .004765926666666667,
      .00476838478130929, .004769193705657637, .004758570495595004, .000006642857142857157, True),
+    # 07:18 is a 1.2 ATR red body opening inside and closing below the lower rail:
+    # Owner 2026-11-03 early-breakdown channel (body >= 0.6 ATR) authorizes it.
     ("07:18", .0047608, .0047528, .0047637, .0047528, .00476202, .00476464, .004765033333333334,
-     .004766900516422691, .00476838478130929, .004756539802136976, .000006542857142857193, False),
+     .004766900516422691, .00476838478130929, .004756539802136976, .000006542857142857193, True),
     ("07:26", .0047489, .0047446, .004751, .0047419, .00474988, .00475068, .004757186666666666,
      .004757829815772929, .004759222427959553, .004748465530058643, .000006035714285714375, False),
 ])
@@ -609,9 +641,9 @@ def test_ultimate_exit_gate_uses_closed_structure_not_a_caller_success_flag(symb
     from test_kc_wave_exit import position
 
     frame = pivot_frame(side)
+    sign = 1 if side == "LONG" else -1
     pos = position(side, frame)
     pos["symbol"] = symbol
-    sign = 1 if side == "LONG" else -1
     last = frame.index[-1]
     quote = float(frame.loc[last, "close"])
     if fault == "unclosed":
@@ -734,6 +766,11 @@ def test_full_and_partial_account_api_never_submit_after_ultimate_veto(
         )
         monkeypatch.setattr(UltimateExitGatekeeper, "can_execute_exit", staticmethod(lambda *_a, **_k: False))
     else:
+        # Upstream math gate approves so the frame refresh path itself is exercised.
+        monkeypatch.setattr(
+            "core.services.math_execution_gate.validate_exit_at_execution",
+            lambda *_a, **_k: (True, "TEST_UPSTREAM_APPROVED", {}),
+        )
         def fail_refresh(_symbol):
             raise RuntimeError("test market refresh failed")
         account.entry_frame_provider = fail_refresh
@@ -750,3 +787,20 @@ def test_full_and_partial_account_api_never_submit_after_ultimate_veto(
         exchange.create_order.assert_not_awaited()
     if fault == "refresh_failure":
         assert any("ULTIMATE_EXIT_FRAME_REFRESH_FAILED" in log.get("text", "") for log in account.logs)
+
+
+@pytest.mark.parametrize("symbol", SYMBOLS)
+@pytest.mark.parametrize("ratio,squeezed", [(.20, True), (.25, True), (.2501, False), (.60, False)])
+def test_meme_squeeze_is_relative_to_twenty_bar_widest_channel(symbol, ratio, squeezed):
+    from core.gates.master_gate_funnel import MarketSnapshot
+    # 1m MEME channels are < 1% of price: only the relative 25% rule may veto.
+    width = 0.3
+    m = MarketSnapshot(
+        symbol, 100.0, 100.0, 100.0, 100.05, 99.95, 0, 0, 100.0, 100.0, 100.0, 100.0,
+        100.0 + width / 2, 100.0, 99.9, 100.0 - width / 2, 1.0, "NEUTRAL", 0,
+        is_closed=True, kc_width_max_20=width / ratio,
+    )
+    blocked, reason = MasterGateFunnel.evaluate_market_blacklist(m)
+    assert (reason == "VETO_NARROW_SQUEEZE_RANGE") is squeezed
+    legacy = m._replace(kc_width_max_20=0.0)
+    assert MasterGateFunnel.evaluate_market_blacklist(legacy)[1] == "VETO_NARROW_SQUEEZE_RANGE"

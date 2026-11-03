@@ -38,6 +38,8 @@ def pivot_frame(side, *, gain=1.0, atr=1.0):
         frame.loc[index, ["open", "high", "low", "close"]] = [opened, high, low, close]
     frame.loc[frame.index[-1], "ma5"] = 100 + (0.5 * gain if side == "LONG" else -0.5 * gain)
     sign = 1 if side == "LONG" else -1
+    # Owner 2026-11-03 MEME AND-lock: MA5 actually crosses MA15 against the position on the pivot bar.
+    frame.loc[frame.index[-2], "ma5"] = 100 + sign * gain
     frame["ma15"] = 100 + sign * 0.6 * gain
     frame.loc[frame.index[-2], "kc_middle"] = 100 + sign * (gain + atr + 0.01)
     frame.loc[frame.index[-1], "kc_middle"] = 100 + sign * (gain + atr)

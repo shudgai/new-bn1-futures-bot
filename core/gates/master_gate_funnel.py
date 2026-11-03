@@ -14,6 +14,22 @@ from core.services.candle_data import closed_entry_candles
 
 logger = logging.getLogger("MasterGateFunnel")
 
+# Binance USDⓈ-M PRICE_FILTER tick sizes. A meme ATR of only a few ticks makes
+# distance limits (MA15 bias, rail extension, exit buffers) trip on 2-3 ticks.
+MEME_PRICE_TICK = {"龙虾/USDT": 0.00001, "CAP/USDT": 0.00001, "1000PEPE/USDT": 0.0000001}
+MEME_DISTANCE_ATR_MIN_TICKS = 8
+
+
+def meme_distance_atr(symbol, atr: float) -> float:
+    """ATR used only for distance/bias limits; body triggers keep the raw ATR."""
+    from core.symbol_aliases import is_meme_breakout_symbol, to_canonical_display_symbol
+    if not is_meme_breakout_symbol(symbol):
+        return atr
+    tick = MEME_PRICE_TICK.get(to_canonical_display_symbol(symbol))
+    if not tick or not math.isfinite(atr) or atr <= 0:
+        return atr
+    return max(atr, MEME_DISTANCE_ATR_MIN_TICKS * tick)
+
 
 class MarketSnapshot(NamedTuple):
     symbol: str
@@ -37,6 +53,13 @@ class MarketSnapshot(NamedTuple):
     ma_cross_count_8: int       # 近 8 根已收線 K 棒 MA5 與 MA15 交叉次數
     timeframe_ms: float = 60000.0
     is_closed: bool = False
+    kc_width_max_20: float = 0.0  # 近 20 根已收線 KC 最大寬度；> 0 時改用相對收斂判定
+
+
+# Owner 2026-11-03: MEME 1m KC widths are structurally < 1% of price, so the squeeze veto is
+# relative: current width <= 25% of the widest of the last 20 closed bars (AGENTS.md rule).
+MEME_SQUEEZE_RELATIVE_RATIO = 0.25
+MEME_SQUEEZE_LOOKBACK = 20
 
 
 class PositionSnapshot(NamedTuple):
@@ -87,6 +110,9 @@ def market_snapshot_from_frame(frame, symbol, quote, macro_trend=None) -> Market
     signs = spread.map(lambda x: 1 if x > 0 else -1 if x < 0 else float("nan")).ffill()
     crosses = int((signs * signs.shift(1) < 0).sum())
     current, previous = closed.iloc[-1], closed.iloc[-2]
+    widths = (closed["kc_upper"].astype(float) - closed["kc_lower"].astype(float)).tail(MEME_SQUEEZE_LOOKBACK)
+    widths = widths[widths.map(lambda w: math.isfinite(w) and w > 0)]
+    kc_width_max_20 = float(widths.max()) if len(widths) else 0.0
     macro_frame = frame.attrs.get("macro_frame")
     if macro_frame is None:
         macro_frame = closed
@@ -108,7 +134,7 @@ def market_snapshot_from_frame(frame, symbol, quote, macro_trend=None) -> Market
         kc_upper=float(current["kc_upper"]), kc_middle=float(current["kc_middle"]),
         kc_middle_prev=float(previous["kc_middle"]), kc_lower=float(current["kc_lower"]),
         atr=float(previous["atr"]), macro_trend=macro, ma_cross_count_8=crosses,
-        is_closed=True,
+        is_closed=True, kc_width_max_20=kc_width_max_20,
     )
 
 
@@ -126,7 +152,7 @@ def evaluate_meme_entry_frame(frame, symbol, side, quote, *, last_closed_at=None
                 closed_at /= 1000
             if not math.isfinite(closed_at) or closed_at <= 0 or closed_at > time.time():
                 raise ValueError("MEME_GATE_INVALID_CLOSE_IDENTITY")
-            # Two fully completed post-close candles; a partial closing candle is excluded.
+            # Post-exit cooldown: 2 complete 1m bars; priority channels are exempt in the filters.
             ready_at = math.ceil(closed_at / 60) * 60 + 120
             cooldown = time.time() < ready_at
         return MasterGateFunnel.evaluate_entry_filters(snapshot, side, cooldown)
@@ -157,9 +183,16 @@ class MasterGateFunnel:
         expansion = (
             cls.is_expansion(m, "LONG") or cls.is_expansion(m, "SHORT")
             or cls.is_early_long(m) or cls.is_top_pivot_short(m)
+            or cls.is_squeeze_breakout_long(m) or cls.is_bottom_pivot_long(m)
+            or cls.is_big_body_breakout(m, "LONG") or cls.is_big_body_breakout(m, "SHORT")
         )
-        kc_width_ratio = (m.kc_upper - m.kc_lower) / m.quote
-        if kc_width_ratio < 0.010 and not expansion:
+        kc_width = m.kc_upper - m.kc_lower
+        if math.isfinite(m.kc_width_max_20) and m.kc_width_max_20 > 0:
+            limit = MEME_SQUEEZE_RELATIVE_RATIO * m.kc_width_max_20
+            squeezed = kc_width < limit or math.isclose(kc_width, limit, rel_tol=1e-9)
+        else:
+            squeezed = kc_width / m.quote < 0.010
+        if squeezed and not expansion:
             return True, "VETO_NARROW_SQUEEZE_RANGE"
         kc_slope = m.kc_middle - m.kc_middle_prev
         ma15_slope = m.ma15_curr - m.ma15_prev
@@ -204,6 +237,28 @@ class MasterGateFunnel:
         )
 
     @staticmethod
+    def is_early_breakout_long(m: MarketSnapshot) -> bool:
+        body = m.close_price - m.open_price
+        threshold = 0.50 * m.atr
+        return (
+            MasterGateFunnel.is_early_long(m)
+            and m.ma5_curr > m.ma15_curr
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and (m.open_price <= m.kc_middle or m.open_price <= m.ma15_curr)
+        )
+
+    @staticmethod
+    def is_squeeze_breakout_long(m: MarketSnapshot) -> bool:
+        body = m.close_price - m.open_price
+        threshold = 0.70 * m.atr
+        return (
+            m.is_closed and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and m.close_price > m.kc_upper
+            and m.ma5_curr > m.ma15_curr
+        )
+
+    @staticmethod
     def is_top_pivot_short(m: MarketSnapshot) -> bool:
         body = m.open_price - m.close_price
         threshold = 0.40 * m.atr
@@ -218,6 +273,52 @@ class MasterGateFunnel:
             and m.ma5_curr < m.ma15_curr
         )
 
+    @staticmethod
+    def is_bottom_pivot_long(m: MarketSnapshot) -> bool:
+        """LONG mirror of the top-pivot death-cross channel."""
+        body = m.close_price - m.open_price
+        threshold = 0.40 * m.atr
+        return (
+            m.is_closed
+            and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and m.close_price > m.kc_middle
+            and m.close_price > m.ma15_curr
+            and m.ma5_curr > m.ma5_prev
+            and m.ma5_prev <= m.ma15_prev
+            and m.ma5_curr > m.ma15_curr
+        )
+
+    @staticmethod
+    def is_big_body_breakout(m: MarketSnapshot, side: str) -> bool:
+        """Closed body >= 0.6 ATR that breaks out of the band from inside it on this bar."""
+        sign = 1 if side == "LONG" else -1
+        body = sign * (m.close_price - m.open_price)
+        threshold = 0.60 * m.atr
+        band = m.kc_upper if side == "LONG" else m.kc_lower
+        return (
+            m.is_closed
+            and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and sign * (m.close_price - band) > 0
+            and sign * (m.open_price - band) <= 0
+        )
+
+    @classmethod
+    def priority_channel(cls, m: MarketSnapshot, side: str) -> Optional[str]:
+        """Priority triggers that bypass KC-slope lag and the post-exit cooldown."""
+        if side == "SHORT":
+            if cls.is_top_pivot_short(m):
+                return "TRIGGER_TOP_PIVOT_CROSS"
+            if cls.is_big_body_breakout(m, "SHORT"):
+                return "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+        elif side == "LONG":
+            if cls.is_bottom_pivot_long(m):
+                return "TRIGGER_BOTTOM_PIVOT_CROSS"
+            if cls.is_big_body_breakout(m, "LONG"):
+                return "TRIGGER_EARLY_BREAKOUT_CHANNEL"
+        return None
+
     @classmethod
     def evaluate_entry_filters(cls, m: MarketSnapshot, side: str, is_in_cooldown: bool = False) -> GateDecision:
         details = {"symbol": m.symbol, "quote": m.quote, "macro": m.macro_trend}
@@ -228,7 +329,13 @@ class MasterGateFunnel:
             return GateDecision(False, "HOLD", reason, details)
         if side not in ("LONG", "SHORT"):
             return block("VETO_INVALID_ENTRY_SIDE")
-        if is_in_cooldown:
+        try:
+            priority = cls.priority_channel(m, side)
+        except (TypeError, ValueError):
+            priority = None
+        if priority:
+            details["priority_channel"] = priority
+        if is_in_cooldown and not priority:
             return block("BLOCKED_BY_POST_EXIT_COOLDOWN")
         blocked, reason = cls.evaluate_market_blacklist(m)
         if blocked:
@@ -241,28 +348,44 @@ class MasterGateFunnel:
             return block(f"BLOCKED_{side}_MACRO_TREND_CONFLICT")
         slope = sign * (m.kc_middle - m.kc_middle_prev)
         early_long = side == "LONG" and cls.is_early_long(m)
+        early_breakout_long = side == "LONG" and cls.is_early_breakout_long(m)
+        squeeze_breakout_long = side == "LONG" and cls.is_squeeze_breakout_long(m)
         top_pivot_short = side == "SHORT" and cls.is_top_pivot_short(m)
-        if slope < 0 or (slope == 0 and not (
-            cls.is_expansion(m, side) or early_long or top_pivot_short
-        )):
+        big_body_breakout = cls.is_big_body_breakout(m, side)
+        if not priority and ((slope < 0 and not early_breakout_long) or (slope == 0 and not (
+            cls.is_expansion(m, side) or early_long or top_pivot_short or squeeze_breakout_long
+        ))):
             return block(f"BLOCKED_{side}_KC_DIRECTION")
         if any(sign * (price - level) <= 0
                for price in (m.quote, m.close_price) for level in (m.kc_middle, m.ma15_curr)):
             return block(f"BLOCKED_{side}_PRICE_MIDDLE_MA15")
         alignment = sign * (m.ma5_curr - m.ma15_curr)
         if (sign * (m.ma5_curr - m.ma5_prev) <= 0
-                or alignment < 0 or alignment == 0 and not early_long):
+                or (not big_body_breakout and (alignment < 0 or alignment == 0 and not early_long))):
             return block(f"BLOCKED_{side}_MA5_DIRECTION_OR_ALIGNMENT")
         if sign * (m.close_price - m.open_price) <= 0:
             return block(f"BLOCKED_{side}_DIRECTIONAL_CANDLE")
         extreme = max(m.quote, m.close_price) if sign == 1 else min(m.quote, m.close_price)
-        bias = sign * (extreme - m.ma15_curr)
-        if bias > m.atr and not math.isclose(bias, m.atr, rel_tol=1e-12, abs_tol=0):
+        # Anti-bottom/top chase: a fresh band break is measured from where the bar started.
+        distance_atr = meme_distance_atr(m.symbol, m.atr)
+
+        def over_limit(value):
+            return value > distance_atr and not math.isclose(value, distance_atr, rel_tol=1e-12, abs_tol=0)
+
+        extreme_over = over_limit(sign * (extreme - m.ma15_curr))
+        bias_price = m.open_price if big_body_breakout else extreme
+        if over_limit(sign * (bias_price - m.ma15_curr)):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
-        band_limit = 1.2 if side == "LONG" and cls.is_expansion(m, side) else (0.5 if side == "LONG" else 0.8)
+        # When the bias-from-open exemption was actually needed, cap the rail extension tightly.
+        band_limit = (
+            0.8 if big_body_breakout and extreme_over
+            else 1.5 if squeeze_breakout_long
+            else 1.2 if side == "LONG" and cls.is_expansion(m, side)
+            else 0.5 if side == "LONG" else 0.8
+        )
         band = m.kc_upper if side == "LONG" else m.kc_lower
         extension = sign * (extreme - band)
-        limit = band_limit * m.atr
+        limit = band_limit * distance_atr
         if extension > limit and not math.isclose(extension, limit, rel_tol=1e-12, abs_tol=0):
             return block(f"BLOCKED_{side}_KC_BAND_EXTENSION")
         return GateDecision(True, "FILTER_PASS", "PASS_MEME_ENTRY_FILTERS", details)
@@ -277,8 +400,14 @@ class MasterGateFunnel:
             return filtered
         details = filtered.details
         trigger_hit = None
-        if cls.is_bottom_v_long(m):
+        if cls.is_early_breakout_long(m) and (
+            m.kc_middle < m.kc_middle_prev or not cls.is_bottom_v_long(m)
+        ):
+            trigger_hit = "TRIGGER_1145_EARLY_BREAKOUT"
+        elif cls.is_bottom_v_long(m):
             trigger_hit = "TRIGGER_BOTTOM_V_REVERSAL_0903"
+        elif cls.is_squeeze_breakout_long(m):
+            trigger_hit = "TRIGGER_1148_SQUEEZE_BREAKOUT"
         elif cls.is_expansion(m, "LONG"):
             trigger_hit = "TRIGGER_A_SQUEEZE_EXPANSION"
         elif cls.is_early_long(m):
@@ -290,11 +419,14 @@ class MasterGateFunnel:
             trigger_hit = "TRIGGER_B_PULLBACK_KC_MIDDLE_BOUNCE"
         elif m.open_price <= m.ma15_curr < m.close_price:
             trigger_hit = "TRIGGER_C_EARLY_MA15_BREAKOUT"
+        if not trigger_hit:
+            trigger_hit = cls.priority_channel(m, "LONG")
 
         if not trigger_hit:
             return GateDecision(False, "HOLD", "WAIT_VALID_LONG_TRIGGER", details)
 
         logger.info(f"🚀 [GATE_LONG_PASS] {m.symbol} 全條件審查通過！授權開多 ({trigger_hit})")
+        logger.info("[UI_DISPLAY: 買多] symbol=%s trigger=%s stage=CANDIDATE_NOT_FILL", m.symbol, trigger_hit)
         return GateDecision(True, "OPEN_LONG", f"AUTHORIZED_LONG:{trigger_hit}", {**details, "trigger": trigger_hit})
 
     # ─────────────────────────────────────────────────────────────
@@ -316,6 +448,8 @@ class MasterGateFunnel:
         )
         if cls.is_top_pivot_short(m):
             trigger_hit = "TRIGGER_TOP_PIVOT_CROSS"
+        elif cls.is_big_body_breakout(m, "SHORT"):
+            trigger_hit = "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
         elif cls.is_expansion(m, "SHORT"):
             trigger_hit = "TRIGGER_A_EARLY_BODY_BREAKDOWN"
         elif is_top_reversal:

@@ -431,6 +431,13 @@ async def startup_event():
         "cooldown=TWO_FULL_POST_CLOSE_BARS ordinary_exit=BUFFER_BREAK_MA5_REVERSE_PIVOT_POSITIVE_NET "
         "disaster_exit=VERIFIED_LIVE_WATERFALL_1_5_PREVIOUS_ATR_AND_MIDDLE"
     )
+    logger.warning(
+        "MEME_LONG_V2 early=TRIGGER_1145_EARLY_BREAKOUT body=0.5_PRECEDING_ATR "
+        "early_kc_lag_override=YES macro_bearish=VETO "
+        "squeeze=TRIGGER_1148_SQUEEZE_BREAKOUT body=0.7_PRECEDING_ATR "
+        "upper_extension=1.5_PRECEDING_ATR ma15_extension=1_PRECEDING_ATR "
+        "closed_1m=REQUIRED short_policy=UNCHANGED wait=NOT_ACTIVATED"
+    )
     try:
         await recover_bot_if_needed()
     except Exception as exc:
@@ -641,6 +648,7 @@ async def get_status(response: Response):
         "entry_candle_exit_policy": "開倉成交當根 UTC 1 分鐘內禁止普通策略平倉；經行情驗證的災難出口可當根平倉。普通回踩仍續抱直到進場後獲利真峰谷。手動平倉不受限制。",
         "meme_top_pivot_short_policy": "龍蝦、CAP、1000PEPE新增單根已收線0.40前棒ATR頂部死叉空單：MA5下降、前棒MA5≥MA15且確認棒MA5<MA15，紅實體收盤與最新報價都低於KC中軌及MA15。只豁免走平／縮口，KC明確上行或大週期明確多頭仍禁入；1ATR MA15乖離、0.8ATR下軌延伸、震盪、冷卻及帳戶安全全部保留。原0.70ATR早期破位仍不要求下軌外。五根完整持倉、0.50ATR緩衝、新真谷底及預估正淨利出口不變；不保證08:35／08:43成交。",
         "meme_bottom_v_long_policy": "龍蝦、CAP、1000PEPE新增TRIGGER_BOTTOM_V_REVERSAL_0903：已收線綠K實體至少0.50前棒ATR、MA5嚴格上升且由前棒MA5≤MA15轉為確認棒MA5>MA15，收盤與最新報價均在KC中軌及MA15之上。沿用早期多單走平／縮口豁免，但不得繞過逆KC、逆大週期、1ATR MA15乖離、非爆發多單0.5ATR上軌延伸、震盪、冷卻及帳戶安全；最終送單須保留原觸發型態。0903為型態標籤，不是指定時間下單或最低點成交保證；五根完整持倉及0.50ATR結構出口不變。",
+        "meme_long_v2_policy": "龍蝦、CAP、1000PEPE做多新增TRIGGER_1145_EARLY_BREAKOUT：已收線綠K實體至少0.50前棒ATR、開盤不高於KC中軌或MA15、收盤與報價均高於兩線、MA5上升且高於MA15；可豁免1m KC滯後斜率，但大週期空頭仍禁止。TRIGGER_1148_SQUEEZE_BREAKOUT需收綠實體至少0.70前棒ATR、收盤在上軌外且MA5上升並高於MA15，收盤與最新報價取較極端者距上軌最多1.5前棒ATR；未另加量能或縮口判準。兩入口都保留1前棒ATR MA15乖離、8棒交叉震盪、兩根完整平倉後冷卻及帳戶安全。原0903金叉型態在KC非反向時保留優先，快取與送單必須重驗同一觸發；1145/1148不是指定時間或成交保證。空單、平倉與WAIT不變。",
         "meme_early_entry_policy": "龍蝦、CAP、1000PEPE新增MEME_GATE_ENTRY單根已收線1m入口：多單0.40前棒ATR早期起漲（MA5向上且可等於MA15，不要求新金叉）、0.8前棒ATR爆發、回踩中軌後MA5新金叉或MA15實體突破；空單維持0.7前棒ATR早期破位、MA5新死叉中軌／MA15或下軌跌破且MA15下降。早期起漲與大實體只要求收盤與報價在中軌／MA15新側，不要求開盤穿越；僅豁免縮口與走平，不豁免明確反向KC、大方向、乖離或震盪。所有自動入口包括外軌峰谷與重開都受大週期反向禁入、MA5斜率與MA15排列、1前棒ATR乖離、空單0.8ATR下軌延伸、8棒交叉至少3次禁入及成功平倉後兩根完整1m冷卻限制；0.8ATR爆發多單上軌延伸最多1.2ATR，0.40ATR早期起漲仍為0.5ATR。保留原兩根入口及帳戶安全，不保證特定分鐘成交。",
         "meme_holding_policy": "龍蝦、CAP、1000PEPE多空普通出口須完整持有至少5根已收線1m棒；不論KC斜率，收盤未嚴格破中軌0.50ATR緩衝都續抱。平倉還須MA5位於MA15反向側、反色收線、新的進場後真峰谷及預估扣費滑點後淨利大於0。兩根中軌破位與2.5ATR／1.5ATR鎖利均不能繞過上述必要條件。策略災難僅保留當根原始開盤至最新報價的反向實體至少1.5前棒已收線ATR且報價穿過KC中軌，允許盤中及進場當根避險；單純反側外軌、雙異常與普通數值硬止損不獨立平倉，真正手動與帳戶安全保留。市場熔斷不能只憑理由標籤觸發。",
         "strategy": "妖幣MA5主漏斗、0.50ATR防插針續抱與正淨利真峰谷出口；外軌峰谷反轉不能豁免大方向、黑名單或冷卻，沒有無條件反手。持倉出口與待平送單都重驗當前結構及淨利。跳價仍可能造成成交虧損；不保證絕對最高／最低點或獲利。WAIT未因本輪規格啟用或驗證。",

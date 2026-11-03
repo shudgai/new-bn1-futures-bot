@@ -973,3 +973,58 @@ Final corrected 21-module regression: **2527 passed, 2 skipped, 4 existing
 deprecation warnings**, 317.01 seconds; focused integration run **386 passed**.
 These results supersede the initial 2503-pass release count for the final source.
 The preceding WAIT matrix and non-WAIT-only release scope remain unchanged.
+
+### [2026-11-03] - Owner-approved early LONG and bounded squeeze authorities
+
+The Owner confirmed three-symbol LONG scope (LOBSTER, CAP, 1000PEPE), retaining
+common guards and authorizing tests, commit/push, deployment and restart.
+SHORT and all position exits remain unchanged; WAIT remains unactivated.
+
+- `TRIGGER_1145_EARLY_BREAKOUT`: completed positive 1m body >= 0.50 immediately
+  preceding completed ATR, original open <= KC middle OR MA15, completed close
+  and current quote above both lines, rising MA5 strictly above MA15. Only this
+  verified pattern may override lagging negative 1m KC slope. A bearish or
+  contradictory macro regime still vetoes entry.
+- `TRIGGER_1148_SQUEEZE_BREAKOUT`: completed positive body >= 0.70 preceding
+  completed ATR and close outside the upper band, with rising MA5 above MA15.
+  Close/quote use the more extreme price and upper extension <= 1.50 preceding
+  ATR, inclusive with the existing boundary convention. The submitted snippet
+  returned before checking extensions; the implementation always runs shared
+  filters first. No volume ratio or squeeze-duration requirement was invented.
+  This authority alone does not override negative KC slope.
+- Existing guards remain mandatory: valid fresh 1m data, close/quote above
+  middle and MA15, non-bearish macro, MA5 direction/alignment, 1 preceding-ATR
+  MA15 extension, eight-candle whipsaw veto, two complete post-close candles,
+  exact trigger/event revalidation, position/pending-order locks and account
+  safety. The 0.40-ATR legacy early route retains equality semantics.
+- Existing 09:03 fresh golden-cross classification retains priority on
+  non-adverse KC. The new early classification takes priority when the new
+  lagging-slope exception is required; other valid legacy routes remain.
+- Central consolidation and mathematical entry gates use the same verified
+  exception. Numerical entry math only permits negative KC with a revalidated
+  exact MEME early trigger, never an arbitrary reason/override label.
+- ExecutionManager's MEME submit path previously derived its macro label from
+  the 1m KC sign, contradicting independent macro evidence during this new
+  exception. Its LONG path now carries DataPipeline's actual macro classification.
+  SHORT and other method producers and their direction logic are unchanged.
+- 1145/1148 are pattern labels, not clock-based orders, historical fill proof,
+  or guarantees of execution at an absolute low. Market gaps and remaining
+  independent safety checks may still reject a candidate.
+
+Final isolated **23-module** regression: **2712 passed, 2 skipped, 4 existing
+FastAPI deprecation warnings**, 336.16 seconds. Includes all 21 prior exit
+release modules, chart freshness/marker tests and new LONG v2 tests. New
+coverage checks thresholds, maximum extension using the extreme price,
+preceding-vs-signal ATR, macro/direction/price/chop/cooldown vetoes, negative KC
+early passage versus squeeze rejection, and scan-to-paper/fake-testnet entry
+with refreshed data removing the trigger or violating safety.
+
+Legacy assertions were migrated only for authorized behavior shifts: early
+negative-KC qualification and outside-band squeeze ceiling 1.50 ATR. A fresh
+negative-KC frame without a verified method remains rejected by the direction
+lock; its expected reason changed from the earlier shared filter veto.
+Existing fresh-golden-cross, SHORT and ordinary holding assertions remain.
+
+The expanded WAIT review matrix above is unchanged: all WAIT functional gates
+NOT_TESTED, doji specification/static PASS, overall TRADING_GATE BLOCK.
+Owner release permission covers only this explicit non-WAIT change.

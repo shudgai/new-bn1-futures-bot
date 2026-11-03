@@ -961,6 +961,27 @@ class ExecutionManager:
                 tier1_drawback_pct=0.05 if _is_pepe else 0.20,
             )
 
+            # 🛡️ 妖幣平倉唯一結構出口：收線 + 持倉滿 5 根 + 0.50 ATR/MA5 金死叉/反向實體 AND 鎖
+            from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
+            if _is_meme_exit_symbol(symbol):
+                from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+                structure_reason = UltimateShortExitGatekeeper.structure_exit_candidate(
+                    symbol, current_position,
+                    getattr(account, "position_meta", {}).get(symbol, {}),
+                    curr_quote, raw_df,
+                )
+                if structure_reason:
+                    success = await cls.close_position(
+                        account=account, symbol=symbol, price=curr_quote,
+                        reason=structure_reason, meta={"raw_df": raw_df, "is_bar_closed": True},
+                    )
+                    return {
+                        "status": "EXIT_EXECUTED" if success else "HOLD",
+                        "symbol": symbol,
+                        "reason": structure_reason if success else "EXIT_BLOCKED_HOLD:" + structure_reason,
+                        "success": success,
+                    }
+
             # 審查 ExitGate 是否觸發鎖利 (Profit Lock)、大瀑布 (Extreme Waterfall)、市場熔斷 (Circuit Breaker)
             gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
                 pos=current_position,
@@ -2083,12 +2104,17 @@ class ExecutionManager:
                 if pivot_result is not None:
                     return pivot_result
             from core.services.entry_methods import MEME_GATE_ENTRY
-            if evaluate_entry_method(
+            meme_signal = evaluate_entry_method(
                 raw_df, symbol=symbol, quote=curr_quote, expected_method=MEME_GATE_ENTRY,
-            ) is not None:
+            )
+            if meme_signal is not None:
                 meme_result = await cls._evaluate_closed_entry_methods(
                     symbol=symbol, account=account, engine_or_account=engine_or_account,
-                    frame=raw_df, quote=curr_quote, macro_trend=macro_trend,
+                    frame=raw_df, quote=curr_quote,
+                    macro_trend=(
+                        market_data.macro_trend if meme_signal.get("side") == "LONG"
+                        else macro_trend
+                    ),
                     only_method=MEME_GATE_ENTRY,
                 )
                 if meme_result is not None:
@@ -2661,10 +2687,10 @@ class ExecutionManager:
             # 🚀 2026-10-30 核心授權：牛市/熊市早期開倉機制與雙重一票否決
             # 🛑 2026-10-31 猴市/震盪區鐵律：猴市（RANGE）或震盪市場（is_sideways_market）100% 嚴禁開倉！
             if (not has_position) and (not is_sideways_market) and (market_regime != "RANGE") and (is_zoomed_out_bullish or macro_trend == "BULLISH") and (not can_open_long):
-                # 🛑 規則四.3：平多後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
+                # 🛑 規則四.3：平多後進場冷卻 (Cooldown 2 根 K 棒 / 120 秒)
                 last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
-                is_in_long_cooldown = bool(last_closed_side == "LONG" and (time.time() - last_closed_time) < 180.0)
+                is_in_long_cooldown = bool(last_closed_side == "LONG" and (time.time() - last_closed_time) < 120.0)
 
                 # 🛑 規則二.2：做多審查 (位置否決: MA5 < MA15; 斜率否決: MA5 斜率走平或向下 <= 0; KC斜率否決: KC向下或走平)
                 p_kc_mid = float(p_k.get("kc_middle", kc_mid))
@@ -2684,7 +2710,7 @@ class ExecutionManager:
 
                 if is_in_long_cooldown:
                     logger.info(
-                        f"⏳ [LONG_EXIT_COOLDOWN] {symbol} 平多後 {time.time() - last_closed_time:.1f}s 處於 3 根 K 棒冷卻期 (< 180s)，"
+                        f"⏳ [LONG_EXIT_COOLDOWN] {symbol} 平多後 {time.time() - last_closed_time:.1f}s 處於 2 根 K 棒冷卻期 (< 120s)，"
                         f"嚴禁在回調初期反覆追多！"
                     )
                 elif is_long_vetoed:
@@ -2722,10 +2748,10 @@ class ExecutionManager:
                         entry_type = "EARLY_BULL_BREAKOUT_LONG" if is_early_ma15_breakout else ("LOWER_RAIL_V_LONG" if is_lower_rail_v_reversal else "MOMENTUM_FOLLOW_LONG")
                         logger.info(f"⚡ [{entry_type}] {symbol} 命中牛市提早開倉機制 ({entry_type})，通過雙重審查，立即鎖定起漲點開多！")
             elif (not has_position) and (not is_sideways_market) and (market_regime != "RANGE") and (is_zoomed_out_bearish or macro_trend == "BEARISH") and (not can_open_short):
-                # 🛑 規則四.3：平空後進場冷卻 (Cooldown 至少 3 根 K 棒 / 180 秒)
+                # 🛑 規則四.3：平空後進場冷卻 (Cooldown 2 根 K 棒 / 120 秒)
                 last_closed_time = float(getattr(account, "last_closed_at", {}).get(symbol, 0.0) or 0.0)
                 last_closed_side = str(getattr(account, "last_closed_side", {}).get(symbol, "") or "").upper()
-                is_in_short_cooldown = bool(last_closed_side == "SHORT" and (time.time() - last_closed_time) < 180.0)
+                is_in_short_cooldown = bool(last_closed_side == "SHORT" and (time.time() - last_closed_time) < 120.0)
 
                 # 🛑 規則三.2：做空審查 (位置否決: MA5 > MA15; 斜率否決: MA5 斜率走平或向上 >= 0; KC斜率否決: KC向上或走平)
                 p_kc_mid = float(p_k.get("kc_middle", kc_mid))
@@ -2745,7 +2771,7 @@ class ExecutionManager:
 
                 if is_in_short_cooldown:
                     logger.info(
-                        f"⏳ [SHORT_EXIT_COOLDOWN] {symbol} 平空後 {time.time() - last_closed_time:.1f}s 處於 3 根 K 棒冷卻期 (< 180s)，"
+                        f"⏳ [SHORT_EXIT_COOLDOWN] {symbol} 平空後 {time.time() - last_closed_time:.1f}s 處於 2 根 K 棒冷卻期 (< 120s)，"
                         f"嚴禁在觸底反彈初期反覆追空！"
                     )
                 elif is_short_vetoed:
@@ -2842,6 +2868,30 @@ class ExecutionManager:
                     pivot_triggered = False
                     candidate_side = None
 
+            # 🚀 妖幣優先通道（多空對稱）：頂部死叉/底部金叉、大實體破軌，豁免 KC 中軌滯後斜率與平倉冷卻
+            meme_priority_entry = None
+            from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_priority_symbol
+            if (not has_position) and _is_meme_priority_symbol(symbol):
+                from core.gates.master_gate_funnel import MasterGateFunnel as _PriorityFunnel
+                from core.gates.master_gate_funnel import market_snapshot_from_frame as _priority_snapshot
+                try:
+                    _p_snap = _priority_snapshot(raw_df, symbol, curr_quote, macro_trend)
+                except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError):
+                    _p_snap = None
+                if _p_snap is not None:
+                    for _p_side in ("SHORT", "LONG"):
+                        _p_trigger = _PriorityFunnel.priority_channel(_p_snap, _p_side)
+                        if _p_trigger:
+                            meme_priority_entry = _p_trigger
+                            candidate_side = _p_side
+                            entry_type = "MEME_" + _p_trigger.replace("TRIGGER_", "") + "_" + _p_side
+                            pivot_triggered = True
+                            logger.info(
+                                f"⚡ [MEME_PRIORITY_CHANNEL] {symbol} {_p_side} {_p_trigger} 命中優先通道，"
+                                f"豁免 KC 中軌滯後斜率與平倉冷卻，交由 MasterGateFunnel 終審"
+                            )
+                            break
+
             # 🛑 2026-11-01 最高鐵律：開倉必須通過 evaluate_direction_master_lock 與 MasterGateFunnel
             # 做空：MA5 必須向下且小於 MA15，當前必須是紅K陰線 (curr_close < curr_open)，否則 100% 嚴禁開空！
             # 做多：MA5 必須向上且大於 MA15，當前必須是綠K陽線 (curr_close > curr_open)，否則 100% 嚴禁開多！
@@ -2849,17 +2899,20 @@ class ExecutionManager:
                 from core.gates.direction_master_lock import evaluate_direction_master_lock
                 from core.gates.master_gate_funnel import MasterGateFunnel, market_snapshot_from_frame
 
-                # 1. 執行 Direction Master Lock 檢查
-                p_dir_ok, p_dir_reason, p_dir_details = evaluate_direction_master_lock(
-                    candidate_side,
-                    ma5_curr=m5_c,
-                    ma5_prev=m5_p,
-                    kc_middle=kc_mid,
-                    direction_override=False,
-                    ma15_curr=m15_c,
-                    curr_close=closed_c_entry if (closed_c_entry is not None and math.isfinite(closed_c_entry)) else c_c,
-                    curr_open=closed_o_entry if (closed_o_entry is not None and math.isfinite(closed_o_entry)) else c_o,
-                )
+                # 1. 執行 Direction Master Lock 檢查（妖幣優先通道改由 MasterGateFunnel 同側完整重驗）
+                if meme_priority_entry:
+                    p_dir_ok, p_dir_reason, p_dir_details = True, "MEME_PRIORITY_CHANNEL", {}
+                else:
+                    p_dir_ok, p_dir_reason, p_dir_details = evaluate_direction_master_lock(
+                        candidate_side,
+                        ma5_curr=m5_c,
+                        ma5_prev=m5_p,
+                        kc_middle=kc_mid,
+                        direction_override=False,
+                        ma15_curr=m15_c,
+                        curr_close=closed_c_entry if (closed_c_entry is not None and math.isfinite(closed_c_entry)) else c_c,
+                        curr_open=closed_o_entry if (closed_o_entry is not None and math.isfinite(closed_o_entry)) else c_o,
+                    )
                 if not p_dir_ok:
                     logger.info(
                         f"🚫 [BLOCKED_PIVOT_DIRECTION_LOCK] {symbol} 轉折開倉 ({candidate_side} {entry_type}) "
@@ -4364,6 +4417,12 @@ class ExecutionManager:
                     is_limit=is_limit,
                 )
                 if success and closed_side:
+                    close_label = "CLOSE_SHORT" if str(closed_side).upper() == "SHORT" else "CLOSE_LONG"
+                    logger.info(
+                        "[UI_DISPLAY: %s] action=%s symbol=%s price=%s reason=%s",
+                        "平空" if close_label == "CLOSE_SHORT" else "平多",
+                        close_label, symbol, price, reason,
+                    )
                     acc_key = cls._get_account_key(account, symbol)
                     record = {
                         "side": closed_side,
@@ -4718,6 +4777,12 @@ class ExecutionManager:
                             wick_sl_val = float((meta or {}).get("meme_wick_stop_loss") or 0.0)
                             if wick_sl_val > 0:
                                 pos["meme_wick_stop_loss"] = wick_sl_val
+                    open_label = "OPEN_SHORT" if str(side).upper() == "SHORT" else "OPEN_LONG"
+                    logger.info(
+                        "[UI_DISPLAY: %s] action=%s symbol=%s price=%s reason=%s",
+                        "賣空" if open_label == "OPEN_SHORT" else "買多",
+                        open_label, symbol, price, reason,
+                    )
                     logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
                     print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
                 else:

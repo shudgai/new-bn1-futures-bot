@@ -165,7 +165,11 @@ def validate_entry_math(
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
     if kc_slope == 0 and not outer_pivot_authorized and not meme_authorized:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
-    if side == "LONG" and kc_slope < 0 and not outer_pivot_authorized:
+    early_long_authorized = bool(
+        meme_authorized and side == "LONG"
+        and entry_method_context.get("entry_method_signal", {}).get("trigger") == "TRIGGER_1145_EARLY_BREAKOUT"
+    )
+    if side == "LONG" and kc_slope < 0 and not outer_pivot_authorized and not early_long_authorized:
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
     if side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
@@ -1233,6 +1237,22 @@ def validate_exit_at_execution(
     from core.services.exits.authorized_position_exit import (
         automated_position_exit_allowed, strategy_exit_bar_block_reason,
     )
+    from core.gates.ultimate_short_exit_gatekeeper import DEFER, UltimateShortExitGatekeeper
+    meme_verdict = UltimateShortExitGatekeeper.evaluate(
+        symbol, position, metadata, close_reason, price, frame=frame,
+    )
+    if meme_verdict.verdict != DEFER:
+        # A HOLD is logged once by the account boundary (POSITION_EXIT_BLOCK).
+        if meme_verdict.allowed and hasattr(account, "log"):
+            account.log(
+                f"EXIT_AUTHORIZATION symbol={symbol} side={position.get('side')} "
+                f"exit_reason={close_reason} authorization_function=UltimateShortExitGatekeeper "
+                f"final_execution_gate={meme_verdict.code} evidence={meme_verdict.evidence}",
+                "WARNING" if meme_verdict.allowed else "INFO",
+            )
+        if not meme_verdict.allowed:
+            return False, meme_verdict.code, {"exit_type": "BLOCKED"}
+        return True, meme_verdict.code, meme_verdict.evidence
     is_emergency = is_emergency_exit(close_reason)
     bar_block = (
         strategy_exit_bar_block_reason(position, metadata) if not is_emergency else None

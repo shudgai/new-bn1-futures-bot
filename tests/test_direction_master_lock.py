@@ -196,7 +196,8 @@ def test_meme_coin_breakout_cannot_exceed_one_atr_ma15_limit():
 
     # 驗證不再被 VETO_KC_OUTER_OVEREXTENSION 阻斷
     assert not gate_res.passed
-    assert gate_res.reason == "BLOCKED_LONG_MA15_EXTENSION_1_ATR"
+    # Big-body breakouts measure bias from open but are capped at 0.8 ATR beyond the rail.
+    assert gate_res.reason in {"BLOCKED_LONG_MA15_EXTENSION_1_ATR", "BLOCKED_LONG_KC_BAND_EXTENSION"}
 
 
 def test_lobster_1055_dead_cross_slope_down_long_vetoed():

@@ -173,6 +173,7 @@ class CentralEntryGate:
             source_upper != "MANUAL" or has_entry_method_context
         )
         meme_expansion = False
+        meme_lagging_kc_override = False
         if meme_policy:
             from core.gates.master_gate_funnel import (
                 MasterGateFunnel, evaluate_meme_entry_frame, market_snapshot_from_frame,
@@ -184,10 +185,16 @@ class CentralEntryGate:
                     details=meme_gate.details, checks=checks,
                 )
             meme_snapshot = market_snapshot_from_frame(klines_or_snapshot, symbol, curr_price)
+            meme_priority = MasterGateFunnel.priority_channel(meme_snapshot, side) is not None
             meme_expansion = MasterGateFunnel.is_expansion(meme_snapshot, side) or (
                 side == "LONG" and MasterGateFunnel.is_early_long(meme_snapshot)
             ) or (
+                side == "LONG" and MasterGateFunnel.is_squeeze_breakout_long(meme_snapshot)
+            ) or (
                 side == "SHORT" and MasterGateFunnel.is_top_pivot_short(meme_snapshot)
+            ) or meme_priority
+            meme_lagging_kc_override = meme_priority or (
+                side == "LONG" and MasterGateFunnel.is_early_breakout_long(meme_snapshot)
             )
 
         # ══════════════════════════════════════════════════════════════════
@@ -390,7 +397,7 @@ class CentralEntryGate:
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
-                    independent_kc_direction=outer_pivot_authorized,
+                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override,
                     meme_policy=meme_policy, expansion=meme_expansion,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
@@ -412,7 +419,7 @@ class CentralEntryGate:
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
-                    independent_kc_direction=outer_pivot_authorized,
+                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override,
                     meme_policy=meme_policy, expansion=meme_expansion,
                 )
         blocked, block_reason, block_evidence = blacklist

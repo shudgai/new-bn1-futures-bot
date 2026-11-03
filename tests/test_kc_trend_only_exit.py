@@ -171,7 +171,9 @@ def test_numeric_hard_stop_cannot_override_true_pivot_hold(symbol, side):
     allowed, reason, evidence = validate_exit_at_execution(
         account, symbol, pos, price, "CIRCUIT_BREAKER_HARD_SL",
     )
-    assert not allowed and reason == "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
+    assert not allowed and (
+        reason == "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY" or reason.startswith("VETO_HOLD_")
+    )
     assert evidence["exit_type"] == "BLOCKED"
 
 

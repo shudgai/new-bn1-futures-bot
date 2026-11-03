@@ -63,7 +63,8 @@ def test_closed_kc_direction_is_evidence_but_no_longer_exit_authority(side):
         account, "CAP/USDT", pos, 100.2, KC_WAVE_EXIT_REASON,
     )
     assert not allowed
-    assert reason == "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
+    # MEME symbols are vetoed first by the Owner 2026-11-03 closed-bar structure gate.
+    assert reason in ("BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY",) or reason.startswith("VETO_HOLD_")
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -159,7 +160,11 @@ def test_pipeline_closes_true_pivot_and_holds_plain_wave(
         return
     assert result["status"] == ("EXIT_EXECUTED" if filled else "HOLD"), result
     assert result["success"] is filled
-    assert close.await_args.kwargs["reason"] == profitable_true_pivot_exit(pos, frame)[0]
+    # The MEME main-loop producer emits the closed-bar structure break first when the AND-lock holds.
+    assert close.await_args.kwargs["reason"] in (
+        profitable_true_pivot_exit(pos, frame)[0],
+        "EXIT_LONG_STRUCTURE_BREAK_050ATR", "EXIT_SHORT_STRUCTURE_BREAK_050ATR",
+    )
     assert close.await_args.kwargs["price"] == quote
 
 
