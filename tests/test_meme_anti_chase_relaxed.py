@@ -89,3 +89,38 @@ def test_intrabar_live_bar_without_channel_uses_last_closed_channel():
     assert metrics["is_closed"] is False
     assert math.isclose(metrics["kc_middle"], 100.4)
     assert math.isclose(metrics["atr"], 1.1)
+
+
+def donchian_frame(last_open, last_close):
+    import numpy as np
+    n = 30
+    close = 100 + 0.5 * np.sin(np.arange(n) / 3.0) + np.arange(n) * 0.02
+    frame = pd.DataFrame({
+        "timestamp": [1_700_000_000_000 + i * 60_000 for i in range(n)],
+        "open": close - 0.05, "close": close, "high": close + 0.6, "low": close - 0.6,
+        "ma5": close, "ma15": close - 0.1, "atr": 0.2, "adx": 15.0, "volume": 100.0,
+        "kc_middle": 100 + np.arange(n) * 0.05, "is_closed": True,
+    })
+    frame["kc_upper"] = frame["kc_middle"] + 2
+    frame["kc_lower"] = frame["kc_middle"] - 2
+    last = frame.index[-1]
+    frame.loc[last, ["open", "close", "high", "low"]] = [
+        last_open, last_close, max(last_open, last_close) + .01, min(last_open, last_close) - .01,
+    ]
+    return frame
+
+
+@pytest.mark.parametrize("side,body", [("SHORT", -1.0), ("LONG", 1.0)])
+def test_meme_impulse_body_bypasses_donchian_low_trend(side, body):
+    from core.services.market_consolidation_filter import evaluate_market_blacklist
+    impulse = donchian_frame(100.4, 100.4 + body * 0.2 * 0.62)
+    small = donchian_frame(100.4, 100.4 + body * 0.2 * 0.3)
+    _, impulse_reason, _ = evaluate_market_blacklist(
+        impulse, -1, side=side, meme_policy=True, is_breakout=True, independent_kc_direction=True)
+    _, small_reason, _ = evaluate_market_blacklist(
+        small, -1, side=side, meme_policy=True, is_breakout=True, independent_kc_direction=True)
+    _, plain_reason, _ = evaluate_market_blacklist(
+        impulse, -1, side=side, meme_policy=False, is_breakout=True, independent_kc_direction=True)
+    assert small_reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert plain_reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert impulse_reason != "VETO_DONCHIAN_RANGE_LOW_TREND"

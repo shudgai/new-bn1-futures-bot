@@ -22,6 +22,7 @@ LOW_ATR_PCT = 0.003
 MIN_VOLUME_RATIO = 0.8
 MAX_WICK_BODY_RATIO = 2.0
 COOLDOWN_BARS = 3
+MEME_IMPULSE_BODY_ATR = 0.6
 
 
 def _num(row: pd.Series, key: str) -> Optional[float]:
@@ -149,7 +150,12 @@ def evaluate_market_blacklist(
         # both ADX and normalized ATR indicate weak conditions. Missing ADX
         # remains fail-closed when ATR is also below threshold.
         weak_adx = adx is None or adx < LOW_ADX
-        if inside_box and weak_adx and atr_pct < LOW_ATR_PCT:
+        direction_sign = {"LONG": 1, "SHORT": -1}.get(str(side or "").upper(), 0)
+        signal_body_atr = direction_sign * float(current["close"] - current["open"]) / float(atr.iloc[-1])
+        # Meme impulse bar (same-side body >= 0.6 ATR) starts a move from inside the box.
+        meme_impulse = meme_policy and signal_body_atr >= MEME_IMPULSE_BODY_ATR - 1e-12
+        checks["signal_body_atr"] = signal_body_atr
+        if inside_box and weak_adx and atr_pct < LOW_ATR_PCT and not meme_impulse:
             return True, "VETO_DONCHIAN_RANGE_LOW_TREND", checks
 
         # Weak-volume and wick-heavy signal candle.
