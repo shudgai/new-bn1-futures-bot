@@ -978,10 +978,22 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
             if trade.get("symbol") != symbol:
                 continue
             action = str(trade.get("action") or "")
-            if action not in ("OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT"):
+            if action not in ("OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT",
+                              "PARTIAL_CLOSE_LONG", "PARTIAL_CLOSE_SHORT"):
                 continue
-            trade_timestamp = int(trade.get("channel_confirmation_bar_id") or trade.get("id") or 0)
-            matching_bars = df.index[df["timestamp"] <= trade_timestamp]
+            try:
+                trade_timestamp = float(trade["id"])
+                trade_price = float(trade["price"])
+                if (not math.isfinite(trade_timestamp) or trade_timestamp <= 0
+                        or not math.isfinite(trade_price) or trade_price <= 0):
+                    raise ValueError("invalid fill timestamp or price")
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                logger.warning("CHART_TRADE_MARKER_INVALID symbol=%s action=%s error=%s", symbol, action, exc)
+                continue
+            matching_bars = df.index[
+                (df["timestamp"] <= trade_timestamp)
+                & (trade_timestamp < df["timestamp"] + interval_seconds * 1000)
+            ]
             if len(matching_bars) == 0:
                 continue
             marker_index = matching_bars[-1]
@@ -989,6 +1001,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "action": action,
                 "reason": trade.get("reason") or "",
                 "price": trade.get("price"),
+                "timestamp": trade_timestamp,
             })
         
         prealert = engine.pivot_prealerts.get(symbol, {})

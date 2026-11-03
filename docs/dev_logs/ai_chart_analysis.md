@@ -1,5 +1,26 @@
 # AI Chart Analysis
 
+### [2026-11-03] - Actual-fill chart markers and price labels
+- **Scope**: Chart display only; no strategy, account state, order or WAIT changes.
+- **Evidence**: The paper record has PEPE `CLOSE_SHORT` at 11:45:00 local,
+  ID `1793677500668`, price `0.00470097`, but retains the original entry
+  confirmation ID `1793670900000`. Prior chart mapping incorrectly preferred
+  that confirmation ID and placed the exit at 09:55 rather than 11:45.
+- **Changes**: Map confirmed trade IDs (Unix milliseconds) to the containing
+  displayed candle, never to signal-confirmation time or a missing/future bar.
+  Invalid IDs/prices are explicitly logged. Include partial closes. Preserve
+  every action and price in same-position grouped labels and retain intercept
+  icons. Restore markers after a full candle-history redraw, even when the
+  marker signature did not change. Unchanged tick-only refreshes remain cached.
+- **Verification**: 11 focused chart tests passed with 4 existing FastAPI
+  deprecation warnings. Tests cover actual-fill provenance, same-bar open/close,
+  partial exits, invalid records, other symbols, out-of-window trades, label
+  prices, intercept icons, history redraw and empty-marker clearing, plus
+  existing chart freshness/cache/error behavior. Browser delivery confirmed the
+  revised label and redraw source is served; backend activation requires restart.
+- **Release authorization**: Owner explicitly selected commit, GitHub push,
+  deployment and 8006 restart for this chart-only correction.
+
 ### [2026-10-16 14:34:48 UTC+8] - Modification Phase: Port chart AI review to the previous branch
 - **Author**: shudgai999 / Copilot SDK
 - **Target Files & Lines**: `core/services/symbol_runner.py:15, 80-141` (`_process_wild_swing_symbol`); `core/vision/chart_guard.py:69, 159, 324` (`DynamicVisionGatekeeper`, chart rendering, AI review); `requirements.txt:9-11`; `.env.example:339-346`; `tests/test_vision_chart_guard.py:29-196`; `tests/test_dynamic_vision_gate.py:15-119`.

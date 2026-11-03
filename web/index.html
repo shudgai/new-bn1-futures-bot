@@ -1047,8 +1047,16 @@
                                     OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣空' },
                                     CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '平多' },
                                     CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '平空' },
+                                    PARTIAL_CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '部分平多' },
+                                    PARTIAL_CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '部分平空' },
                                 }[trade.action];
                                 if (!markerStyle) return;
+                                const fillPrice = Number(trade.price);
+                                if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
+                                    console.warn('CHART_TRADE_MARKER_INVALID', symbol, trade.action);
+                                    return;
+                                }
+                                markerStyle.text += ` @ ${trade.price}`;
                                 
                                 const key = markerStyle.position;
                                 if (positionGroups[key]) {
@@ -1123,7 +1131,7 @@
                     if (candles.length > 0) ctx.lastCandle = candles[candles.length - 1];
                     const chartMarkers = tradeMarkers.sort((a, b) => a.time - b.time);
                     const markerSignature = JSON.stringify(chartMarkers);
-                    if (ctx.markerSignature !== markerSignature) {
+                    if (fullRefresh || ctx.markerSignature !== markerSignature) {
                         ctx.candlestickSeries.setMarkers(chartMarkers);
                         ctx.markerSignature = markerSignature;
                     }
