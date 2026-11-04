@@ -139,6 +139,28 @@ async def enforce_atr_protection(account, symbol, price):
         frame = frame_provider(symbol) if callable(frame_provider) else None
         if frame is None:
             frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
+        from core.gates.ultimate_short_exit_gatekeeper import (
+            UltimateShortExitGatekeeper,
+        )
+        structure_exit_reason = UltimateShortExitGatekeeper.structure_exit_candidate(
+            symbol, position, meta, price, frame,
+        )
+        if structure_exit_reason:
+            account.log(
+                f"KC_STRUCTURE_EXIT symbol={symbol} "
+                f"side={position.get('side')} reason={structure_exit_reason}",
+                "WARNING",
+            )
+            closed = await account.close_position(
+                symbol, price, structure_exit_reason, is_manual=True,
+            )
+            if not closed:
+                account.log(
+                    f"KC_STRUCTURE_EXIT_RETRY_PENDING symbol={symbol} "
+                    f"reason={structure_exit_reason}",
+                    "WARNING",
+                )
+            return bool(closed)
         from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
         pivot = profitable_true_pivot_exit(position, frame, meta, quote=price)
         if pivot is not None:

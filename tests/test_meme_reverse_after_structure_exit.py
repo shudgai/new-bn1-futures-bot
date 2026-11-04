@@ -57,6 +57,13 @@ def test_structure_exit_opens_opposite_side_inside_window(symbol, side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_prefixed_structure_close_reason_opens_reverse_window(side):
+    reason = f"CHANNEL_SWING EXIT_{side}_KC_MIDDLE_MA15_BREAK"
+    mgf.record_position_close("龙虾/USDT", side, reason)
+    assert mgf.reverse_window_side("龙虾/USDT") == OPPOSITE[side]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("reason", ["DISASTER_LOSS_3ATR", "MANUAL", "HARD_STOP_LOSS", "EXIT_BY_EXTREME_WATERFALL"])
 def test_non_structure_exit_does_not_reverse(side, reason):
     mgf.record_position_close("龙虾/USDT", OPPOSITE[side], reason)

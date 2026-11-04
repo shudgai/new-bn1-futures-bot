@@ -41,10 +41,15 @@ _STRUCTURE_EXITS: Dict[str, Tuple[str, float]] = {}
 
 
 def _structure_reverse_reasons() -> frozenset:
-    from core.gates.ultimate_short_exit_gatekeeper import KC_FLIP_EXIT_REASONS, STRUCTURE_EXIT_REASONS
+    from core.gates.ultimate_short_exit_gatekeeper import (
+        KC_FLIP_EXIT_REASONS,
+        KC_MIDDLE_MA15_BREAK_REASONS,
+        STRUCTURE_EXIT_REASONS,
+    )
     from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
     return frozenset(r.upper() for r in (
-        *KC_FLIP_EXIT_REASONS.values(), *STRUCTURE_EXIT_REASONS.values(), *PROFIT_PIVOT_REASONS,
+        *KC_FLIP_EXIT_REASONS.values(), *KC_MIDDLE_MA15_BREAK_REASONS.values(),
+        *STRUCTURE_EXIT_REASONS.values(), *PROFIT_PIVOT_REASONS,
     ))
 
 
@@ -58,7 +63,14 @@ def record_position_close(symbol, closed_side, reason, closed_at: Optional[float
     try:
         key = _reverse_key(symbol)
         side = str(closed_side or "").upper()
-        if side in ("LONG", "SHORT") and str(reason or "").strip().upper() in _structure_reverse_reasons():
+        normalized_reason = str(reason or "").strip().upper()
+        structure_reasons = _structure_reverse_reasons()
+        is_structure_exit = any(
+            normalized_reason == structure_reason
+            or normalized_reason.endswith(f" {structure_reason}")
+            for structure_reason in structure_reasons
+        )
+        if side in ("LONG", "SHORT") and is_structure_exit:
             _STRUCTURE_EXITS[key] = (side, float(closed_at if closed_at is not None else time.time()))
             logger.info("[REVERSE_WINDOW_OPEN] symbol=%s closed_side=%s reason=%s", key, side, reason)
         else:

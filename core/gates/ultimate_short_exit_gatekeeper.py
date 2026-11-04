@@ -32,6 +32,10 @@ STRUCTURE_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_STRUCTURE_BREAK_050ATR",
     "LONG": "EXIT_LONG_STRUCTURE_BREAK_050ATR",
 }
+KC_MIDDLE_MA15_BREAK_REASONS = {
+    "SHORT": "EXIT_SHORT_KC_MIDDLE_MA15_BREAK",
+    "LONG": "EXIT_LONG_KC_MIDDLE_MA15_BREAK",
+}
 DISASTER_LOSS_REASONS = {
     "SHORT": "EXIT_SHORT_DISASTER_LOSS_3ATR",
     "LONG": "EXIT_LONG_DISASTER_LOSS_3ATR",
@@ -76,6 +80,7 @@ def _minute(value: float) -> int:
 
 OWN_STRUCTURE_REASONS = frozenset(
     {"STRUCTURE_EXIT_PROBE", *(r.upper() for r in STRUCTURE_EXIT_REASONS.values()),
+     *(r.upper() for r in KC_MIDDLE_MA15_BREAK_REASONS.values()),
      *(r.upper() for r in KC_FLIP_EXIT_REASONS.values())}
 )
 LEGACY_VERIFIED_DISASTER_REASONS = frozenset({"EXIT_BY_EXTREME_WATERFALL"})
@@ -302,6 +307,26 @@ class UltimateShortExitGatekeeper:
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
 
+        bars_held = bar_minute - _minute(opened)
+        evidence["bars_held"] = bars_held
+        if bars_held < MIN_BARS_HELD:
+            return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
+
+        if normalized in {
+            "STRUCTURE_EXIT_PROBE",
+            *(reason.upper() for reason in KC_MIDDLE_MA15_BREAK_REASONS.values()),
+        }:
+            opposite_body = -sign * (close - fields["open"]) > 0
+            structure_broken = (
+                -sign * (close - kc_mid) > 0
+                and -sign * (close - fields["ma15"]) > 0
+            )
+            if not opposite_body:
+                return hold(f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED")
+            if not structure_broken:
+                return hold(f"VETO_HOLD_{side}_KC_MIDDLE_MA15_NOT_BROKEN")
+            return allow(KC_MIDDLE_MA15_BREAK_REASONS[side])
+
         if live_atr is not None and live_atr > 0:
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
 
@@ -313,11 +338,6 @@ class UltimateShortExitGatekeeper:
                 ):
                     return allow(KC_FLIP_EXIT_REASONS[side])
                 return hold(f"VETO_HOLD_{side}_COST_SHIELD")
-
-        bars_held = bar_minute - _minute(opened)
-        evidence["bars_held"] = bars_held
-        if bars_held < MIN_BARS_HELD:
-            return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
 
         buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
         evidence["structure_line"] = buffer_line

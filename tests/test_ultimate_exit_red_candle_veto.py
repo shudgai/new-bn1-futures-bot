@@ -11,7 +11,10 @@ import time
 import pandas as pd
 import pytest
 
-from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+from core.gates.ultimate_short_exit_gatekeeper import (
+    KC_FLIP_EXIT_REASONS,
+    UltimateShortExitGatekeeper,
+)
 
 UPPER, MIDDLE = 0.004698415, 0.004690765
 ATR = (UPPER - MIDDLE) / 1.5
@@ -64,15 +67,38 @@ def verdict(side, opened, close, prev_ma5=FRESH_PREV_MA5):
 def test_fresh_cross_on_reversal_body_beyond_buffer_authorizes_exit(side):
     result = verdict(side, 0.0046926, 0.0046979)
     assert result.verdict == "ALLOW"
-    assert result.code == f"EXIT_{side}_STRUCTURE_BREAK_050ATR"
+    assert result.code == f"EXIT_{side}_KC_MIDDLE_MA15_BREAK"
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
-def test_stale_cross_holds_even_on_reversal_body_beyond_buffer(side):
-    # PEPE 14:30: MA5 had already been above MA15 since 14:27, so no fresh cross.
-    result = verdict(side, 0.0046926, 0.0046979, prev_ma5=STALE_MA5)
+def test_structure_break_does_not_require_half_atr_or_fresh_ma_cross(side):
+    # A reversal close beyond both structure levels is sufficient even below the
+    # former 0.50 ATR buffer and when MA5 crossed before the current bar.
+    result = verdict(side, 0.0046910, 0.0046920, prev_ma5=STALE_MA5)
+    assert result.verdict == "ALLOW"
+    assert result.code == f"EXIT_{side}_KC_MIDDLE_MA15_BREAK"
+    position = {
+        "side": side,
+        "entry_price": mirror(0.00470653, side),
+        "qty": 1,
+        "open_timestamp": time.time() - 40 * 60,
+    }
+    assert UltimateShortExitGatekeeper.can_execute_exit(
+        "1000PEPE/USDT",
+        position,
+        {},
+        result.code,
+        mirror(0.0046920, side),
+        frame=frame(side, 0.0046910, 0.0046920, STALE_MA5),
+        is_bar_closed=True,
+    )
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_structure_break_must_close_beyond_both_kc_middle_and_ma15(side):
+    result = verdict(side, 0.0046895, 0.0046905)
     assert result.verdict == "HOLD"
-    assert result.code == f"VETO_HOLD_{side}_MA5_MA15_NOT_CROSSED"
+    assert result.code == f"VETO_HOLD_{side}_KC_MIDDLE_MA15_NOT_BROKEN"
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
@@ -84,6 +110,18 @@ def test_position_direction_or_doji_bar_always_holds(side, opened, close):
     result = verdict(side, opened, close)
     assert result.verdict == "HOLD"
     assert result.code == f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_structure_break_still_requires_five_completed_bars(side):
+    result = shield_verdict(
+        side,
+        "STRUCTURE_EXIT_PROBE",
+        0.0,
+        minutes_held=3,
+    )
+    assert result.verdict == "HOLD"
+    assert result.code == "VETO_HOLD_MIN_5_COMPLETED_BARS"
 
 
 def shield_verdict(side, reason, entry_offset_atr, close=0.0046979, prev_mid=ALIGNED_PREV_MID,
@@ -102,7 +140,7 @@ def shield_verdict(side, reason, entry_offset_atr, close=0.0046979, prev_mid=ALI
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
 @pytest.mark.parametrize("reason", [
-    "STRUCTURE_EXIT_PROBE", "EXIT_BY_EXTREME_WATERFALL",
+    "EXIT_BY_EXTREME_WATERFALL",
     "EXIT_SHORT_DISASTER_CLOSED_ABOVE_KC_UPPER", "EXIT_LONG_DISASTER_CLOSED_BELOW_KC_LOWER",
 ])
 @pytest.mark.parametrize("offset", [-0.999, -0.5, 0.0, 0.3, 0.999])
@@ -136,7 +174,7 @@ def test_cost_shield_never_blocks_three_atr_disaster_loss(side):
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
 @pytest.mark.parametrize("offset", [-0.999, 0.0, 0.999])
 def test_kc_flip_with_close_across_middle_releases_cost_shield(side, offset):
-    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", offset, prev_mid=FLIPPED_PREV_MID,
+    result = shield_verdict(side, KC_FLIP_EXIT_REASONS[side], offset, prev_mid=FLIPPED_PREV_MID,
                             older_mids=TURN_HISTORY)
     assert result.verdict == "ALLOW"
     assert result.code == f"EXIT_{side}_KC_FLIP_CLOSED_{'BELOW' if side == 'LONG' else 'ABOVE'}_MIDDLE"
@@ -163,9 +201,14 @@ TURN = dict(prev_mid=FLIPPED_PREV_MID, older_mids=TURN_HISTORY)
     dict(TURN, minutes_held=3),                        # inside the 5-bar protection
 ])
 def test_kc_flip_requires_turn_close_across_and_min_bars(side, kwargs):
-    result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", 0.0, **kwargs)
+    result = shield_verdict(side, KC_FLIP_EXIT_REASONS[side], 0.0, **kwargs)
     assert result.verdict == "HOLD"
-    assert result.code == f"VETO_HOLD_{side}_COST_SHIELD"
+    expected_reason = (
+        "VETO_HOLD_MIN_5_COMPLETED_BARS"
+        if kwargs.get("minutes_held", 40) < 5
+        else f"VETO_HOLD_{side}_COST_SHIELD"
+    )
+    assert result.code == expected_reason
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
