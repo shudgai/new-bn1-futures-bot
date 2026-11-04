@@ -20,15 +20,16 @@ SYMBOLS = ["龙虾/USDT", "CAP/USDT", "1000PEPE/USDT"]
 def test_early_breakout_half_previous_atr_and_lagging_slope(symbol, body, eligible, slope):
     m = market(symbol=symbol)._replace(
         open_price=101.7 - body, low_price=101.7 - body - .01,
-        kc_middle_prev=101 - slope, ma5_prev=101.1,
+        kc_middle_prev=101 - slope, ma5_prev=101.1, ma15_prev=101.0,
     )
     assert MasterGateFunnel.is_early_breakout_long(m) is eligible
     decision = MasterGateFunnel.evaluate_open_long(m)
-    if eligible:
+    if eligible and slope > 0:
         assert decision.can_execute
         assert decision.details["trigger"] == "TRIGGER_1145_EARLY_BREAKOUT"
-    elif slope < 0:
+    elif eligible:
         assert not decision.can_execute
+        assert decision.reason == "BLOCKED_LONG_KC_DIRECTION"
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -38,11 +39,15 @@ def test_early_breakout_half_previous_atr_and_lagging_slope(symbol, body, eligib
     "bias", "chop", "unclosed", "invalid_atr", "cooldown",
 ])
 def test_new_long_triggers_do_not_skip_common_guards(symbol, mode, fault):
-    m = market(symbol=symbol)
+    m = market(symbol=symbol)._replace(kc_middle_prev=100.9, ma5_prev=101.01)
     if mode == "squeeze":
         m = m._replace(open_price=101.2 - 1.4, low_price=99.79, close_price=101.2,
                        quote=101.2, kc_upper=101.1, ma15_curr=100.9, ma5_curr=101,
-                       ma5_prev=100.99)
+                       ma5_prev=100.99, ma15_prev=100.8)
+    if fault == "cooldown":
+        m = m._replace(open_price=99.8, low_price=99.79, close_price=101.2,
+                       quote=101.2, kc_upper=101.1, ma15_curr=100.9, ma5_curr=101,
+                       ma5_prev=100.99, ma15_prev=100.8)
     if fault == "macro":
         m = m._replace(macro_trend="BEARISH")
     elif fault == "quote_middle":
@@ -86,9 +91,9 @@ def test_squeeze_alone_cannot_override_adverse_kc_slope(symbol):
     last, prev = frame.index[-1], frame.index[-2]
     frame.loc[prev, "kc_middle"] = frame.loc[last, "kc_middle"] + .1
     decision = evaluate_meme_entry_frame(frame, symbol, "LONG", frame.iloc[-1]["close"])
-    # Owner 2026-11-03 swing filter: no channel may override a non-trending 3-bar KC middle.
+    # Every channel requires the latest completed KC middle to trend in its direction.
     assert not decision.can_execute
-    assert decision.reason == "BLOCKED_LONG_KC_TREND_NOT_3_BARS"
+    assert decision.reason == "BLOCKED_LONG_KC_DIRECTION"
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -114,7 +119,7 @@ def test_reference_atr_not_signal_candle_atr_controls_new_thresholds(symbol, mod
 @pytest.mark.parametrize("offset,allowed", [(-.000001, True), (0, True), (.000001, False)])
 def test_squeeze_limit_uses_more_extreme_quote_and_close(symbol, offset, allowed):
     m = market(symbol=symbol)._replace(
-        atr=2, kc_middle=100, kc_middle_prev=100, kc_lower=99,
+        atr=2, kc_middle=100, kc_middle_prev=99.9, kc_lower=99,
         kc_upper=100.1, ma15_curr=101.15, ma15_prev=101.15,
         ma5_curr=101.2, ma5_prev=101.19,
         open_price=101.2, close_price=102.6, low_price=101.19,
@@ -133,8 +138,8 @@ def long_frame(mode):
     last, prev = frame.index[-1], frame.index[-2]
     frame.loc[last, "atr"] = 2
     if mode == "early":
-        # Lagging-slope breakouts are now blocked by the 3-bar KC trend filter; keep a rising middle.
-        pass
+        # The previous bar is already MA-aligned; the current KC middle is rising.
+        frame.loc[prev, ["ma5", "ma15"]] = [100.8, 100.6]
     else:
         frame.loc[last, ["open", "low", "kc_upper", "kc_middle", "ma15", "ma5"]] = [
             100.1, 100.09, 101.1, 99.8, 99.9, 100,
@@ -196,11 +201,12 @@ def test_new_authorities_scan_revalidate_and_submit_or_veto(
     snapshot.curr_k, snapshot.prev_k = frame.iloc[-1].to_dict(), frame.iloc[-2].to_dict()
     monkeypatch.setattr(DataPipeline, "calculate_snapshot", staticmethod(lambda *_a, **_k: snapshot))
     result = asyncio.run(ExecutionManager.process_symbol_pipeline(symbol, account, klines_df=frame, quote=quote))
-    if fault:
+    if fault and fault != "cooldown":
         assert result["status"] != "ENTRY_EXECUTED", result
         assert symbol not in account.positions
         assert not account.trades
     else:
+        # A fresh priority pivot/breakout trigger is authorized to bypass cooldown.
         assert result["status"] == "ENTRY_EXECUTED", str(result) + str(account.logs[-10:])
         assert account.positions[symbol]["entry_method_authority"] == MEME_GATE_ENTRY
         assert revalidate_entry_method(frame, symbol=symbol, side="LONG", quote=quote, context=method_context(signal))[0]

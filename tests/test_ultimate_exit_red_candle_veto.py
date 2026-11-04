@@ -185,4 +185,23 @@ def test_kc_flip_waits_for_closed_bar(side):
         {}, "STRUCTURE_EXIT_PROBE", price,
         frame=frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5, older_mids=TURN_HISTORY),
         is_bar_closed=False)
-    assert result.code == f"VETO_HOLD_{side}_COST_SHIELD"
+    assert result.code == "VETO_EXIT_BAR_NOT_CLOSED"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_final_exit_boundary_allows_only_a_fresh_closed_opposite_rail_disaster(side):
+    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+
+    close = 0.004699
+    price = mirror(close, side)
+    position = {
+        "side": side,
+        "entry_price": mirror(0.004710, side),
+        "qty": 1,
+        "open_timestamp": time.time() - 40 * 60,
+    }
+    data = frame(side, 0.004698, close, FRESH_PREV_MA5)
+    assert automated_position_exit_allowed(
+        "1000PEPE/USDT", position, {}, "OPPOSITE_KC_BAND_BREACH",
+        price, frame=data,
+    )

@@ -556,7 +556,7 @@ def test_post_close_reentry_retains_other_vetoes(side, change, reason_fragment):
     index = market.index[-1]
     sign = 1 if side == "LONG" else -1
     if change == "bias":
-        market.loc[index, "ma15"] = quote - sign * 1.3
+        market.loc[index, "ma15"] = quote - sign * 1.51
     elif change == "wick":
         market.loc[index, "high" if side == "LONG" else "low"] = quote + sign
     elif change == "same_bar_exit":

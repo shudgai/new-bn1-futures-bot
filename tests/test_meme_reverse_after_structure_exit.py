@@ -1,9 +1,9 @@
 """Owner 2026-11-03: after a structure exit, the opposite side may open within 3 bars.
 
 Only into a clear trend: KC middle moving that way by >= 0.05 ATR, fewer than 2 MA5/MA15 crosses in
-8 bars, MA5 beyond MA15 and turning that way, a directional candle closed and quoted beyond KC
-middle and MA15, and the anti-chase limits. It is exempt from cooldown, the 3-bar KC/ADX swing
-filter and the macro conflict. Disaster/manual closes never reverse.
+8 bars, MA5 already beyond MA15 on both bars and turning that way, a directional candle closed and
+quoted beyond KC middle and MA15, and the anti-chase limits. It is exempt from cooldown and the
+macro conflict. Disaster/manual closes never reverse.
 """
 
 import pytest
@@ -19,14 +19,14 @@ STRUCTURE_REASON = {
 OPPOSITE = {"LONG": "SHORT", "SHORT": "LONG"}
 
 
-def reverse_snapshot(symbol, side, *, close=100.6, ma5=100.4, middle_prev=100.35, crosses=0):
+def reverse_snapshot(symbol, side, *, close=100.8, ma5=100.7, middle_prev=100.35, crosses=0):
     """Right after a short exit: KC middle already rising, MA5 above MA15, green bar (LONG).
     Macro is still BEARISH and ADX low, so only the reverse channel can pass. SHORT mirrors."""
     f = (lambda p: p) if side == "LONG" else (lambda p: 200 - p)
     upper, lower = (101.5, 99.3) if side == "LONG" else (100.7, 98.5)
     return MarketSnapshot(
         symbol, f(close), f(100.0), f(close), f(max(close, 100.0) + 0.1), f(99.95),
-        f(100.3), f(100.1), f(ma5), f(100.3), f(100.3), f(100.35),
+        f(100.3), f(100.1), f(ma5), f(100.36), f(100.3), f(100.35),
         upper, f(100.45), f(middle_prev), lower, 1.0,
         "BEARISH" if side == "LONG" else "BULLISH", crosses,
         kc_middle_prev2=f(100.6), kc_middle_prev3=f(100.7), adx=10.0,

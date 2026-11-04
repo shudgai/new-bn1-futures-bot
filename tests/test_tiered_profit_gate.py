@@ -53,28 +53,21 @@ def test_midline_reset_requires_post_exit_cross(side):
     assert post_profit_lock_reason(a,'X',closed,side,now+240000) is not None
 
 
-def confirmed_pivot(position):
-    from core.services.exits.strict_true_pivot import store_confirmed_pivot_exit
-
-    reason = (
-        'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT'
-        if position['side'] == 'LONG'
-        else 'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT'
+def verified_lock(position):
+    position.update(
+        breakeven_locked=True,
+        breakeven_price=101.0 if position['side'] == 'LONG' else 99.0,
     )
-    assert store_confirmed_pivot_exit(
-        position,
-        (reason, {'pivot_bar_id': 120_000, 'confirm_bar_id': 180_000}),
-    )
-    return f'{reason} THREE_POINT_PIVOT'
+    return 'EXIT_BY_RATCHET_PROFIT_LOCK'
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_actual_paper_pivot_close_persists_event_and_reload(tmp_path,monkeypatch,side):
+def test_actual_paper_profit_lock_close_persists_event_and_reload(tmp_path,monkeypatch,side):
     import core.paper_account as pm
     monkeypatch.setattr(pm,'STATE_FILE',str(tmp_path/'paper.json'))
     a=pm.PaperAccount();p=position(side);tick(p,.1,61000);tick(p,.075,62000)
     a.positions['CAP/USDT']=p;a.position_meta['CAP/USDT']={STATE_KEY:copy.deepcopy(p[STATE_KEY])}
-    reason = confirmed_pivot(p)
+    reason = verified_lock(p)
     assert asyncio.run(a.close_position(
         'CAP/USDT',100.75 if side=='LONG' else 99.25,reason,is_manual=True,
     ))
@@ -106,7 +99,7 @@ def test_real_testnet_close_only_records_confirmed_event(tmp_path,monkeypatch,fi
     from test_testnet_account import FakeTestnetExchange
     a=tm.BinanceTestnetAccount(FakeTestnetExchange(),state_file=str(tmp_path/'testnet.json'))
     p=position('LONG');tick(p,.1,61000);tick(p,.075,62000)
-    reason = confirmed_pivot(p)
+    reason = verified_lock(p)
     a.positions['CAP/USDT']=p
     a.position_meta['CAP/USDT']={STATE_KEY:copy.deepcopy(p[STATE_KEY])}
     a._cancel_all_orders=AsyncMock()

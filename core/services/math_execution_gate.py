@@ -123,6 +123,7 @@ def validate_entry_math(
     entry_method_authorized = False
     outer_pivot_authorized = False
     meme_authorized = False
+    meme_pivot_authorized = False
     if isinstance(entry_method_context, Mapping):
         from core.services.entry_methods import revalidate_entry_method
 
@@ -141,6 +142,14 @@ def validate_entry_math(
             return False, method_reason
         from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, MEME_GATE_ENTRY
         meme_authorized = entry_method_context.get("entry_method_authority") == MEME_GATE_ENTRY
+        entry_method_signal = entry_method_context.get("entry_method_signal")
+        meme_trigger = (
+            entry_method_signal.get("trigger")
+            if isinstance(entry_method_signal, Mapping) else None
+        )
+        meme_pivot_authorized = meme_authorized and meme_trigger in {
+            "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
+        }
         outer_pivot_authorized = (
             entry_method_context.get("entry_method_authority") == KC_OUTER_PIVOT_REVERSAL
         )
@@ -224,9 +233,15 @@ def validate_entry_math(
         return False, "BLOCKED_LONG_BELOW_MIDLINE_OR_MA15"
     if side == "SHORT" and not is_swing_pivot and not allow_override and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
-    if side == "LONG" and allow_override and not outer_pivot_authorized and close < latest_middle - retest_buffer:
+    if (
+        side == "LONG" and allow_override and not outer_pivot_authorized
+        and not meme_pivot_authorized and close < latest_middle - retest_buffer
+    ):
         return False, "BLOCKED_LONG_BELOW_MIDLINE"
-    if side == "SHORT" and allow_override and not outer_pivot_authorized and close > latest_middle + retest_buffer:
+    if (
+        side == "SHORT" and allow_override and not outer_pivot_authorized
+        and not meme_pivot_authorized and close > latest_middle + retest_buffer
+    ):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE"
 
     if is_dip_sniper or is_meme_hunter or allow_override:

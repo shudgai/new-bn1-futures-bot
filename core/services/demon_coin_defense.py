@@ -44,8 +44,8 @@ class DemonCoinDefenseConfig:
     time_exit_enabled: bool = False
 
     # 1. 冷卻期參數
-    cooldown_bars: int = 4                # 平倉後凍結 K 棒數 (預設 4 根，1m 週期下約 240 秒)
-    cooldown_seconds: float = 240.0       # 時間維度冷卻秒數保底
+    cooldown_bars: int = 2                # 平倉後凍結 K 棒數 (1m 週期下約 120 秒)
+    cooldown_seconds: float = 120.0       # 時間維度冷卻秒數保底
 
     # 2. 多空門檻不對稱與量能確認
     vol_ma_period: int = 20               # 成交量均線週期

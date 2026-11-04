@@ -107,29 +107,42 @@ def _cost_shield_distance_atr(
     return sign * (quote - entry) / meme_distance_atr(symbol, raw_atr)
 
 
-def _kc_flip_release(side: str, closed: Any, opened: float, is_bar_closed: Any,
-                     current_time: float) -> bool:
+def _kc_flip_release(
+    symbol: str, side: str, closed: Any, opened: float, is_bar_closed: Any,
+    current_time: float,
+) -> bool:
     """Confirmed turn on a fresh completed bar (Owner 2026-11-03, pullbacks keep holding):
     KC middle moved against the side on each of the last KC_FLIP_TURN_BARS completed bars,
-    MA5 is beyond MA15 against the side, and the close is across the KC middle."""
+    and the normal 0.50 ATR / fresh MA5-MA15 / opposite-body exit lock also passes."""
     if is_bar_closed is False or closed is None or len(closed) < KC_FLIP_TURN_BARS + 1:
         return False
     current = closed.iloc[-1]
+    previous = closed.iloc[-2]
     stamp = _float(current.get("timestamp"))
+    opened_bar = _float(current.get("open"))
     close = _float(current.get("close"))
     ma5, ma15 = _float(current.get("ma5")), _float(current.get("ma15"))
+    ma5_prev, ma15_prev = _float(previous.get("ma5")), _float(previous.get("ma15"))
+    atr = _float(previous.get("atr"))
     mids = [_float(closed.iloc[i].get("kc_middle")) for i in range(-KC_FLIP_TURN_BARS - 1, 0)]
-    values = [stamp, close, ma5, ma15, *mids]
+    middle = _float(current.get("kc_middle"))
+    values = [stamp, opened_bar, close, ma5, ma15, ma5_prev, ma15_prev, atr, middle, *mids]
     if any(v is None for v in values) or min(values) <= 0:
         return False
     bar_minute = _minute(stamp)
     if bar_minute != int(current_time // 60) - 1 or bar_minute - _minute(opened) < MIN_BARS_HELD:
         return False
+    from core.gates.master_gate_funnel import meme_distance_atr
+
     sign = 1 if side == "LONG" else -1
+    buffer_line = middle - sign * STRUCTURE_BUFFER_ATR * meme_distance_atr(symbol, atr)
     return (
         all(-sign * (later - earlier) > 0 for earlier, later in zip(mids, mids[1:]))
+        and -sign * (close - buffer_line) > 0
+        and -sign * (close - opened_bar) > 0
+        and -sign * (ma5_prev - ma15_prev) <= 0
         and -sign * (ma5 - ma15) > 0
-        and -sign * (close - mids[-1]) > 0
+        and -sign * (ma5 - ma5_prev) > 0
     )
 
 
@@ -215,14 +228,6 @@ class UltimateShortExitGatekeeper:
             evidence["loss_atr"] = round(loss_atr, 4)
             if loss_atr > DISASTER_LOSS_ATR:
                 return allow(DISASTER_LOSS_REASONS[side])
-            from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
-            if abs(loss_atr) <= COST_SHIELD_ATR and normalized not in PROFIT_PIVOT_REASONS and not any(
-                    token in normalized for token in COST_SHIELD_EXEMPT_TOKENS):
-                current_time = time.time() if now is None else float(now)
-                if normalized in OWN_STRUCTURE_REASONS and _kc_flip_release(
-                        side, closed, opened, is_bar_closed, current_time):
-                    return allow(KC_FLIP_EXIT_REASONS[side])
-                return hold(f"VETO_HOLD_{side}_COST_SHIELD")
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
         current, previous = closed.iloc[-1], closed.iloc[-2]
@@ -254,6 +259,18 @@ class UltimateShortExitGatekeeper:
         if (side == "SHORT" and close > fields["kc_upper"]) or (
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
+
+        if live_atr is not None and live_atr > 0:
+            from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
+
+            if abs(loss_atr) <= COST_SHIELD_ATR and normalized not in PROFIT_PIVOT_REASONS and not any(
+                token in normalized for token in COST_SHIELD_EXEMPT_TOKENS
+            ):
+                if normalized in OWN_STRUCTURE_REASONS and _kc_flip_release(
+                    symbol, side, closed, opened, is_bar_closed, current_time,
+                ):
+                    return allow(KC_FLIP_EXIT_REASONS[side])
+                return hold(f"VETO_HOLD_{side}_COST_SHIELD")
 
         bars_held = bar_minute - _minute(opened)
         evidence["bars_held"] = bars_held

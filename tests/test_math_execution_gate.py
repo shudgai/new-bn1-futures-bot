@@ -118,7 +118,11 @@ def test_execution_entry_validation_prefers_fresh_market_frame_over_signal_cache
     ))
     assert not allowed
     # Either block proves the fresh (falling-middle) frame was used instead of the cached one.
-    assert reason in ("BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP", "BLOCKED_LONG_KC_TREND_NOT_3_BARS")
+    assert reason in (
+        "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+        "BLOCKED_LONG_KC_TREND_NOT_3_BARS",
+        "BLOCKED_LONG_KC_DIRECTION",
+    )
 
 
 def test_exit_math_true_peak_and_middle_trend_hold_veto():

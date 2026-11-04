@@ -21,10 +21,13 @@ def early_frame(side):
     now = int(time.time() // 60) * 60_000
     frame["timestamp"] += now - 60_000 - int(frame.iloc[-1]["timestamp"])
     frame.attrs["snapshot_ms"] = time.time() * 1000
-    frame.loc[frame.index[-2], ["ma5", "kc_middle", "atr"]] = [100.7, 100.8, 2.0]
+    previous_ma15 = float(frame.iloc[-2]["ma15"])
+    frame.loc[frame.index[-2], ["ma5", "kc_middle", "atr"]] = [
+        previous_ma15 + .1, 100.8, 2.0,
+    ]
     frame.loc[frame.index[-2], ["kc_upper", "kc_lower"]] = [103.0, 98.8]
     frame.loc[frame.index[-1], ["open", "high", "low", "close", "ma5", "ma15", "kc_middle", "kc_upper", "kc_lower"]] = [
-        100, 101.6, 99.9, 101.5, 101.0, 100.95, 100.9, 103, 98.8,
+        100, 101.6, 99.9, 101.5, 101.2, 100.95, 100.9, 103, 98.8,
     ]
     if side == "SHORT":
         for key in ("open", "close", "ma5", "ma15", "kc_middle"):
@@ -77,7 +80,7 @@ def test_single_closed_impulse_has_no_intrabar_or_direction_bypass(side, symbol,
         frame, quote=quote, symbol=symbol, expected_method=KC_EARLY_MIDLINE_BREAK,
         last_exit_timestamp=closed_at,
     )
-    expected = fault is None or fault == "flat_kc"
+    expected = fault is None
     assert (signal is not None) is expected
     if signal:
         assert signal["side"] == side
@@ -139,7 +142,7 @@ def test_shared_executor_full_account_open_uses_early_authority(
     quote = float(frame.iloc[-1]["close"])
     fresh_frame = frame.copy()
     if fault == "fresh_bias":
-        fresh_frame.loc[fresh_frame.index[-1], "ma15"] = quote - (2.01 if side == "LONG" else -2.01)
+        fresh_frame.loc[fresh_frame.index[-1], "ma15"] = quote - (3.01 if side == "LONG" else -3.01)
     if forming:
         row = frame.iloc[-1].to_dict()
         row.update(timestamp=row["timestamp"] + 60_000, is_closed=False, open=quote)

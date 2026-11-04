@@ -222,7 +222,7 @@ def test_final_entry_math_revalidates_swing_pivot_before_its_direction_override(
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_true_peak_or_valley_exits_without_waiting_for_midline(side, monkeypatch):
+def test_confirmed_true_peak_or_valley_holds_without_kc_direction_reversal(side, monkeypatch):
     from core.gates.unified_pipeline_gates import ExitGate
     base = 1_700_000_000_000
 
@@ -253,6 +253,7 @@ def test_confirmed_true_peak_or_valley_exits_without_waiting_for_midline(side, m
     frame = pd.DataFrame(rows)
     frame["is_closed"] = True
     frame.attrs["timeframe_ms"] = 60_000
+    frame.attrs["snapshot_ms"] = base + 240_000
     position = _position(side)
     position["open_timestamp"] = base / 1000.0
 
@@ -272,14 +273,13 @@ def test_confirmed_true_peak_or_valley_exits_without_waiting_for_midline(side, m
         position, {"raw_df": frame, "current_price": float(frame.iloc[-1].close), "atr": 1.0},
     )
 
-    assert should_exit is True
-    assert reason == expected_reason
-    from core.services.math_execution_gate import validate_exit_math
-    allowed, math_reason, _ = validate_exit_math(
-        position, frame, float(frame.iloc[-1].close),
-        close_reason=reason, now_ms=base + 180_000,
+    assert should_exit is False
+    assert reason == "VETO_HOLD"
+    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+    assert not automated_position_exit_allowed(
+        "CAP/USDT", position, {}, expected_reason, float(frame.iloc[-1].close),
+        frame=frame,
     )
-    assert allowed, math_reason
 
 
 def test_confirmed_pivot_without_wave_gain_remains_held(monkeypatch):
@@ -299,7 +299,7 @@ def test_confirmed_pivot_without_wave_gain_remains_held(monkeypatch):
     frame["is_closed"] = True
     frame.attrs["timeframe_ms"] = 60_000
     position = _position("LONG")
-    position["entry_price"] = 103.9
+    position["entry_price"] = 103.6
     position["open_timestamp"] = base / 1000.0
     monkeypatch.setattr(
         ExitGate, "_evaluate_with_holding_rules",

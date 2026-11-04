@@ -10,6 +10,7 @@ core/services/execution_manager.py
   2. 若有持倉：只問 ExitGate -> 若觸發則呼叫 broker.close_position
   3. 若無持倉：只問 EntryGate -> 若通過則呼叫 broker.open_position
 """
+import asyncio
 import logging
 import math
 import time
@@ -406,6 +407,7 @@ class ExecutionManager:
     """唯一開平倉執行通道與標準流水線協調器"""
     _symbol_macro_trend: Dict[str, str] = {}
     _symbol_key_pivot: Dict[str, float] = {}
+    _position_flip_locks: Dict[str, asyncio.Lock] = {}
 
     @classmethod
     async def _evaluate_closed_entry_methods(
@@ -1003,11 +1005,33 @@ class ExecutionManager:
                         account=account, symbol=symbol, price=curr_quote,
                         reason=structure_reason, meta={"raw_df": raw_df, "is_bar_closed": True},
                     )
+                    flip = None
+                    if success and symbol not in getattr(account, "positions", {}):
+                        flip = await cls._try_structure_position_flip(
+                            account=account,
+                            symbol=symbol,
+                            position_side=pos_side,
+                            frame=raw_df,
+                            quote=curr_quote,
+                            macro_trend=getattr(market_data, "macro_trend", None),
+                        )
+                    if flip and flip.get("success"):
+                        return {
+                            "status": "SUCCESS_FLIP",
+                            "symbol": symbol,
+                            "side": flip["side"],
+                            "reason": flip["reason"],
+                            "success": True,
+                        }
                     return {
                         "status": "EXIT_EXECUTED" if success else "HOLD",
                         "symbol": symbol,
                         "reason": structure_reason if success else "EXIT_BLOCKED_HOLD:" + structure_reason,
                         "success": success,
+                        **(
+                            {"flip_status": "VETO", "flip_reason": flip["reason"]}
+                            if flip else {}
+                        ),
                     }
 
             # 審查 ExitGate 是否觸發鎖利 (Profit Lock)、大瀑布 (Extreme Waterfall)、市場熔斷 (Circuit Breaker)
@@ -3795,10 +3819,20 @@ class ExecutionManager:
                 # 順勢突破或多頭/空頭排列時豁免平倉冷卻
                 is_bull_breakout_stage32 = bool((is_zoomed_out_bullish or macro_trend == "BULLISH") and (curr_quote > m15_curr or market_data.curr_k.get("close", 0) > market_data.kc_upper))
                 is_bear_breakdown_stage32 = bool((is_zoomed_out_bearish or macro_trend == "BEARISH") and (curr_quote < m15_curr or market_data.curr_k.get("close", 0) < market_data.kc_lower))
-                if elapsed_sec < min_cooldown_sec and not (is_bull_breakout_stage32 or is_bear_breakdown_stage32):
+                has_meme_priority_entry = bool(meme_priority_entry)
+                if elapsed_sec < min_cooldown_sec and not (
+                    is_bull_breakout_stage32 or is_bear_breakdown_stage32
+                    or has_meme_priority_entry
+                ):
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後 {min_cooldown_sec:.0f} 秒防雙巴保護中 ({elapsed_sec:.1f}s)")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
-                if not is_opposite_reversal_ready and not is_strong_breakout and not (is_bull_breakout_stage32 or is_bear_breakdown_stage32) and elapsed_sec < 120:
+                if (
+                    not is_opposite_reversal_ready
+                    and not is_strong_breakout
+                    and not (is_bull_breakout_stage32 or is_bear_breakdown_stage32)
+                    and not has_meme_priority_entry
+                    and elapsed_sec < 120
+                ):
                     logger.debug(f"⏳ [COOLDOWN] {symbol} 平倉後防翻轉冷卻中: 剩餘 {120 - elapsed_sec:.1f} 秒")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_EXIT_COOLDOWN"}
 
@@ -4028,7 +4062,7 @@ class ExecutionManager:
                     or (candidate_side == "SHORT" and kc_slope < 0 and curr_close < kc_mid_val and entry_ma5_curr < kc_mid_val and curr_close < curr_open)
                 )
                 passed_cd, cd_msg = DemonCoinDefenseController.check_entry_cooldown(symbol, candidate_side)
-                if not passed_cd and not is_trend_confirmed_break:
+                if not passed_cd and not is_trend_confirmed_break and not meme_priority_entry:
                     logger.info(f"⏳ [DEMON_DEFENSE_COOLDOWN] {symbol} {candidate_side} 開倉遭攔截: {cd_msg}")
                     return {"status": "VETO", "symbol": symbol, "reason": "VETO_COOLDOWN_FROZEN", "details": cd_msg}
 
@@ -4400,6 +4434,115 @@ class ExecutionManager:
         return f"{acc_id}:{symbol}"
 
     @classmethod
+    async def _try_structure_position_flip(
+        cls,
+        account: Any,
+        symbol: str,
+        position_side: str,
+        frame: Any,
+        quote: float,
+        macro_trend: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Re-evaluate and enter the opposite side only after a confirmed close is flat."""
+        from core.gates.master_gate_funnel import (
+            MasterGateFunnel, market_snapshot_from_frame,
+        )
+        from core.services.candle_data import closed_entry_candles
+
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return None
+        try:
+            snapshot = market_snapshot_from_frame(frame, symbol, quote, macro_trend)
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError) as exc:
+            logger.info("POSITION_FLIP_DATA_BLOCK symbol=%s error=%s", symbol, exc)
+            return None
+        candidate = MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
+        if candidate is None:
+            return None
+        target_side, trigger = candidate
+        if symbol in getattr(account, "positions", {}):
+            return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
+        location_veto = MasterGateFunnel.pivot_kc_location_veto(snapshot, target_side)
+        if location_veto:
+            logger.info(
+                "POSITION_FLIP_ENTRY_VETO symbol=%s side=%s trigger=%s reason=%s",
+                symbol, target_side, trigger, location_veto,
+            )
+            return {"success": False, "side": target_side, "reason": location_veto}
+        gate = (
+            MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
+            if target_side == "LONG"
+            else MasterGateFunnel.evaluate_open_short(snapshot, is_in_cooldown=True)
+        )
+        if not gate.can_execute:
+            logger.info(
+                "POSITION_FLIP_ENTRY_VETO symbol=%s side=%s trigger=%s reason=%s",
+                symbol, target_side, trigger, gate.reason,
+            )
+            return {"success": False, "side": target_side, "reason": gate.reason}
+
+        account_key = cls._get_account_key(account, symbol)
+        lock = cls._position_flip_locks.setdefault(account_key, asyncio.Lock())
+        async with lock:
+            if symbol in getattr(account, "positions", {}):
+                return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
+            current_gate = (
+                MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
+                if target_side == "LONG"
+                else MasterGateFunnel.evaluate_open_short(snapshot, is_in_cooldown=True)
+            )
+            if not current_gate.can_execute:
+                return {
+                    "success": False, "side": target_side,
+                    "reason": current_gate.reason,
+                }
+            recent_entries = [
+                stamp for stamp in cls._hourly_entry_records.get(
+                    account_key, cls._hourly_entry_records.get(symbol, []),
+                )
+                if time.time() - stamp < 3600.0
+            ]
+            if len(recent_entries) >= cls.MAX_ENTRIES_PER_HOUR:
+                return {
+                    "success": False, "side": target_side,
+                    "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED",
+                }
+            entry_meta = {
+                "side": target_side,
+                "entry_type": "STRUCTURE_REVERSAL",
+                "entry_pattern": "CROSSOVER",
+                "candidate_signal_type": f"ENTRY_STRUCTURE_REVERSAL_{target_side}",
+                "structure_confirmation": "MA_CROSSOVER",
+                "trigger": trigger,
+                "raw_df": frame,
+                "atr": snapshot.atr,
+                "macro_trend": snapshot.macro_trend,
+                "bar_timestamp": int(closed_entry_candles(frame).iloc[-1]["timestamp"]),
+            }
+            order_accepted = await cls.open_position(
+                engine_or_account=account,
+                symbol=symbol,
+                side=target_side,
+                price=quote,
+                reason=f"StructureReversal:{trigger}",
+                meta=entry_meta,
+            )
+            opened_position = getattr(account, "positions", {}).get(symbol)
+            opened = bool(
+                order_accepted and isinstance(opened_position, dict)
+                and str(opened_position.get("side") or "").upper() == target_side
+            )
+            logger.info(
+                "POSITION_FLIP_%s symbol=%s from=%s to=%s trigger=%s",
+                "FILLED" if opened else "REJECTED",
+                symbol, position_side, target_side, trigger,
+            )
+            return {
+                "success": bool(opened), "side": target_side,
+                "reason": trigger if opened else "POSITION_FLIP_ENTRY_REJECTED",
+            }
+
+    @classmethod
     async def close_position(
         cls,
         account: Any,
@@ -4734,6 +4877,7 @@ class ExecutionManager:
                 entry_context["entry_gate_frame"] = frame
                 entry_context["frame"] = frame
                 entry_context["raw_df"] = frame
+                entry_context["entry_gate_quote"] = float(price)
 
             # 🛑 2026-11-01 執行邊界物理總閘門：開多必綠K、開空必紅K，嚴禁任何反向K棒或盤中逆向開倉
             if frame is not None and isinstance(frame, pd.DataFrame) and len(frame) >= 1:

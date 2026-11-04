@@ -203,7 +203,7 @@ def test_exit_gate_suppresses_legacy_profit_exit_until_trend_lock(monkeypatch):
     position = {"side": "LONG", "entry_price": 100.0, "open_timestamp": 0.0}
     market_data = {"current_price": 101.5, "raw_df": frame}
     monkeypatch.setattr(
-        gates.ExitGate, "_evaluate_with_holding_rules",
+        gates.ExitGate, "_evaluate_core",
         staticmethod(lambda *args, **kwargs: (
             True, "EXIT_BY_FIXED_ATR_TAKE_PROFIT", {"atr_multiple": 1.5},
         )),
@@ -218,7 +218,7 @@ def test_exit_gate_keeps_emergency_result(monkeypatch):
     from core.gates import unified_pipeline_gates as gates
 
     monkeypatch.setattr(
-        gates.ExitGate, "_evaluate_with_holding_rules",
+        gates.ExitGate, "_evaluate_core",
         staticmethod(lambda *args, **kwargs: (
             True, "EXIT_BY_EXTREME_WATERFALL", {"emergency": True},
         )),

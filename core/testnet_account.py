@@ -2905,10 +2905,33 @@ class BinanceTestnetAccount:
             from core.services.reverse_entry_cooldown_lock import (
                 check_same_direction_reentry_cooldown,
             )
+            cooldown_seconds = 120.0
+            gate_frame = entry_context.get("entry_gate_frame")
+            gate_quote = entry_context.get("entry_gate_quote", price)
+            from core.symbol_aliases import is_meme_breakout_symbol
+            if is_meme_breakout_symbol(symbol) and gate_frame is not None:
+                try:
+                    from core.gates.master_gate_funnel import (
+                        MasterGateFunnel,
+                        market_snapshot_from_frame,
+                    )
+
+                    market_snapshot = market_snapshot_from_frame(
+                        gate_frame, symbol, float(gate_quote),
+                    )
+                    if MasterGateFunnel.has_valid_priority_entry(
+                        market_snapshot, side.upper(),
+                    ):
+                        cooldown_seconds = 0.0
+                except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError) as exc:
+                    self.log(
+                        f"[SAME_DIRECTION_COOLDOWN] {symbol} priority re-entry check failed closed: {exc}",
+                        "WARNING",
+                    )
             same_dir_allowed, same_dir_reason = check_same_direction_reentry_cooldown(
                 target_action=target_action,
                 last_closed_trade=last_trade,
-                cooldown_seconds=120.0,
+                cooldown_seconds=cooldown_seconds,
             )
             if not same_dir_allowed:
                 self.log(

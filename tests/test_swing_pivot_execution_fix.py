@@ -25,7 +25,7 @@ def test_swing_pivot_execution_with_stop_loss_resolution():
                  ma3=99.0, ma5=99.0, ma15=99.5, kc_upper=105.0, kc_middle=100.0, kc_lower=95.0, is_closed=True),
             # confirm bar (bounce up, close > pivot_mid 99.25, body >= 0.35, ma3 > kc_middle)
             dict(timestamp=180_000, open=98.5, high=101.5, low=98.0, close=101.0, atr=1.0,
-                 ma3=100.5, ma5=100.0, ma15=100.0, kc_upper=114.0, kc_middle=100.1, kc_lower=94.0, is_closed=True),
+                 ma3=100.5, ma5=100.2, ma15=100.0, kc_upper=114.0, kc_middle=100.1, kc_lower=94.0, is_closed=True),
         ]
         df = pd.DataFrame(bars)
         df.attrs["timeframe_ms"] = 60_000.0
