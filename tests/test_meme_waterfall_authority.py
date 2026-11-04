@@ -11,6 +11,7 @@ import pytest
 
 from core.gates.unified_pipeline_gates import ExitGate
 from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
+from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
 from core.services.exits.authorized_position_exit import UltimateExitGatekeeper
 from core.services.execution_manager import ExecutionManager
 from core.services.math_execution_gate import validate_exit_math
@@ -51,6 +52,31 @@ def test_inclusive_waterfall_uses_previous_atr_not_live_or_entry_price(
     ) is allowed
     pos["entry_price"] = quote
     assert (live_adverse_waterfall_evidence(pos, frame, quote) is not None) is allowed
+
+
+@pytest.mark.parametrize("symbol", SYMBOLS)
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("reason", [
+    "EXIT_BY_EXTREME_WATERFALL",
+    "Channel Swing EXIT_ADVERSE_ABNORMAL_BODY WATERFALL_DROP",
+])
+def test_verified_live_waterfall_bypasses_cost_shield_and_closed_bar_wait(
+    symbol, side, reason, monkeypatch,
+):
+    pos, frame, quote = scenario(side, symbol, monkeypatch, body=3)
+    pos["entry_price"] = quote
+
+    verdict = UltimateShortExitGatekeeper.evaluate(
+        symbol, pos, {}, reason, quote, frame=frame, is_bar_closed=False,
+    )
+
+    assert verdict.verdict == "ALLOW"
+    assert verdict.code == "EXIT_BY_EXTREME_WATERFALL"
+    assert verdict.evidence["body"] == 3
+    assert verdict.evidence["kc_middle"] == 100
+    assert UltimateExitGatekeeper.can_execute_exit(
+        symbol, pos, {}, reason, quote, frame=frame, is_bar_closed=False,
+    )
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -152,6 +178,36 @@ def test_real_full_partial_boundaries_and_main_obey_shared_authority(
             assert not exchange.orders
     else:
         assert account.trades
+
+
+@pytest.mark.parametrize("symbol", SYMBOLS)
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("account_type", ["paper", "testnet"])
+def test_live_waterfall_closes_inside_cost_shield_before_bar_close(
+    symbol, side, account_type, monkeypatch, tmp_path,
+):
+    from core.paper_account import PaperAccount
+    from core.testnet_account import BinanceTestnetAccount
+    from test_testnet_account import FakeTestnetExchange
+
+    pos, frame, quote = scenario(side, symbol, monkeypatch, body=3)
+    pos["entry_price"] = quote
+    if account_type == "paper":
+        monkeypatch.setattr("core.paper_account.STATE_FILE", str(tmp_path / "paper.json"))
+        account = PaperAccount()
+    else:
+        exchange = FakeTestnetExchange()
+        account = BinanceTestnetAccount(exchange, state_file=str(tmp_path / "testnet.json"))
+        account.refresh = AsyncMock()
+    account.positions[symbol] = pos
+    account.position_meta[symbol] = dict(pos)
+    account._channel_exit_frames = {symbol: frame}
+
+    assert asyncio.run(account.close_position(
+        symbol, quote, "Channel Swing EXIT_ADVERSE_ABNORMAL_BODY WATERFALL_DROP",
+    ))
+    assert not account.positions
+    assert account.trades
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)

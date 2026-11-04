@@ -83,34 +83,13 @@ OWN_STRUCTURE_REASONS = frozenset(
      *(r.upper() for r in KC_MIDDLE_MA15_BREAK_REASONS.values()),
      *(r.upper() for r in KC_FLIP_EXIT_REASONS.values())}
 )
-LEGACY_VERIFIED_DISASTER_REASONS = frozenset({"EXIT_BY_EXTREME_WATERFALL"})
+WATERFALL_EXIT_TOKENS = (
+    "EXIT_BY_EXTREME_WATERFALL", "WATERFALL_DROP", "LIVE_ADVERSE_WATERFALL",
+)
 OWN_DISASTER_REASONS = frozenset(
     r.upper() for r in (*DISASTER_LOSS_REASONS.values(), *DISASTER_RAIL_REASONS.values())
 )
 ORDINARY_PULLBACK_EXIT_TOKENS = ("PULLBACK", "RETRACE", "RETRACEMENT")
-
-
-def _cost_shield_distance_atr(
-    symbol: str, position: Mapping[str, Any], price: Any, frame: Any,
-) -> Optional[float]:
-    """Signed favourable distance (ATR) of the quote from entry; None if unknown."""
-    from core.gates.master_gate_funnel import meme_distance_atr
-
-    side = str(position.get("side") or "").upper()
-    quote, entry = _float(price), _float(position.get("entry_price"))
-    if side not in ("LONG", "SHORT") or not quote or not entry or quote <= 0 or entry <= 0:
-        return None
-    try:
-        closed = closed_entry_candles(frame) if frame is not None else None
-    except Exception:
-        return None
-    if closed is None or len(closed) < 1:
-        return None
-    raw_atr = _float(closed.iloc[-1].get("atr"))
-    if raw_atr is None or raw_atr <= 0:
-        return None
-    sign = 1 if side == "LONG" else -1
-    return sign * (quote - entry) / meme_distance_atr(symbol, raw_atr)
 
 
 def _kc_flip_turn_candidate(symbol: str, side: str, closed: Any, current_time: float) -> bool:
@@ -207,16 +186,25 @@ class UltimateShortExitGatekeeper:
                 logger.info("[UI_DISPLAY: 續抱] symbol=%s reason=%s", symbol, code)
             return ExitVerdict(HOLD, code, evidence)
 
+        if any(token in normalized for token in WATERFALL_EXIT_TOKENS):
+            from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
+
+            waterfall_evidence = live_adverse_waterfall_evidence(
+                position, frame, price,
+            )
+            if waterfall_evidence is None:
+                return hold("VETO_WATERFALL_LIVE_BODY_OR_STRUCTURE_NOT_CONFIRMED")
+            waterfall_evidence.update({"symbol": symbol, "reason": reason})
+            logger.warning(
+                "[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=EXIT_BY_EXTREME_WATERFALL "
+                "body=%s atr=%s quote=%s kc_middle=%s",
+                symbol, side, waterfall_evidence["body"], waterfall_evidence["atr"],
+                waterfall_evidence["quote"], waterfall_evidence["kc_middle"],
+            )
+            return ExitVerdict(ALLOW, "EXIT_BY_EXTREME_WATERFALL", waterfall_evidence)
+
         if any(token in normalized for token in ORDINARY_PULLBACK_EXIT_TOKENS):
             return hold("VETO_HOLD_ORDINARY_PULLBACK_UNTIL_STRUCTURE_BREAK")
-
-        if normalized in LEGACY_VERIFIED_DISASTER_REASONS:
-            shield = _cost_shield_distance_atr(symbol, position, price, frame)
-            if shield is not None and abs(shield) <= COST_SHIELD_ATR:
-                evidence["cost_distance_atr"] = round(shield, 4)
-                return hold(f"VETO_HOLD_{side}_COST_SHIELD")
-            # Disaster class: only the existing math-verified live waterfall proof may authorize it.
-            return ExitVerdict(DEFER, "VERIFIED_WATERFALL_MATH_PROOF_REQUIRED", {})
 
         def allow(code: str) -> ExitVerdict:
             if normalized not in OWN_STRUCTURE_REASONS | OWN_DISASTER_REASONS:

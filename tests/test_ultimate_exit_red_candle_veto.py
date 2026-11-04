@@ -148,7 +148,12 @@ def test_cost_shield_holds_strategy_and_waterfall_exits_near_entry(side, reason,
     # 1000PEPE 2026-11-03 17:24: waterfall bar while quote was still at cost.
     result = shield_verdict(side, reason, offset)
     assert result.verdict == "HOLD"
-    assert result.code == f"VETO_HOLD_{side}_COST_SHIELD"
+    expected = (
+        "VETO_WATERFALL_LIVE_BODY_OR_STRUCTURE_NOT_CONFIRMED"
+        if reason == "EXIT_BY_EXTREME_WATERFALL"
+        else f"VETO_HOLD_{side}_COST_SHIELD"
+    )
+    assert result.code == expected
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
@@ -158,7 +163,8 @@ def test_cost_shield_releases_beyond_one_atr(side, offset):
     assert result.code != f"VETO_HOLD_{side}_COST_SHIELD"
     assert result.verdict == "ALLOW"
     waterfall = shield_verdict(side, "EXIT_BY_EXTREME_WATERFALL", offset)
-    assert waterfall.verdict == "DEFER"
+    assert waterfall.verdict == "HOLD"
+    assert waterfall.code == "VETO_WATERFALL_LIVE_BODY_OR_STRUCTURE_NOT_CONFIRMED"
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
