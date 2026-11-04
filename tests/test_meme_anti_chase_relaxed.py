@@ -20,8 +20,8 @@ def mirror(side, value):
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("bias_atr,allowed", [(1.4, True), (1.5, True), (1.5005, False)])
-def test_ordinary_entry_ma15_limit_is_1_5_atr(symbol, side, bias_atr, allowed):
+@pytest.mark.parametrize("bias_atr,allowed", [(0.9995, True), (1.0, True), (1.0005, False)])
+def test_ordinary_entry_ma15_limit_is_1_atr(symbol, side, bias_atr, allowed):
     m = market(side, symbol)
     sign = 1 if side == "LONG" else -1
     m = m._replace(quote=m.ma15_curr + sign * bias_atr * m.atr)
@@ -33,13 +33,14 @@ def test_ordinary_entry_ma15_limit_is_1_5_atr(symbol, side, bias_atr, allowed):
         assert decision.reason == f"BLOCKED_{side}_MA15_EXTENSION_1_ATR"
 
 
-def big_body(side, symbol, open_bias_atr, band_gap_atr=0.0):
+def big_body(side, symbol, extreme_bias_atr, band_gap_atr=0.0):
     # Body 0.9 ATR from 101.2 to 103.0; rail at 101.5 unless the open is placed beyond it.
     upper = 101.5 if band_gap_atr == 0 else 101.2 - band_gap_atr * 2
     data = dict(
         open_price=101.2, close_price=103.0, quote=103.0, high_price=103.05, low_price=101.15,
         kc_upper=upper, kc_middle=100.0, kc_middle_prev=99.9, kc_lower=98.5,
-        ma15_curr=101.2 - open_bias_atr * 2, ma15_prev=101.2 - open_bias_atr * 2 - .01,
+        ma15_curr=103.0 - extreme_bias_atr * 2,
+        ma15_prev=103.0 - extreme_bias_atr * 2 - .01,
         ma5_curr=101.5, ma5_prev=101.4,
     )
     m = market("LONG", symbol, **data)
@@ -57,9 +58,9 @@ def big_body(side, symbol, open_bias_atr, band_gap_atr=0.0):
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("open_bias_atr,allowed", [(1.3, True), (1.99, True), (2.0005, False)])
-def test_big_body_breakout_measures_2_atr_from_open(symbol, side, open_bias_atr, allowed):
-    m = big_body(side, symbol, open_bias_atr)
+@pytest.mark.parametrize("extreme_bias_atr,allowed", [(0.9995, True), (1.0, True), (1.0005, False)])
+def test_big_body_breakout_respects_1_atr_ma15_extension(symbol, side, extreme_bias_atr, allowed):
+    m = big_body(side, symbol, extreme_bias_atr)
     assert MasterGateFunnel.is_big_body_breakout(m, side)
     decision = evaluate(m, side)
     assert decision.can_execute is allowed, decision

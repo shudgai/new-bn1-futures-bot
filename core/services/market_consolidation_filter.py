@@ -23,6 +23,7 @@ MIN_VOLUME_RATIO = 0.8
 MAX_WICK_BODY_RATIO = 2.0
 COOLDOWN_BARS = 3
 MEME_IMPULSE_BODY_ATR = 0.6
+MEME_STRUCTURAL_BODY_ATR = 0.4
 
 
 def _num(row: pd.Series, key: str) -> Optional[float]:
@@ -46,6 +47,7 @@ def evaluate_market_blacklist(
     independent_kc_direction: bool = False,
     meme_policy: bool = False,
     expansion: bool = False,
+    meme_structural_entry: bool = False,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return (blocked, reason, evidence), using only explicitly closed bars.
 
@@ -164,8 +166,19 @@ def evaluate_market_blacklist(
         vol_ratio = float(current["volume"] / avg_vol) if avg_vol > 0 else 0.0
         body = abs(float(current["close"]) - float(current["open"]))
         wick_total = max(0.0, float(current["high"]) - max(float(current["open"]), float(current["close"]))) + max(0.0, min(float(current["open"]), float(current["close"])) - float(current["low"]))
-        checks.update(volume_ratio=vol_ratio, wick_body_ratio=wick_total / max(body, 1e-12))
-        if vol_ratio < MIN_VOLUME_RATIO:
+        meme_structural_trigger = (
+            meme_policy
+            and (
+                meme_structural_entry
+                or expansion and signal_body_atr >= MEME_STRUCTURAL_BODY_ATR - 1e-12
+            )
+        )
+        checks.update(
+            volume_ratio=vol_ratio,
+            wick_body_ratio=wick_total / max(body, 1e-12),
+            meme_structural_volume_override=meme_structural_trigger,
+        )
+        if vol_ratio < MIN_VOLUME_RATIO and not meme_structural_trigger:
             return True, "VETO_VOLUME_CONTRACTION", checks
         if wick_total > MAX_WICK_BODY_RATIO * body:
             return True, "VETO_LONG_WICK_DOJI", checks

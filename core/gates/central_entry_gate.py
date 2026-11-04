@@ -117,6 +117,10 @@ class CentralEntryGate:
             else None
         )
         has_entry_method_context = isinstance(entry_method_context, dict)
+        meme_structural_entry = bool(
+            has_entry_method_context
+            and entry_method_context.get("entry_method_authority") == "MEME_GATE_ENTRY"
+        )
         outer_pivot_authorized = False
         if has_entry_method_context:
             from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, revalidate_entry_method
@@ -399,6 +403,7 @@ class CentralEntryGate:
                     is_breakout=is_breakout_candidate,
                     independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override,
                     meme_policy=meme_policy, expansion=meme_expansion,
+                    meme_structural_entry=meme_structural_entry,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
                 if raw_blocked and raw_reason in ("VETO_MA5_MA15_CHOP", "VETO_FLAT_MA5_OR_KC_MIDLINE", "VETO_NARROW_SQUEEZE_RANGE"):
@@ -421,6 +426,7 @@ class CentralEntryGate:
                     is_breakout=is_breakout_candidate,
                     independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override,
                     meme_policy=meme_policy, expansion=meme_expansion,
+                    meme_structural_entry=meme_structural_entry,
                 )
         blocked, block_reason, block_evidence = blacklist
         checks["market_blacklist"] = {

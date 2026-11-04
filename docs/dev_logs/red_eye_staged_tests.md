@@ -147,6 +147,23 @@
 - **Verification**: Focused Master Funnel and entry-method suites: **853 passed**. Outer-KC-pivot suite: **40 passed, 46 failed**; failures include signal-construction assertions (`KC_OUTER_PIVOT_REVERSAL` candidate is `None`) before final location revalidation. Those failures are reported separately and were not altered as part of this pivot-location change. Python compilation and `git diff --check` passed.
 - **Limits**: No live replay, exchange order, deployment, restart, commit, or push authorized by this change request.
 
+### [2026-11-04 11:47:54 UTC+8] - Route qualified meme entries through the final Gate
+- **Author**: shudgai999 / Copilot SDK
+- **Target Files & Lines**: `core/gates/central_entry_gate.py` (`verify_and_authorize`); `core/services/market_consolidation_filter.py` (`evaluate_market_blacklist`); `tests/test_market_consolidation_filter.py`
+- **Modification Description**: The final market blacklist now allows a revalidated `MEME_GATE_ENTRY` to pass the generic low-volume veto, because the strategy Gate is the authority for that candidate. The separate explicit expansion path is supported only when its closed directional body is at least 0.4 ATR. Audit checks record whether the narrow volume exception was used.
+- **Trigger Reason & Requirement**: The 2026-11-04 03:31 UTC Lobster SHORT candidate had passed its meme direction qualification but was rejected by the final `VETO_VOLUME_CONTRACTION` (`volume_ratio=0.536`, body `0.512 ATR`). The user requested using the Gate for entry rather than bypassing it.
+- **Retained Protections**: The standard 0.8 volume threshold still blocks non-meme and non-structural entries; sub-0.4 ATR signals using only the separate expansion path also remain blocked. Wick, trend, MA/KC, extension, cooldown, data-validity, account, and order-safety checks remain in force. A Gate pass authorizes an attempt; it does not claim an account acceptance or fill.
+- **Verification & Test Status**: Focused Central Gate, market blacklist, entry-method, and Master Funnel suites: **886 passed**. Python compilation and `git diff --check` passed. A separate adjacent anti-chase run had **179 passed / 24 failed** in unchanged tests expecting 1.5 ATR extension limits while the current Gate uses 1.0 ATR; these expectations were not changed.
+- **Boundary**: No live exchange order, deployment, service restart, commit, or push was performed. Existing database and telemetry changes were left untouched.
+
+### [2026-11-04 11:50 UTC+8] - Align anti-chase boundary tests with the active 1 ATR Gate
+- **Author**: shudgai999 / Copilot SDK
+- **Target Files & Lines**: `tests/test_meme_anti_chase_relaxed.py` (ordinary MA15 bias and large-body breakout boundary cases)
+- **Modification Description**: Replaced stale 1.5/2 ATR expectations with inclusive 1 ATR boundary cases for both sides and all meme symbols. The breakout fixture now varies the actual quote-to-MA15 extension measured by the current Gate, rather than a legacy open-to-MA15 distance.
+- **Trigger Reason & Requirement**: User asked to continue resolving the remaining failed tests; the 24 failures were assertions for limits no longer implemented, while the current Master Gate constants and anti-chase spec enforce 1 ATR.
+- **Verification & Test Status**: `tests/test_meme_anti_chase_relaxed.py`: **63 passed**. Python compilation and `git diff --check` passed.
+- **Boundary**: Test-only correction; no production behavior, live order, deployment, service restart, commit, or push.
+
 ### [2026-11-04] - Correct outer-pivot test market fixture
 - **Finding**: The prior outer-pivot failures were caused by a shared test fixture whose KC middle slope was below the currently enforced meme minimum; changing that slope also made the fixture qualify for the higher-priority generic meme entry. The test intended to verify the independent outer-pivot path, not override those existing gates.
 - **Changes**: Adjusted only the outer-pivot test market data: KC slope now clears the current threshold, price/MA/channel levels remain valid, and MA15 direction prevents the fixture from simultaneously creating an unrelated generic entry. Production entry and safety logic were not changed.

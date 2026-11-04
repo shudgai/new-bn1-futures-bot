@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from core.services.market_consolidation_filter import (
     evaluate_market_blacklist,
@@ -28,6 +29,27 @@ def _base_frame(size=24):
         "kc_lower": middle - 2.0,
         "is_closed": np.ones(size, dtype=bool),
     })
+    return frame
+
+
+def _low_volume_directional_frame(side, body_atr=0.512):
+    frame = _base_frame()
+    if side == "SHORT":
+        for key in ("open", "close", "ma5", "ma15", "kc_middle"):
+            frame[key] = 200.0 - frame[key]
+        frame["high"], frame["low"] = 200.0 - frame["low"], 200.0 - frame["high"]
+        frame["kc_upper"], frame["kc_lower"] = (
+            200.0 - frame["kc_lower"], 200.0 - frame["kc_upper"],
+        )
+
+    last = frame.index[-1]
+    close = float(frame.loc[last, "close"])
+    body = body_atr * float(frame.loc[last, "atr"])
+    sign = 1 if side == "LONG" else -1
+    opened = close - sign * body
+    frame.loc[last, ["open", "high", "low", "volume"]] = [
+        opened, max(opened, close) + 0.05, min(opened, close) - 0.05, 535.9,
+    ]
     return frame
 
 
@@ -90,3 +112,104 @@ def test_volume_contraction_macro_conflict_and_cooldown_are_vetoes():
         frame, -1, last_closed_trade={"bar_index": current_bar - 2},
     )
     assert blocked and reason == "VETO_TRADE_COOLDOWN"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("authority", ["expansion", "meme_structural_entry"])
+@pytest.mark.parametrize("body_atr", [0.3, 0.4, 0.512])
+def test_confirmed_meme_structure_can_clear_volume_contraction(
+    side, authority, body_atr,
+):
+    frame = _low_volume_directional_frame(side, body_atr)
+    structural_authority = {authority: True}
+    allowed = authority == "meme_structural_entry" or body_atr >= 0.4
+
+    blocked, reason, checks = evaluate_market_blacklist(
+        frame,
+        side=side,
+        meme_policy=True,
+        **structural_authority,
+    )
+
+    assert checks["volume_ratio"] < 0.8
+    assert checks["meme_structural_volume_override"] is allowed
+    assert blocked is (not allowed)
+    assert reason == ("PASS_MARKET_BLACKLIST" if allowed else "VETO_VOLUME_CONTRACTION")
+
+
+@pytest.mark.parametrize(
+    "meme_policy,expansion,meme_structural_entry",
+    [(False, True, False), (True, False, False)],
+)
+def test_volume_contraction_override_requires_meme_structure(
+    meme_policy, expansion, meme_structural_entry,
+):
+    frame = _low_volume_directional_frame("SHORT")
+
+    blocked, reason, checks = evaluate_market_blacklist(
+        frame,
+        side="SHORT",
+        meme_policy=meme_policy,
+        expansion=expansion,
+        meme_structural_entry=meme_structural_entry,
+    )
+
+    assert blocked and reason == "VETO_VOLUME_CONTRACTION"
+    assert checks["meme_structural_volume_override"] is False
+
+
+def test_central_entry_gate_accepts_revalidated_meme_method_with_low_volume(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    import core.gates.master_gate_funnel as master_gate_funnel
+    import core.services.entry_methods as entry_methods
+    from core.gates.central_entry_gate import CentralEntryGate
+
+    frame = _low_volume_directional_frame("SHORT")
+    frame.attrs.update(
+        timeframe_ms=60_000,
+        snapshot_ms=time.time() * 1000,
+        entry_method_context={
+            "symbol": "CAP/USDT",
+            "entry_method_authority": "MEME_GATE_ENTRY",
+        },
+    )
+    quote = float(frame.iloc[-1]["close"])
+    monkeypatch.setattr(
+        entry_methods, "revalidate_entry_method",
+        lambda *_args, **_kwargs: (True, "ENTRY_METHOD_REVALIDATED"),
+    )
+    monkeypatch.setattr(
+        master_gate_funnel, "evaluate_meme_entry_frame",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            can_execute=True, reason="PASS_MEME_GATE", details={},
+        ),
+    )
+    monkeypatch.setattr(
+        master_gate_funnel, "market_snapshot_from_frame",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    for name in (
+        "is_expansion", "is_early_long", "is_squeeze_breakout_long",
+        "is_top_pivot_short",
+    ):
+        monkeypatch.setattr(
+            master_gate_funnel.MasterGateFunnel, name,
+            lambda *_args, **_kwargs: False,
+        )
+    monkeypatch.setattr(
+        master_gate_funnel.MasterGateFunnel, "priority_channel",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = CentralEntryGate.verify_and_authorize(
+        symbol="CAP/USDT",
+        side="SHORT",
+        price=quote,
+        klines_or_snapshot=frame,
+        source="UNIFIED_PIPELINE|ENTRY_METHOD|MEME_GATE_ENTRY",
+    )
+
+    assert result.passed, result.reason
+    assert result.checks["market_blacklist"]["evidence"]["meme_structural_volume_override"]
