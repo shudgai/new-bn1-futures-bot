@@ -22,12 +22,12 @@ def market(side):
         frame.loc[index, ["open", "high", "low", "close", "ma5", "ma15"]] = [
             close - .02, close + .03, close - .03, close, close - .01, close - .02,
         ]
-    frame["kc_middle"] = [98.6 + i * .03 for i in range(len(frame))]
+    frame["kc_middle"] = [97.68 + i * .08 for i in range(len(frame))]
     frame["kc_upper"], frame["kc_lower"] = frame["kc_middle"] + .8, frame["kc_middle"] - .35
     for index, values in zip(frame.index[-3:], [
         (100.15, 100.2, 99.9, 100.1, 100.0, 99.9),
-        (100.1, 100.2, 99.0, 99.9, 99.9, 99.85),
-        (100.0, 100.3, 99.8, 100.2, 100.05, 99.95),
+        (100.1, 100.2, 99.0, 99.9, 99.95, 99.85),
+        (100.0, 100.3, 99.8, 100.2, 100.15, 99.8),
     ]):
         frame.loc[index, ["open", "high", "low", "close", "ma5", "ma15"]] = values
     if side == "SHORT":

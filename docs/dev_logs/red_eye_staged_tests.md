@@ -146,3 +146,9 @@
 - **Retained protections**: Confirmed candle, MA direction/cross, KC trend, macro direction, MA15 extension, lower/upper band extension, chop, cooldown, wick, account and order-safety gates remain active. This does not guarantee a fill or a specific historical timestamp.
 - **Verification**: Focused Master Funnel and entry-method suites: **853 passed**. Outer-KC-pivot suite: **40 passed, 46 failed**; failures include signal-construction assertions (`KC_OUTER_PIVOT_REVERSAL` candidate is `None`) before final location revalidation. Those failures are reported separately and were not altered as part of this pivot-location change. Python compilation and `git diff --check` passed.
 - **Limits**: No live replay, exchange order, deployment, restart, commit, or push authorized by this change request.
+
+### [2026-11-04] - Correct outer-pivot test market fixture
+- **Finding**: The prior outer-pivot failures were caused by a shared test fixture whose KC middle slope was below the currently enforced meme minimum; changing that slope also made the fixture qualify for the higher-priority generic meme entry. The test intended to verify the independent outer-pivot path, not override those existing gates.
+- **Changes**: Adjusted only the outer-pivot test market data: KC slope now clears the current threshold, price/MA/channel levels remain valid, and MA15 direction prevents the fixture from simultaneously creating an unrelated generic entry. Production entry and safety logic were not changed.
+- **Verification**: `tests/test_kc_outer_pivot_entry.py`: **86 passed**. Combined funnel, entry-method and outer-pivot regression suites: **939 passed**. Python compilation and `git diff --check` passed.
+- **Limits**: No live replay, exchange order, deployment, restart, commit, or push.
