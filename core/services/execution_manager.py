@@ -4677,6 +4677,7 @@ class ExecutionManager:
                     side=side,
                     quote=price,
                     context=meta or {},
+                    final_submission=True,
                 )
                 if not method_allowed:
                     logger.warning(

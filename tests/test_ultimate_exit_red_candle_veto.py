@@ -248,3 +248,25 @@ def test_final_exit_boundary_allows_only_a_fresh_closed_opposite_rail_disaster(s
         "1000PEPE/USDT", position, {}, "OPPOSITE_KC_BAND_BREACH",
         price, frame=data,
     )
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("reason", ["EXIT_BY_PULLBACK", "REALTIME_PULLBACK_EXIT"])
+def test_ordinary_pullback_exit_is_explicitly_vetoed_until_structure_break(side, reason):
+    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
+
+    symbol = "龙虾/USDT"
+    position = {
+        "side": side,
+        "entry_price": 0.0168,
+        "qty": 1.0,
+        "open_timestamp": time.time() - 600,
+    }
+    verdict = UltimateShortExitGatekeeper.evaluate(
+        symbol, position, {}, reason, position["entry_price"],
+    )
+    assert verdict.verdict == "HOLD"
+    assert verdict.code == "VETO_HOLD_ORDINARY_PULLBACK_UNTIL_STRUCTURE_BREAK"
+    assert not automated_position_exit_allowed(
+        symbol, position, {}, reason, position["entry_price"],
+    )

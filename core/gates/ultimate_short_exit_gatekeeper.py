@@ -87,6 +87,7 @@ LEGACY_VERIFIED_DISASTER_REASONS = frozenset({"EXIT_BY_EXTREME_WATERFALL"})
 OWN_DISASTER_REASONS = frozenset(
     r.upper() for r in (*DISASTER_LOSS_REASONS.values(), *DISASTER_RAIL_REASONS.values())
 )
+ORDINARY_PULLBACK_EXIT_TOKENS = ("PULLBACK", "RETRACE", "RETRACEMENT")
 
 
 def _cost_shield_distance_atr(
@@ -205,6 +206,9 @@ class UltimateShortExitGatekeeper:
             if side == "SHORT":
                 logger.info("[UI_DISPLAY: 續抱] symbol=%s reason=%s", symbol, code)
             return ExitVerdict(HOLD, code, evidence)
+
+        if any(token in normalized for token in ORDINARY_PULLBACK_EXIT_TOKENS):
+            return hold("VETO_HOLD_ORDINARY_PULLBACK_UNTIL_STRUCTURE_BREAK")
 
         if normalized in LEGACY_VERIFIED_DISASTER_REASONS:
             shield = _cost_shield_distance_atr(symbol, position, price, frame)

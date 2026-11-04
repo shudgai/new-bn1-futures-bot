@@ -3,7 +3,7 @@ import pandas as pd
 from core.services.exits.authorized_position_exit import automated_position_exit_allowed
 from core.services.exits.realtime_profit_exit import _evaluate_realtime_core_exit_gates
 
-def test_legacy_realtime_short_pullback_reason_is_blocked_for_auto_symbols():
+def test_legacy_realtime_short_pullback_candidate_is_suppressed_for_auto_symbols():
     # 模擬 04:58 暴跌長紅K
     history_5 = [
         {'timestamp': 1000, 'o': 100, 'h': 101, 'l': 85, 'c': 86, 'kc_middle': 100, 'atr': 5, 'atr': 5},
@@ -35,8 +35,8 @@ def test_legacy_realtime_short_pullback_reason_is_blocked_for_auto_symbols():
         position, {}, price, stamp, snapshot, fee=0.0005, slippage=0.0005
     )
     
-    assert trigger == 'EXIT_SHORT_ON_KC_UPPER_BREACH'
+    assert trigger is None
     assert not automated_position_exit_allowed(
-        'LOBSTER/USDT', position, {}, trigger, price, is_manual=True,
+        'LOBSTER/USDT', position, {}, 'EXIT_SHORT_ON_KC_UPPER_BREACH', price,
+        is_manual=True,
     )
-

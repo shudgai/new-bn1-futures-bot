@@ -919,6 +919,44 @@ def test_new_authority_accepts_already_crossed_middle_not_late_chase(symbol, sid
     assert not revalidate_entry_method(frame, symbol=symbol, side=side, quote=late, context=method_context(signal))[0]
 
 
+@pytest.mark.parametrize("live_color", ["RED", "GREEN", "MISSING"])
+def test_meme_short_final_revalidation_requires_a_fresh_red_live_candle(live_color):
+    frame = early_frame("SHORT")
+    quote = float(frame.iloc[-1]["close"])
+    signal = evaluate_entry_method(
+        frame, symbol="龙虾/USDT", quote=quote, expected_method=MEME_GATE_ENTRY,
+    )
+    assert signal is not None and signal["side"] == "SHORT"
+
+    submit_frame = frame.copy()
+    if live_color != "MISSING":
+        live = frame.iloc[-1].to_dict()
+        live["timestamp"] = float(live["timestamp"]) + 60_000
+        live["is_closed"] = False
+        live["open"] = quote + 0.01 if live_color == "RED" else quote - 0.01
+        live["close"] = quote
+        live["high"] = max(live["open"], quote)
+        live["low"] = min(live["open"], quote)
+        submit_frame = pd.concat(
+            [frame, pd.DataFrame([live])], ignore_index=True,
+        )
+        submit_frame.attrs.update(frame.attrs)
+    submit_frame.attrs["entry_finality_verified"] = True
+
+    allowed, reason = revalidate_entry_method(
+        submit_frame, symbol="龙虾/USDT", side="SHORT", quote=quote,
+        context=method_context(signal), final_submission=True,
+    )
+    if live_color == "RED":
+        assert allowed, reason
+    elif live_color == "GREEN":
+        assert not allowed
+        assert reason == "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_NOT_RED"
+    else:
+        assert not allowed
+        assert reason == "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE"
+
+
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_independent_outer_pivot_no_longer_bypasses_shared_meme_filters(symbol, side):
@@ -1021,9 +1059,24 @@ def test_real_scan_pipeline_reaches_new_authority_before_legacy_chop(
         fresh_frame.loc[last, "ma5"] = fresh_frame.loc[prev, "ma5"]
     elif fresh_fault == "bias":
         fresh_frame.loc[last, "ma15"] = quote + 4.01
+    if side == "SHORT":
+        live = fresh_frame.iloc[-1].to_dict()
+        live.update(
+            timestamp=float(live["timestamp"]) + 60_000,
+            open=quote + 0.01,
+            high=quote + 0.01,
+            low=quote,
+            close=quote,
+            is_closed=False,
+        )
+        fresh_frame = pd.concat(
+            [fresh_frame, pd.DataFrame([live])], ignore_index=True,
+        )
+        fresh_frame.attrs.update(frame.attrs)
+        fresh_frame.attrs["entry_finality_verified"] = True
     account.entry_frame_provider = lambda *_a, **_k: fresh_frame
     snapshot = DataPipeline.calculate_snapshot(symbol, frame, current_price=quote)
-    snapshot.raw_df = frame
+    snapshot.raw_df = fresh_frame if side == "SHORT" else frame
     snapshot.curr_k, snapshot.prev_k = frame.iloc[-1].to_dict(), frame.iloc[-2].to_dict()
     monkeypatch.setattr(DataPipeline, "calculate_snapshot", staticmethod(lambda *_a, **_k: snapshot))
     result = asyncio.run(ExecutionManager.process_symbol_pipeline(symbol, account, klines_df=frame, quote=quote))

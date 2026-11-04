@@ -137,6 +137,7 @@ def validate_entry_math(
             side=side,
             quote=method_quote,
             context=entry_method_context,
+            final_submission=True,
         )
         if not entry_method_authorized:
             return False, method_reason
@@ -1044,6 +1045,7 @@ async def validate_entry_at_execution(
             side=side,
             quote=method_quote,
             context=payload,
+            final_submission=True,
         )
         if not entry_method_authorized:
             return False, method_reason

@@ -894,6 +894,7 @@ async def validate_account_entry(account, symbol, side, context):
         allowed, reason = revalidate_entry_method(
             fresh_frame, symbol=symbol, side=side,
             quote=context.get("entry_gate_quote"), context=context,
+            final_submission=True,
         )
         if not allowed:
             raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_REVALIDATION: " + reason)
