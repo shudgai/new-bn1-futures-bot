@@ -46,7 +46,7 @@ def test_bottom_v_long_requires_alignment_before_the_entry_bar(symbol, body, pri
     ("unclosed", "VETO_INVALID_MARKET_DATA"),
     ("cooldown", "BLOCKED_BY_POST_EXIT_COOLDOWN"),
 ])
-def test_bottom_v_long_never_bypasses_global_guards(symbol, fault, reason):
+def test_bottom_pivot_bypasses_macro_and_kc_lag_but_keeps_entry_guards(symbol, fault, reason):
     m = pivot_market("LONG", symbol, open_price=100.7, low_price=100.69,
                      ma5_prev=100.99)
     assert MasterGateFunnel.is_bottom_pivot_long(m)
@@ -57,7 +57,8 @@ def test_bottom_v_long_never_bypasses_global_guards(symbol, fault, reason):
     elif fault == "quote":
         m = m._replace(quote=m.ma15_curr)
     elif fault == "bias":
-        m = m._replace(quote=m.ma15_curr + 1.5 * m.atr + .01)
+        quote = m.ma15_curr + 1.5 * m.atr + .01
+        m = m._replace(quote=quote, kc_upper=quote + 1)
     elif fault == "chop":
         m = m._replace(ma_cross_count_8=3)
     elif fault == "unclosed":
@@ -65,11 +66,7 @@ def test_bottom_v_long_never_bypasses_global_guards(symbol, fault, reason):
     elif fault == "cooldown":
         m = m._replace(ma5_prev=m.ma15_prev - 0.01)
     result = MasterGateFunnel.evaluate_open_long(m, fault == "cooldown")
-    if fault == "kc":
-        assert not result.can_execute
-        assert result.reason == "BLOCKED_LONG_KC_MIDDLE_TOO_FLAT"
-        return
-    if fault == "macro":
+    if fault in ("macro", "kc"):
         assert result.can_execute
         assert result.details["priority_channel"] == "TRIGGER_BOTTOM_PIVOT_CROSS"
         return
@@ -107,8 +104,8 @@ def pivot_market(side, symbol="1000PEPE/USDT", **updates):
     """Closed reversal candle in its authorized outer KC location."""
     if side == "SHORT":
         data = dict(
-            quote=98.3, open_price=99.1, close_price=98.3,
-            high_price=99.11, low_price=98.29,
+            quote=98.0, open_price=98.8, close_price=98.0,
+            high_price=98.81, low_price=97.99,
             ma5_curr=98.8, ma5_prev=99.1,
             ma15_curr=99.0, ma15_prev=99.0,
             kc_upper=98.6, kc_lower=97.5, kc_middle=98.05,
@@ -116,8 +113,8 @@ def pivot_market(side, symbol="1000PEPE/USDT", **updates):
         )
     else:
         data = dict(
-            quote=101.7, open_price=100.9, close_price=101.7,
-            high_price=101.71, low_price=100.89,
+            quote=102.0, open_price=101.2, close_price=102.0,
+            high_price=102.01, low_price=101.19,
             ma5_curr=101.2, ma5_prev=100.9,
             ma15_curr=101.0, ma15_prev=101.0,
             kc_upper=102.4, kc_lower=101.4, kc_middle=101.9,
@@ -125,6 +122,43 @@ def pivot_market(side, symbol="1000PEPE/USDT", **updates):
         )
     data.update(updates)
     return market(side, symbol)._replace(**data)
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_confirmed_midline_pivot_bypasses_macro_location_veto(side):
+    if side == "LONG":
+        m = market("LONG", "1000PEPE/USDT")._replace(
+            quote=101.8, open_price=100.9, close_price=101.8,
+            high_price=101.82, low_price=100.88,
+            ma5_prev=101.0, ma5_curr=101.3,
+            ma15_prev=101.1, ma15_curr=101.2,
+            kc_upper=103.0, kc_middle=101.0, kc_middle_prev=101.1,
+            kc_lower=100.0, atr=1.5, macro_trend="BULLISH",
+        )
+    else:
+        m = market("SHORT", "1000PEPE/USDT")._replace(
+            quote=98.2, open_price=99.0, close_price=98.2,
+            high_price=99.02, low_price=98.18,
+            ma5_prev=99.0, ma5_curr=98.5,
+            ma15_prev=98.9, ma15_curr=98.7,
+            kc_upper=100.0, kc_middle=99.0, kc_middle_prev=99.1,
+            kc_lower=97.0, atr=1.5, macro_trend="BEARISH",
+        )
+
+    trigger = (
+        MasterGateFunnel.is_bottom_pivot_long(m)
+        if side == "LONG" else MasterGateFunnel.is_top_pivot_short(m)
+    )
+    decision = (
+        MasterGateFunnel.evaluate_open_long(m)
+        if side == "LONG" else MasterGateFunnel.evaluate_open_short(m)
+    )
+    assert trigger
+    assert decision.can_execute
+    assert decision.details["priority_channel"] == (
+        "TRIGGER_BOTTOM_PIVOT_CROSS" if side == "LONG" else "TRIGGER_TOP_PIVOT_CROSS"
+    )
+    assert decision.details["macro_kc_position_policy"] == "CONFIRMED_PIVOT_EXCEPTION"
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -197,21 +231,28 @@ def test_flat_expansion_body_threshold_is_inclusive(side, offset, allowed):
     assert MasterGateFunnel.is_expansion(m, side) is allowed
 
 
-@pytest.mark.parametrize("offset,allowed", [(-0.000001, True), (0, True), (0.000001, False)])
-def test_long_squeeze_upper_band_allowance_is_1_5_atr(offset, allowed):
+@pytest.mark.parametrize("offset", [-0.000001, 0, 0.000001])
+def test_long_upper_rail_is_always_blocked_by_anti_chase(offset):
     m = market(
-        quote=104 + offset, close_price=103.2, open_price=101,
+        quote=104 + offset, close_price=103.2, open_price=103.0,
         high_price=103.5, low_price=100.9, kc_middle=100, kc_middle_prev=99.9,
         kc_upper=101, kc_lower=99, ma15_curr=102.5, ma15_prev=102.5,
         ma5_curr=102.6, ma5_prev=102.55,
     )
-    assert MasterGateFunnel.evaluate_open_long(m).can_execute is allowed
+    result = MasterGateFunnel.evaluate_open_long(m)
+    assert not result.can_execute
+    assert result.reason == "VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE"
 
 
-@pytest.mark.parametrize("offset,allowed", [(-0.000001, True), (0, True), (0.000001, False)])
-def test_short_lower_band_allowance_is_point_8_atr(offset, allowed):
-    m = market("SHORT")._replace(kc_lower=99.9, kc_middle=100, kc_middle_prev=100.1, quote=98.3 - offset)
-    assert MasterGateFunnel.evaluate_open_short(m).can_execute is allowed
+@pytest.mark.parametrize("offset", [-0.000001, 0, 0.000001])
+def test_short_lower_rail_is_always_blocked_by_anti_chase(offset):
+    m = market("SHORT")._replace(
+        open_price=98.6, kc_lower=99.9, kc_middle=100, kc_middle_prev=100.1,
+        quote=98.3 - offset,
+    )
+    result = MasterGateFunnel.evaluate_open_short(m)
+    assert not result.can_execute
+    assert result.reason == "VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE"
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -259,22 +300,23 @@ def test_early_long_exemption_never_disables_other_gates(fault):
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
-@pytest.mark.parametrize("body", [0.799999, 0.8, 0.800001])
+@pytest.mark.parametrize("body", [0.000001, 0.599999, 0.600001])
 @pytest.mark.parametrize("prior_alignment", [-0.000001, 0.0, 0.000001])
-def test_top_pivot_short_requires_point_four_atr_and_a_new_cross(symbol, body, prior_alignment):
+def test_top_pivot_short_requires_only_a_real_red_body_and_new_cross(symbol, body, prior_alignment):
     m = pivot_market(
-        "SHORT", symbol, open_price=98.3 + body, high_price=98.3 + body + .01,
+        "SHORT", symbol, open_price=98.0 + body, high_price=98.0 + body + .01,
+        low_price=98.0 - body * .5,
         ma15_prev=99, ma5_prev=99 + prior_alignment,
     )
     result = MasterGateFunnel.evaluate_open_short(m)
-    expected = body >= .8 and prior_alignment >= 0
+    expected = prior_alignment >= 0
     assert MasterGateFunnel.is_top_pivot_short(m) is expected
     assert result.can_execute is expected
     if expected:
         assert result.reason == "AUTHORIZED_SHORT:TRIGGER_TOP_PIVOT_CROSS"
 
 
-def test_top_pivot_short_can_precede_kc_direction_change_but_not_flattening():
+def test_top_pivot_short_bypasses_lagging_kc_direction():
     m = pivot_market(
         "SHORT", open_price=99.1, high_price=99.11, ma5_prev=99.1, ma15_prev=99,
     )
@@ -283,9 +325,9 @@ def test_top_pivot_short_can_precede_kc_direction_change_but_not_flattening():
     assert result.details["trigger"] == "TRIGGER_TOP_PIVOT_CROSS"
 
     flat = m._replace(kc_middle_prev=m.kc_middle - 0.05 * m.atr + 1e-6)
-    blocked = MasterGateFunnel.evaluate_open_short(flat)
-    assert not blocked.can_execute
-    assert blocked.reason == "BLOCKED_SHORT_KC_MIDDLE_TOO_FLAT"
+    allowed = MasterGateFunnel.evaluate_open_short(flat, is_in_cooldown=True)
+    assert allowed.can_execute
+    assert allowed.details["priority_channel"] == "TRIGGER_TOP_PIVOT_CROSS"
 
 
 def test_priority_cooldown_exemption_requires_a_valid_master_gate_entry():
@@ -293,8 +335,8 @@ def test_priority_cooldown_exemption_requires_a_valid_master_gate_entry():
         "SHORT", open_price=99.1, high_price=99.11, ma5_prev=99.1, ma15_prev=99,
     )
     assert MasterGateFunnel.has_valid_priority_entry(m, "SHORT")
-    flat = m._replace(kc_middle=m.kc_middle_prev)
-    assert not MasterGateFunnel.has_valid_priority_entry(flat, "SHORT")
+    invalid = m._replace(kc_middle=m.close_price)
+    assert not MasterGateFunnel.has_valid_priority_entry(invalid, "SHORT")
 
 
 @pytest.mark.parametrize(
@@ -319,17 +361,16 @@ def test_ma15_extension_is_capped_at_one_atr_for_both_sides(bias_atr, allowed, s
     )
     if side == "SHORT":
         m = m._replace(
-            kc_middle=ma15 - 1.4 * base.atr,
-            kc_middle_prev=ma15 - 1.2 * base.atr,
-            kc_upper=ma15 - 0.6 * base.atr,
+            ma5_curr=ma15 - 0.3 * base.atr,
+            ma5_prev=ma15 - 0.2 * base.atr,
+            kc_middle=ma15 - 0.6 * base.atr,
+            kc_middle_prev=ma15 - 0.4 * base.atr,
+            kc_upper=ma15 - 0.5 * base.atr,
             kc_lower=close - 1.6 * base.atr,
         )
     else:
         m = m._replace(kc_upper=close + 1.6)
-    result = (
-        MasterGateFunnel.evaluate_open_long(m) if side == "LONG"
-        else MasterGateFunnel.evaluate_open_short(m)
-    )
+    result = MasterGateFunnel.evaluate_entry_filters(m, side)
     assert result.can_execute is allowed, result
     if not allowed:
         assert result.reason == f"BLOCKED_{side}_MA15_EXTENSION_1_ATR"
@@ -340,7 +381,7 @@ def test_ma15_extension_is_capped_at_one_atr_for_both_sides(bias_atr, allowed, s
     "quote_middle", "quote_ma15", "chop", "bias_close", "bias_quote",
     "band_extension", "cooldown",
 ])
-def test_top_pivot_short_exempts_only_flat_and_squeeze(fault):
+def test_top_pivot_short_bypasses_macro_cooldown_and_kc_slope_only(fault):
     m = pivot_market(
         "SHORT", open_price=99.1, high_price=99.11, ma5_prev=99.1, ma15_prev=99,
     )
@@ -371,16 +412,69 @@ def test_top_pivot_short_exempts_only_flat_and_squeeze(fault):
     elif fault == "band_extension":
         m = m._replace(kc_lower=99 - .01, kc_middle=99, kc_upper=99.2,
                        quote=99 - .01 - .8 * m.atr - .000001)
-    # A priority channel still needs an aligned prior bar and current KC direction.
-    expected = fault in ("cooldown", "macro", "quote_middle")
+    expected = fault in ("cooldown", "macro", "opposite_kc")
     assert MasterGateFunnel.evaluate_open_short(m, fault == "cooldown").can_execute is expected
+
+
+@pytest.mark.parametrize(
+    "side,expected_reason",
+    [
+        ("SHORT", "VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE"),
+        ("LONG", "VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE"),
+    ],
+)
+def test_meme_entry_is_blocked_beyond_its_outer_kc_rail(side, expected_reason):
+    m = market(side, "1000PEPE/USDT")
+    if side == "SHORT":
+        close = m.kc_lower - 0.01
+        m = m._replace(
+            quote=close, close_price=close, open_price=close + 0.1,
+            high_price=close + 0.11, low_price=close - 0.01,
+        )
+        result = MasterGateFunnel.evaluate_open_short(m)
+    else:
+        close = m.kc_upper + 0.01
+        m = m._replace(
+            quote=close, close_price=close, open_price=close - 0.1,
+            high_price=close + 0.01, low_price=close - 0.11,
+        )
+        result = MasterGateFunnel.evaluate_open_long(m)
+    assert not result.can_execute
+    assert result.reason == expected_reason
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_meme_entry_is_blocked_when_absolute_ma15_bias_exceeds_one_atr(side):
+    m = market(side, "1000PEPE/USDT")
+    if side == "SHORT":
+        close = 97.9
+        m = m._replace(
+            quote=close, close_price=close, open_price=98.5,
+            high_price=98.6, low_price=97.8,
+            ma5_prev=100.1, ma5_curr=98.8,
+            ma15_prev=100, ma15_curr=100,
+            kc_upper=103, kc_middle=99, kc_middle_prev=99.1, kc_lower=95,
+        )
+        result = MasterGateFunnel.evaluate_open_short(m)
+    else:
+        close = 103.1
+        m = m._replace(
+            quote=close, close_price=close, open_price=102.5,
+            high_price=103.2, low_price=102.4,
+            ma5_prev=101.1, ma5_curr=101.2,
+            ma15_prev=101, ma15_curr=101,
+            kc_upper=104, kc_middle=102, kc_middle_prev=101.9, kc_lower=100,
+        )
+        result = MasterGateFunnel.evaluate_open_long(m)
+    assert not result.can_execute
+    assert result.reason == f"BLOCKED_{side}_MA15_EXTENSION_1_ATR"
 
 
 def test_long_pullback_requires_existing_alignment_and_unbroken_middle():
     m = market(
         open_price=101.1, close_price=101.4, quote=101.4, low_price=101.0,
         kc_middle=101.0, kc_middle_prev=100.8, ma15_curr=101.0, ma15_prev=100.9,
-        ma5_curr=101.2, ma5_prev=100.95,
+        ma5_curr=101.2, ma5_prev=100.95, kc_upper=101.5,
     )
     assert MasterGateFunnel.evaluate_open_long(m).details["trigger"] == "TRIGGER_B_PULLBACK_KC_MIDDLE_BOUNCE"
     post_cross = MasterGateFunnel.evaluate_open_long(m._replace(ma5_prev=100.8))
@@ -407,21 +501,22 @@ def test_short_top_cross_modes_are_closed_and_downward(cross):
         open_price=98.8, close_price=98.6, quote=98.6, high_price=99.1, low_price=98.5,
         kc_middle=98.9, kc_middle_prev=99.2, ma15_curr=99.0, ma15_prev=99.1,
         ma5_curr=98.6, ma5_prev=99.2 if cross == "middle" else 99.1,
+        kc_upper=104.0,
     )
     decision = MasterGateFunnel.evaluate_open_short(m)
     assert decision.can_execute, decision
     assert decision.details["priority_channel"] == "TRIGGER_MA5_MA15_CROSS_WITH_TREND_SLOPE"
 
 
-def test_short_rail_mode_requires_ma15_down_not_just_ma5_down():
+def test_short_breakdown_below_lower_rail_is_blocked_even_with_ma5_momentum():
     m = market("SHORT")._replace(
         open_price=98.8, close_price=98.5, quote=98.5, high_price=98.9, low_price=98.4,
         kc_lower=98.6, kc_middle=99.0, kc_middle_prev=99.2,
         ma15_curr=99.1, ma15_prev=99.2, ma5_curr=98.8, ma5_prev=98.9,
     )
     decision = MasterGateFunnel.evaluate_open_short(m)
-    assert decision.can_execute and decision.details["trigger"] == "TRIGGER_C_BREAKDOWN_LOWER_RAIL"
-    assert not MasterGateFunnel.evaluate_open_short(m._replace(ma15_prev=99.1)).can_execute
+    assert not decision.can_execute
+    assert decision.reason == "VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -433,6 +528,7 @@ def test_fresh_ma5_ma15_cross_is_blocked_but_established_alignment_passes(side):
         open_price=base.close_price - sign * .2,
         ma5_prev=base.ma15_prev + sign * .1,
         kc_middle=middle, kc_middle_prev=middle - sign * .2,
+        kc_upper=102.0 if side == "LONG" else 103.0,
     )
     assert MasterGateFunnel.evaluate_entry_filters(aligned, side).can_execute
 
@@ -465,6 +561,7 @@ def test_fresh_ma_cross_requires_kc_and_both_ma_slopes_to_reach_threshold(side, 
         ma5_prev=ma5_prev,
         ma15_prev=ma15_prev,
         kc_middle_prev=kc_middle_prev,
+        kc_upper=102.0 if side == "LONG" else 103.0,
     )
     decision = (
         MasterGateFunnel.evaluate_open_long(crossed, True) if side == "LONG"
@@ -486,6 +583,7 @@ def test_fresh_ma_cross_with_expanding_kc_ma5_ma15_slopes_is_entry_and_cooldown_
         ma5_prev=ma15_prev - sign * 0.1,
         ma15_prev=ma15_prev,
         kc_middle_prev=m.kc_middle - sign * slope,
+        kc_upper=102.0 if side == "LONG" else 103.0,
     )
     decision = (
         MasterGateFunnel.evaluate_open_long(crossed, True) if side == "LONG"
@@ -534,10 +632,12 @@ def test_position_flip_requires_closed_directional_pivot(
 ):
     m = pivot_market(
         market_side,
-        open_price=(101.7 - body if market_side == "LONG" else 98.3 + body),
+        open_price=(102.0 - body if market_side == "LONG" else 98.0 + body),
     )
-    if market_side == "LONG":
-        m = m._replace(low_price=100.7, high_price=101.71)
+    m = m._replace(
+        low_price=min(m.open_price, m.close_price) - .01,
+        high_price=max(m.open_price, m.close_price) + .01,
+    )
     sign = 1 if market_side == "LONG" else -1
     candidate = MasterGateFunnel.evaluate_position_flip(m, held_side)
     assert candidate == (target_side, trigger)
@@ -554,7 +654,7 @@ def test_position_flip_requires_closed_directional_pivot(
         m._replace(is_closed=False), held_side,
     ) is None
     assert MasterGateFunnel.evaluate_position_flip(
-        m._replace(open_price=m.close_price - sign * (body - 0.01)), held_side,
+        m._replace(ma5_prev=m.ma15_prev + sign * .01), held_side,
     ) is None
 
 
@@ -568,12 +668,12 @@ def test_execution_manager_flip_waits_for_flat_then_uses_shared_open_path(
     frame = early_frame("SHORT")
     previous, current = frame.index[-2], frame.index[-1]
     frame.loc[previous, ["ma5", "ma15", "kc_middle", "atr"]] = [
-        100.0, 99.9, 98.1, 2.0,
+        100.0, 99.9, 98.5, 2.0,
     ]
     frame.loc[current, [
         "open", "high", "low", "close", "ma5", "ma15",
         "kc_middle", "kc_upper", "kc_lower",
-    ]] = [99.1, 99.11, 98.29, 98.3, 98.8, 99.0, 98.0, 98.6, 97.5]
+    ]] = [99.1, 99.11, 98.29, 98.3, 98.8, 99.0, 98.4, 98.6, 97.5]
     account = SimpleNamespace(
         id="flip-test",
         positions={"1000PEPE/USDT": {"side": "LONG"}} if already_open else {},
@@ -639,12 +739,12 @@ def test_execution_manager_flip_honors_strict_kc_location_veto(monkeypatch):
     frame = early_frame("SHORT")
     previous, current = frame.index[-2], frame.index[-1]
     frame.loc[previous, ["ma5", "ma15", "kc_middle", "atr"]] = [
-        100.0, 99.9, 98.1, 2.0,
+        100.0, 99.9, 98.5, 2.0,
     ]
     frame.loc[current, [
         "open", "high", "low", "close", "ma5", "ma15",
         "kc_middle", "kc_upper", "kc_lower",
-    ]] = [99.1, 99.11, 98.29, 98.3, 98.8, 99.0, 98.0, 98.6, 97.5]
+    ]] = [99.1, 99.11, 98.29, 98.3, 98.8, 99.0, 98.4, 98.6, 97.5]
     current = frame.index[-1]
     frame.loc[current, "is_closed"] = True
     result = asyncio.run(ExecutionManager._try_structure_position_flip(
@@ -678,15 +778,15 @@ def test_reversal_entry_obeys_strict_macro_kc_location(target_side, reason):
 @pytest.mark.parametrize(
     "side,position,allowed",
     [
-        ("SHORT", 0.29, True),
-        ("SHORT", 0.25, True),
-        ("SHORT", 0.249, False),
-        ("LONG", 0.71, True),
-        ("LONG", 0.75, True),
-        ("LONG", 0.751, False),
+        ("SHORT", 0.651, True),
+        ("SHORT", 0.65, True),
+        ("SHORT", 0.649, False),
+        ("LONG", 0.349, True),
+        ("LONG", 0.35, True),
+        ("LONG", 0.351, False),
     ],
 )
-def test_meme_pivot_location_uses_relaxed_symmetric_bounds(side, position, allowed):
+def test_meme_nonpivot_location_keeps_macro_bounds(side, position, allowed):
     m = market(side, "1000PEPE/USDT")._replace(
         kc_lower=100.0,
         kc_upper=104.0,
@@ -770,24 +870,33 @@ def test_priority_entry_bypasses_post_close_cooldown(symbol, side, boundary, mon
     monkeypatch.setattr(time, "time", lambda: now + boundary)
     frame = early_frame(side)
     last, previous = frame.index[-1], frame.index[-2]
+    if boundary < 0:
+        frame.loc[last, "is_closed"] = False
+        prior_open, prior_close = (
+            (101.5, 101.0) if side == "LONG" else (98.5, 99.0)
+        )
+        frame.loc[previous, ["open", "close", "high", "low"]] = [
+            prior_open, prior_close, max(prior_open, prior_close) + .01,
+            min(prior_open, prior_close) - .01,
+        ]
     if side == "LONG":
         frame.loc[last, ["open", "close", "high", "low", "kc_lower", "kc_middle", "kc_upper",
                          "ma15", "ma5"]] = [
-            100.7, 101.5, 101.51, 100.69, 101.2, 101.8, 102.4, 100.9, 101.2,
+            100.7, 101.5, 101.51, 100.69, 100.0, 101.0, 102.4, 100.95, 101.2,
         ]
-        frame.loc[previous, ["kc_middle", "ma5", "ma15"]] = [101.69, 100.89, 100.9]
+        frame.loc[previous, ["kc_middle", "ma5", "ma15"]] = [101.1, 100.89, 100.9]
     else:
         frame.loc[last, ["open", "close", "high", "low", "kc_lower", "kc_middle", "kc_upper",
                          "ma15", "ma5"]] = [
-            99.3, 98.5, 99.31, 98.49, 97.6, 98.2, 98.8, 99.1, 97.9,
+            99.3, 98.5, 99.31, 98.49, 97.6, 98.8, 99.4, 99.1, 97.9,
         ]
-        frame.loc[previous, ["kc_middle", "ma5", "ma15"]] = [98.31, 99.11, 99.1]
+        frame.loc[previous, ["kc_middle", "ma5", "ma15"]] = [98.9, 99.11, 99.1]
     # Close was inside its minute; the partial closing candle does not count.
     closed_at = now - 180 + 30
     result = evaluate_meme_entry_frame(
         frame, symbol, side, frame.iloc[-1]["close"], last_closed_at=closed_at,
     )
-    assert result.can_execute, result
+    assert result.can_execute is (boundary >= 0), result
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -865,11 +974,11 @@ def test_real_scan_pipeline_reaches_new_authority_before_legacy_chop(
             .01 if side == "SHORT" else -.01
         )
     if mode == "top_cross":
-        frame.loc[last, ["kc_lower", "kc_middle", "kc_upper"]] = [97.5, 98.1, 98.7]
-        frame.loc[prev, "kc_middle"] = 98.21
+        frame.loc[last, ["kc_lower", "kc_middle", "kc_upper"]] = [97.5, 98.7, 99.3]
+        frame.loc[prev, "kc_middle"] = 98.8
         frame.loc[last, "ma15"] = 99.05
     elif mode == "bottom_v":
-        frame.loc[last, ["kc_lower", "kc_middle", "kc_upper"]] = [101.2, 101.8, 102.4]
+        frame.loc[last, ["kc_lower", "kc_middle", "kc_upper"]] = [100.8, 101.4, 102.4]
         frame.loc[prev, "kc_middle"] = 101.69
         frame.loc[last, "ma15"] = 100.95
     if flat:
@@ -878,8 +987,8 @@ def test_real_scan_pipeline_reaches_new_authority_before_legacy_chop(
         frame.loc[last, "ma5"] = frame.loc[last, "kc_middle"] + sign * .3
     quote = float(frame.iloc[-1]["close"])
     signal = evaluate_entry_method(frame, quote=quote, symbol=symbol, expected_method=MEME_GATE_ENTRY)
-    if flat:
-        # Owner 2026-11-03 swing filter: a flat KC middle blocks every channel.
+    if flat and mode not in ("top_cross", "bottom_v"):
+        # A flat KC middle blocks ordinary entry channels; confirmed pivots are exempt.
         assert signal is None
         return
     if mode == "early_equal":

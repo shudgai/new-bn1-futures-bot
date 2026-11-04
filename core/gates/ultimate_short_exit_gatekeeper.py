@@ -107,6 +107,27 @@ def _cost_shield_distance_atr(
     return sign * (quote - entry) / meme_distance_atr(symbol, raw_atr)
 
 
+def _kc_flip_turn_candidate(symbol: str, side: str, closed: Any, current_time: float) -> bool:
+    """Track the preconditions that a valid KC turn is underway without requiring full release."""
+    if closed is None or len(closed) < KC_FLIP_TURN_BARS + 1:
+        return False
+    current = closed.iloc[-1]
+    previous = closed.iloc[-2]
+    stamp = _float(current.get("timestamp"))
+    atr = _float(previous.get("atr"))
+    middle = _float(current.get("kc_middle"))
+    if stamp is None or atr is None or middle is None or atr <= 0:
+        return False
+    bar_minute = _minute(stamp)
+    if bar_minute != int(current_time // 60) - 1:
+        return False
+    mids = [_float(closed.iloc[i].get("kc_middle")) for i in range(-KC_FLIP_TURN_BARS - 1, 0)]
+    if any(v is None for v in mids) or len(mids) < KC_FLIP_TURN_BARS:
+        return False
+    sign = 1 if side == "LONG" else -1
+    return all(-sign * (later - earlier) > 0 for earlier, later in zip(mids, mids[1:]))
+
+
 def _kc_flip_release(
     symbol: str, side: str, closed: Any, opened: float, is_bar_closed: Any,
     current_time: float,
@@ -246,7 +267,16 @@ class UltimateShortExitGatekeeper:
                                                  "kc_upper", "kc_lower", "atr")})
         evidence["distance_atr"] = atr
 
-        if is_bar_closed is False:
+        closed_flag = current.get("is_closed")
+        frame_finality = (
+            getattr(frame, "attrs", {}).get("entry_finality_verified") is True
+        )
+        explicitly_closed = (
+            closed_flag is True
+            or (type(closed_flag).__name__ == "bool_" and bool(closed_flag))
+            or frame_finality
+        )
+        if is_bar_closed is False or not (is_bar_closed is True or explicitly_closed):
             return hold("VETO_EXIT_BAR_NOT_CLOSED")
         current_time = time.time() if now is None else float(now)
         bar_minute = _minute(fields["timestamp"])
@@ -255,6 +285,18 @@ class UltimateShortExitGatekeeper:
             return hold("VETO_EXIT_BAR_NOT_CLOSED")
 
         close, kc_mid = fields["close"], fields["kc_middle"]
+        # Exits are only authorized on a fresh, opposite-signal bar. A position-direction
+        # completed bar is a hard hold even when the quote is near the entry.
+        if side == "SHORT" and close <= fields["open"]:
+            turn_candidate = _kc_flip_turn_candidate(symbol, side, closed, current_time)
+            if live_atr is not None and live_atr > 0 and abs(loss_atr) <= COST_SHIELD_ATR and turn_candidate:
+                return hold(f"VETO_HOLD_{side}_COST_SHIELD")
+            return hold(f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED")
+        if side == "LONG" and close >= fields["open"]:
+            turn_candidate = _kc_flip_turn_candidate(symbol, side, closed, current_time)
+            if live_atr is not None and live_atr > 0 and abs(loss_atr) <= COST_SHIELD_ATR and turn_candidate:
+                return hold(f"VETO_HOLD_{side}_COST_SHIELD")
+            return hold(f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED")
         # Disaster 2: completed close beyond the opposite KC rail.
         if (side == "SHORT" and close > fields["kc_upper"]) or (
                 side == "LONG" and close < fields["kc_lower"]):
@@ -286,8 +328,7 @@ class UltimateShortExitGatekeeper:
         fresh_cross = -sign * (ma5_prev - fields["ma15_prev"]) <= 0
         if not (fresh_cross and -sign * (ma5 - ma15) > 0 and -sign * (ma5 - ma5_prev) > 0):
             return hold(f"VETO_HOLD_{side}_MA5_MA15_NOT_CROSSED")
-        from core.services.entry_contract import is_entry_doji
-        if not -sign * (close - fields["open"]) > 0 or is_entry_doji(current):
+        if not -sign * (close - fields["open"]) > 0:
             return hold(f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED")
         return allow(STRUCTURE_EXIT_REASONS[side])
 

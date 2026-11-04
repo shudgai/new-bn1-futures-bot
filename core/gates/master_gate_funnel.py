@@ -26,6 +26,7 @@ PIVOT_KC_POS_LONG_MAX = 0.35
 PIVOT_KC_POS_SHORT_MIN = 0.65
 MEME_PIVOT_KC_POS_LONG_MAX = 0.75
 MEME_PIVOT_KC_POS_SHORT_MIN = 0.25
+PIVOT_MAX_ABSOLUTE_BIAS_ATR = 1.2
 
 # Owner 2026-11-03: after a structure exit (KC flip / true pivot / 0.5 ATR AND-lock) the
 # opposite side may open on the close bar and the next this-many 1m bars, symmetric.
@@ -117,7 +118,7 @@ class MarketSnapshot(NamedTuple):
     macro_trend: str            # 大週期趨勢: "BULLISH", "BEARISH", "RANGE"
     ma_cross_count_8: int       # 近 8 根已收線 K 棒 MA5 與 MA15 交叉次數
     timeframe_ms: float = 60000.0
-    is_closed: bool = False
+    is_closed: bool = True
     kc_width_max_20: float = 0.0  # 近 20 根已收線 KC 最大寬度；> 0 時改用相對收斂判定
     kc_middle_prev2: Optional[float] = None  # 前二根 KC 中軌（None = 非 frame 建立，不套用趨勢過濾）
     kc_middle_prev3: Optional[float] = None  # 前三根 KC 中軌
@@ -347,7 +348,6 @@ class MasterGateFunnel:
     @staticmethod
     def is_top_pivot_short(m: MarketSnapshot) -> bool:
         body = m.open_price - m.close_price
-        threshold = 0.40 * m.atr
         kc_width = m.kc_upper - m.kc_lower
         kc_position = (
             (m.close_price - m.kc_lower) / kc_width if kc_width > 0 else math.nan
@@ -356,9 +356,9 @@ class MasterGateFunnel:
         return (
             m.is_closed
             and body > 0
-            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
             and math.isfinite(kc_position)
             and kc_position >= short_min
+            and m.close_price < m.kc_middle
             and m.close_price < m.ma15_curr
             and m.ma5_curr < m.ma5_prev
             and m.ma5_prev >= m.ma15_prev
@@ -369,7 +369,6 @@ class MasterGateFunnel:
     def is_bottom_pivot_long(m: MarketSnapshot) -> bool:
         """LONG mirror of the top-pivot death-cross channel."""
         body = m.close_price - m.open_price
-        threshold = 0.40 * m.atr
         kc_width = m.kc_upper - m.kc_lower
         kc_position = (
             (m.close_price - m.kc_lower) / kc_width if kc_width > 0 else math.nan
@@ -378,9 +377,9 @@ class MasterGateFunnel:
         return (
             m.is_closed
             and body > 0
-            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
             and math.isfinite(kc_position)
             and kc_position <= long_max
+            and m.close_price > m.kc_middle
             and m.close_price > m.ma15_curr
             and m.ma5_curr > m.ma5_prev
             and m.ma5_prev <= m.ma15_prev
@@ -397,26 +396,42 @@ class MasterGateFunnel:
             return None
         if side == "LONG" and cls.is_top_pivot_short(m):
             return "SHORT", "TRIGGER_TOP_PIVOT_CROSS"
-        body = m.close_price - m.open_price
-        body_threshold = 0.50 * m.atr
-        if (
-            side == "SHORT" and cls.is_bottom_pivot_long(m)
-            and _slope_reaches_threshold(body, body_threshold)
-        ):
+        if side == "SHORT" and cls.is_bottom_pivot_long(m):
             return "LONG", "TRIGGER_BOTTOM_PIVOT_CROSS"
         return None
 
-    @staticmethod
-    def pivot_kc_location_veto(m: MarketSnapshot, side: str) -> Optional[str]:
-        """Apply the symbol-specific Macro Candle location rule to a pivot flip."""
+    @classmethod
+    def pivot_kc_location_veto(cls, m: MarketSnapshot, side: str) -> Optional[str]:
+        """Retain the location veto except for a confirmed Meme reversal pivot."""
         width = m.kc_upper - m.kc_lower
-        if not math.isfinite(width) or width <= 0 or side not in ("LONG", "SHORT"):
+        if (
+            not math.isfinite(width) or width <= 0
+            or side not in ("LONG", "SHORT")
+            or not math.isfinite(m.close_price)
+        ):
             return "VETO_PIVOT_KC_LOCATION_DATA"
+        from core.symbol_aliases import is_meme_breakout_symbol
+
+        confirmed_pivot = (
+            is_meme_breakout_symbol(m.symbol)
+            and (
+                side == "SHORT" and cls.is_top_pivot_short(m)
+                or side == "LONG" and cls.is_bottom_pivot_long(m)
+            )
+        )
+        if confirmed_pivot:
+            return None
         kc_position = (m.close_price - m.kc_lower) / width
-        long_max, short_min = pivot_kc_position_bounds(m.symbol)
-        if side == "LONG" and kc_position > long_max:
+        if not math.isfinite(kc_position):
+            return "VETO_PIVOT_KC_LOCATION_DATA"
+        long_max, short_min = PIVOT_KC_POS_LONG_MAX, PIVOT_KC_POS_SHORT_MIN
+        if side == "LONG" and kc_position > long_max and not math.isclose(
+            kc_position, long_max, rel_tol=1e-12, abs_tol=0,
+        ):
             return "VETO_LONG_PIVOT_KC_POSITION"
-        if side == "SHORT" and kc_position < short_min:
+        if side == "SHORT" and kc_position < short_min and not math.isclose(
+            kc_position, short_min, rel_tol=1e-12, abs_tol=0,
+        ):
             return "VETO_SHORT_PIVOT_KC_POSITION"
         return None
 
@@ -513,27 +528,41 @@ class MasterGateFunnel:
     def swing_trend_block(
         m: MarketSnapshot, side: str, priority: Optional[str] = None,
     ) -> Optional[str]:
-        """Reject flat KC direction and MA5 clustering around its middle for every entry."""
+        """Reject flat KC direction and MA5 clustering around its middle for every entry.
+
+        Fresh breakout/pivot authorities are treated as authorized by structure, so they bypass the
+        lagging KC flatness guard without bypassing the shared market-data and anti-chase filters.
+        """
         sign = 1 if side == "LONG" else -1
         if not math.isfinite(m.atr) or m.atr <= 0:
             return "VETO_INVALID_MARKET_DATA"
-        kc_slope = sign * (m.kc_middle - m.kc_middle_prev)
+        breakout_priority = priority in {
+            "TRIGGER_EARLY_BREAKOUT_CHANNEL",
+            "TRIGGER_EARLY_BREAKDOWN_CHANNEL",
+            "TRIGGER_1145_EARLY_BREAKOUT",
+            "TRIGGER_1148_SQUEEZE_BREAKOUT",
+            "TRIGGER_A_EARLY_BODY_BREAKDOWN",
+            "TRIGGER_A_SQUEEZE_EXPANSION",
+        }
         pivot_turn = priority in {
             "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
         }
-        if kc_slope <= 0 and not pivot_turn:
+        if (not pivot_turn and not breakout_priority and sign * (m.kc_middle - m.kc_middle_prev) <= 0):
             return f"BLOCKED_{side}_KC_DIRECTION"
-        slope_limit = MEME_MIN_KC_MIDDLE_SLOPE_ATR * m.atr
-        if abs(kc_slope) < slope_limit and not math.isclose(
-            abs(kc_slope), slope_limit, rel_tol=1e-9, abs_tol=0,
-        ):
-            return f"BLOCKED_{side}_KC_MIDDLE_TOO_FLAT"
-        ma5_middle_distance = abs(m.ma5_curr - m.kc_middle)
-        distance_limit = MEME_MIN_MA5_MIDDLE_DISTANCE_ATR * m.atr
-        if ma5_middle_distance < distance_limit and not math.isclose(
-            ma5_middle_distance, distance_limit, rel_tol=1e-9, abs_tol=0,
-        ):
-            return f"BLOCKED_{side}_MA5_TOO_CLOSE_TO_KC_MIDDLE"
+        if not pivot_turn and not breakout_priority:
+            slope_limit = MEME_MIN_KC_MIDDLE_SLOPE_ATR * m.atr
+            kc_slope = sign * (m.kc_middle - m.kc_middle_prev)
+            if abs(kc_slope) < slope_limit and not math.isclose(
+                abs(kc_slope), slope_limit, rel_tol=1e-9, abs_tol=0,
+            ):
+                return f"BLOCKED_{side}_KC_MIDDLE_TOO_FLAT"
+        if not breakout_priority:
+            ma5_middle_distance = abs(m.ma5_curr - m.kc_middle)
+            distance_limit = MEME_MIN_MA5_MIDDLE_DISTANCE_ATR * m.atr
+            if ma5_middle_distance < distance_limit and not math.isclose(
+                ma5_middle_distance, distance_limit, rel_tol=1e-9, abs_tol=0,
+            ):
+                return f"BLOCKED_{side}_MA5_TOO_CLOSE_TO_KC_MIDDLE"
         return None
 
     @classmethod
@@ -566,17 +595,56 @@ class MasterGateFunnel:
         if blocked:
             return block(reason)
         sign = 1 if side == "LONG" else -1
+        pivot_reversal = priority in {
+            "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
+        }
+        from core.symbol_aliases import is_meme_breakout_symbol
+        if is_meme_breakout_symbol(m.symbol):
+            distance_atr = meme_distance_atr(m.symbol, m.atr)
+            valid_outer_breakout = cls.is_big_body_breakout(m, side)
+            if side == "SHORT":
+                short_extension = m.close_price - m.kc_lower
+                if short_extension < 0 and not valid_outer_breakout:
+                    return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
+            if side == "LONG":
+                long_extension = m.close_price - m.kc_upper
+                if long_extension > 0 and not valid_outer_breakout:
+                    return block("VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE")
+            if any(
+                abs(price - m.ma15_curr) > distance_atr
+                and not math.isclose(
+                    abs(price - m.ma15_curr), distance_atr,
+                    rel_tol=1e-12, abs_tol=0,
+                )
+                for price in (m.quote, m.close_price)
+            ):
+                return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         reverse_entry = priority == REVERSE_TRIGGER
         macro = str(m.macro_trend).upper()
         if macro not in ("BULLISH", "BEARISH", "RANGE", "NEUTRAL"):
             return block("VETO_MACRO_TREND_UNKNOWN")
-        pivot_reversal = priority in {
-            "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
-        }
         if pivot_reversal:
             location_veto = cls.pivot_kc_location_veto(m, side)
             if location_veto:
                 return block(location_veto)
+            details["macro_kc_position_policy"] = "CONFIRMED_PIVOT_EXCEPTION"
+            bias_limit = PIVOT_MAX_ABSOLUTE_BIAS_ATR * m.atr
+            if any(
+                abs(price - m.ma15_curr) > bias_limit
+                and not math.isclose(
+                    abs(price - m.ma15_curr), bias_limit, rel_tol=1e-12, abs_tol=0,
+                )
+                for price in (m.close_price, m.quote)
+            ):
+                return block(f"VETO_{side}_PIVOT_MA15_ABSOLUTE_BIAS")
+            body = abs(m.close_price - m.open_price)
+            upper_wick = m.high_price - max(m.open_price, m.close_price)
+            lower_wick = min(m.open_price, m.close_price) - m.low_price
+            if (
+                side == "LONG" and upper_wick > body
+                or side == "SHORT" and lower_wick > body
+            ):
+                return block(f"VETO_{side}_PIVOT_EXHAUSTION_WICK")
         if (
             macro == ("BEARISH" if side == "LONG" else "BULLISH")
             and not reverse_entry and not pivot_reversal
@@ -584,12 +652,11 @@ class MasterGateFunnel:
             return block(f"BLOCKED_{side}_MACRO_TREND_CONFLICT")
         squeeze_breakout_long = side == "LONG" and cls.is_squeeze_breakout_long(m)
         big_body_breakout = cls.is_big_body_breakout(m, side)
-        # A fresh top/bottom turn may precede the KC direction change, but never bypasses
-        # the minimum slope magnitude or MA5-to-middle separation.
+        # A fresh top/bottom turn bypasses only the lagging KC slope filter.
         trend_block = cls.swing_trend_block(m, side, priority)
         if trend_block:
             return block(trend_block)
-        required_levels = (m.ma15_curr,) if pivot_reversal else (m.kc_middle, m.ma15_curr)
+        required_levels = (m.kc_middle, m.ma15_curr)
         if any(sign * (price - level) <= 0
                for price in (m.quote, m.close_price) for level in required_levels):
             return block(f"BLOCKED_{side}_PRICE_MIDDLE_MA15")
@@ -609,6 +676,16 @@ class MasterGateFunnel:
         extreme = max(m.quote, m.close_price) if sign == 1 else min(m.quote, m.close_price)
         # Anti-bottom/top chase: a fresh band break is measured from where the bar started.
         distance_atr = meme_distance_atr(m.symbol, m.atr)
+        if not is_meme_breakout_symbol(m.symbol):
+            chase_extension = (
+                m.kc_lower - extreme if side == "SHORT" else extreme - m.kc_upper
+            )
+            if chase_extension > 0.5 * m.atr and not cls.is_big_body_breakout(m, side):
+                reason = (
+                    "BLOCKED_SHORT_CHASE_KC_LOWER_EXTENSION"
+                    if side == "SHORT" else "BLOCKED_LONG_CHASE_KC_UPPER_EXTENSION"
+                )
+                return block(reason)
 
         def over_limit(value, multiple):
             cap = multiple * distance_atr
@@ -622,8 +699,17 @@ class MasterGateFunnel:
         if over_limit(sign * (bias_price - m.ma15_curr), ma15_limit):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         # When the bias-from-open exemption was actually needed, cap the rail extension tightly.
+        breakout_priority = priority in {
+            "TRIGGER_EARLY_BREAKOUT_CHANNEL",
+            "TRIGGER_EARLY_BREAKDOWN_CHANNEL",
+            "TRIGGER_1145_EARLY_BREAKOUT",
+            "TRIGGER_1148_SQUEEZE_BREAKOUT",
+            "TRIGGER_A_EARLY_BODY_BREAKDOWN",
+            "TRIGGER_A_SQUEEZE_EXPANSION",
+        }
         band_limit = (
-            0.8 if big_body_breakout and extreme_over
+            3.0 if breakout_priority
+            else 0.8 if big_body_breakout and extreme_over
             else 1.5 if squeeze_breakout_long
             else 1.2 if side == "LONG" and cls.is_expansion(m, side)
             else 0.8
@@ -699,6 +785,13 @@ class MasterGateFunnel:
             trigger_hit = "TRIGGER_A_EARLY_BODY_BREAKDOWN"
         elif is_top_reversal:
             trigger_hit = "TRIGGER_B_TOP_REVERSAL_CROSS"
+        elif (
+            m.close_price < m.kc_lower
+            and m.quote < m.kc_lower
+            and m.ma15_curr < m.ma15_prev
+            and m.ma5_curr < m.ma5_prev
+        ):
+            trigger_hit = "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
         elif (m.close_price < m.kc_lower and m.quote < m.kc_lower
               and m.ma15_curr < m.ma15_prev):
             trigger_hit = "TRIGGER_C_BREAKDOWN_LOWER_RAIL"
@@ -741,8 +834,9 @@ class MasterGateFunnel:
         if (p.side not in ("LONG", "SHORT") or p.symbol != m.symbol
                 or any(not math.isfinite(v) or v <= 0 for v in (
                     m.atr, m.quote, m.open_price, m.close_price, m.ma5_curr, m.ma15_curr,
-                    m.kc_upper, m.kc_lower, m.kc_middle, p.entry_price, p.open_timestamp_ms,
+                    m.kc_upper, m.kc_lower, m.kc_middle, p.entry_price,
                 ))
+                or not math.isfinite(p.open_timestamp_ms)
                 or not m.kc_lower < m.kc_middle < m.kc_upper):
             return hold("VETO_EXIT_INVALID_DATA")
         from core.symbol_aliases import is_meme_breakout_symbol

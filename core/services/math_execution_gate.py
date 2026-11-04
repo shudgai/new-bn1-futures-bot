@@ -171,9 +171,10 @@ def validate_entry_math(
     # The final account gate must enforce MA5 direction for every entry class.
     # A breakout, continuation, manual flag, or dip/hunter label cannot turn an
     # adverse/flat MA5 slope into an authorized entry.
-    if side == "LONG" and ma5 <= previous_ma5 and not allow_override:
+    pivot_guard_override = bool(outer_pivot_authorized or meme_pivot_authorized or is_swing_pivot)
+    if side == "LONG" and ma5 <= previous_ma5 and not allow_override and not pivot_guard_override:
         return False, "BLOCKED_BY_MA5_NOT_UPWARD"
-    if side == "SHORT" and ma5 >= previous_ma5 and not allow_override:
+    if side == "SHORT" and ma5 >= previous_ma5 and not allow_override and not pivot_guard_override:
         return False, "BLOCKED_BY_MA5_NOT_DOWNWARD"
 
     # Final execution gate: numeric KC midline slope is authoritative. No
@@ -185,15 +186,19 @@ def validate_entry_math(
     kc_slope = confirmed_kc_midline_slope(direction_frame)
     if kc_slope is None:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
-    if kc_slope == 0 and not outer_pivot_authorized and not meme_authorized:
+    if kc_slope == 0 and not outer_pivot_authorized and not meme_authorized and not pivot_guard_override:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
     early_long_authorized = bool(
         meme_authorized and side == "LONG"
         and entry_method_context.get("entry_method_signal", {}).get("trigger") == "TRIGGER_1145_EARLY_BREAKOUT"
     )
-    if side == "LONG" and kc_slope < 0 and not outer_pivot_authorized and not early_long_authorized:
+    if (
+        side == "LONG" and kc_slope < 0
+        and not outer_pivot_authorized and not early_long_authorized
+        and not meme_pivot_authorized and not is_swing_pivot
+    ):
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
-    if side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized:
+    if side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized and not meme_pivot_authorized and not is_swing_pivot:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
@@ -211,7 +216,7 @@ def validate_entry_math(
     curr_ema15 = _number(current.get("ema15")) or _number(current.get("ema_fast")) or values.get("ma15")
     prev_ema15 = _number(previous.get("ema15")) or _number(previous.get("ema_fast")) or previous_ma15
 
-    if curr_ema15 is not None and prev_ema15 is not None and not allow_override:
+    if curr_ema15 is not None and prev_ema15 is not None and not allow_override and not pivot_guard_override:
         ema15_slope = curr_ema15 - prev_ema15
         if side == "LONG" and (curr_ema15 <= prev_ema15 or ema15_slope <= 0):
             return False, "BLOCKED_LONG_ON_EMA_FALLING"
