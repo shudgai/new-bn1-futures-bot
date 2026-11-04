@@ -460,8 +460,6 @@ def evaluate_kc_true_extreme_exit(
             prior_open, _, _, prior_close = previous_ohlc
             prior_atr = previous_atr
             if side == "LONG":
-                body = abs(close - opened)
-                upper_wick = high - max(opened, close)
                 upper_band = _number(closed.iloc[-1].get("kc_upper"))
                 reached = (
                     previous_atr is not None
@@ -498,22 +496,8 @@ def evaluate_kc_true_extreme_exit(
                     extension_detail = _number(state.get("outer_extension_atr"))
                     if extension_detail is None:
                         extension_detail = extension_atr
-                    wick_rejection = (
-                        prior_atr is not None
-                        and prior_atr > 0
-                        and upper_wick >= body
-                        and upper_wick >= 0.3 * prior_atr
-                    )
-                    if wick_rejection:
-                        closed_signal = (
-                            _EXIT_REASONS[side],
-                            {
-                                "cause": "LONG_UPPER_WICK",
-                                "bar_ms": closed_bar_ms,
-                                "outer_extension_atr": extension_detail,
-                            },
-                        )
-                    elif engulfed:
+                    # Wick extremes may arm a pivot, but only a closed-body reversal exits.
+                    if engulfed:
                         closed_signal = (
                             _EXIT_REASONS[side],
                             {

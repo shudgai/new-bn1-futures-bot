@@ -270,3 +270,34 @@ def test_ordinary_pullback_exit_is_explicitly_vetoed_until_structure_break(side,
     assert not automated_position_exit_allowed(
         symbol, position, {}, reason, position["entry_price"],
     )
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_wick_beyond_structure_levels_does_not_count_without_close_break(side):
+    sign = 1 if side == "LONG" else -1
+    data = frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5)
+    current = data.index[-1]
+    middle = float(data.loc[current, "kc_middle"])
+    ma15 = float(data.loc[current, "ma15"])
+    close = max(middle, ma15) + 1e-7 if side == "LONG" else min(middle, ma15) - 1e-7
+    opening = close + 1e-7 if side == "LONG" else close - 1e-7
+    data.loc[current, ["open", "close"]] = [opening, close]
+    if side == "LONG":
+        data.loc[current, "low"] = min(middle, ma15) - 1e-5
+    else:
+        data.loc[current, "high"] = max(middle, ma15) + 1e-5
+
+    entry = close - sign * 2 * ATR
+    position = {
+        "side": side,
+        "entry_price": entry,
+        "qty": 1,
+        "open_timestamp": time.time() - 40 * 60,
+    }
+    result = UltimateShortExitGatekeeper.evaluate(
+        "1000PEPE/USDT", position, {}, "STRUCTURE_EXIT_PROBE", close,
+        frame=data, is_bar_closed=True,
+    )
+
+    assert result.verdict == "HOLD"
+    assert result.code == f"VETO_HOLD_{side}_KC_MIDDLE_MA15_NOT_BROKEN"

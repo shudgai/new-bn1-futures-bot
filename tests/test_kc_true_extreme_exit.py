@@ -118,8 +118,9 @@ def test_long_peak_requires_outer_extension_and_intraday_pullback():
     assert third[1]["cause"] == "INTRADAY_PEAK_PULLBACK"
 
 
-def test_long_rejection_wick_needs_outer_extension_but_not_a_red_candle():
+def test_long_rejection_wick_alone_does_not_authorize_a_structure_exit():
     live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms)
     frame = _frame(
         live_bar_ms,
         live_price=11.9,
@@ -129,12 +130,12 @@ def test_long_rejection_wick_needs_outer_extension_but_not_a_red_candle():
     )
 
     decision, _ = evaluate_kc_true_extreme_exit(
-        _position(live_bar_ms), frame, 11.9, live_bar_ms + 2_000,
+        position, frame, 11.9, live_bar_ms + 2_000,
     )
 
-    assert decision is not None
-    assert decision[0] == "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
-    assert decision[1]["cause"] == "LONG_UPPER_WICK"
+    assert decision is None
+    assert position[STATE_KEY]["armed"] is True
+    assert position[STATE_KEY]["pending"] is None
 
 
 def test_bearish_engulfing_requires_outer_extension():
