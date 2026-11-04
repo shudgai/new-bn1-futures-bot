@@ -464,6 +464,44 @@ class MasterGateFunnel:
         )
 
     @staticmethod
+    def is_outer_rail_continuation(m: MarketSnapshot, side: str) -> bool:
+        """Closed directional continuation bar outside the KC outer rail with aligned MA5/KC slopes."""
+        if side not in ("LONG", "SHORT") or not math.isfinite(m.atr) or m.atr <= 0:
+            return False
+        sign = 1 if side == "LONG" else -1
+        body = sign * (m.close_price - m.open_price)
+        threshold = 0.25 * m.atr
+        band = m.kc_upper if side == "LONG" else m.kc_lower
+        open_tolerance = MEME_BREAKOUT_OPEN_BEYOND_BAND_ATR * m.atr
+        return (
+            m.is_closed
+            and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and sign * (m.close_price - band) > 0
+            and sign * (m.open_price - band) <= open_tolerance
+            and sign * (m.ma5_curr - m.ma5_prev) > 0
+            and sign * (m.kc_middle - m.kc_middle_prev) > 0
+        )
+
+    @staticmethod
+    def is_continuation_entry(m: MarketSnapshot, side: str) -> bool:
+        """Continuation entry when price remains on the trend side of KC middle/outer rail with body >= 0.30 ATR."""
+        if side not in ("LONG", "SHORT") or not math.isfinite(m.atr) or m.atr <= 0:
+            return False
+        sign = 1 if side == "LONG" else -1
+        body = sign * (m.close_price - m.open_price)
+        threshold = 0.30 * m.atr
+        return (
+            m.is_closed
+            and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and sign * (m.close_price - m.kc_middle) > 0
+            and sign * (m.ma5_curr - m.ma15_curr) > 0
+            and sign * (m.ma5_curr - m.ma5_prev) > 0
+            and sign * (m.kc_middle - m.kc_middle_prev) > 0
+        )
+
+    @staticmethod
     def is_ma_cross_slope_entry(m: MarketSnapshot, side: str) -> bool:
         """A fresh cross is priority only when KC, MA5, and MA15 slopes are established."""
         if side not in ("LONG", "SHORT") or not math.isfinite(m.atr) or m.atr <= 0:
@@ -611,18 +649,35 @@ class MasterGateFunnel:
             "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
         }
         from core.symbol_aliases import is_meme_breakout_symbol
+        big_body_breakout = cls.is_big_body_breakout(m, side)
+        slope_aligned_breakout = (
+            big_body_breakout
+            and sign * (m.ma15_curr - m.ma15_prev) > 0
+            and sign * (m.kc_middle - m.kc_middle_prev) > 0
+        )
         if is_meme_breakout_symbol(m.symbol):
             distance_atr = meme_distance_atr(m.symbol, m.atr)
-            valid_outer_breakout = cls.is_big_body_breakout(m, side)
-            if side == "SHORT":
-                short_extension = m.close_price - m.kc_lower
-                if short_extension < 0 and not valid_outer_breakout:
+            valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side)
+            directional_and_aligned = (
+                sign * (m.close_price - m.open_price) > 0
+                and sign * (m.ma5_curr - m.ma5_prev) > 0
+                and sign * (m.ma5_curr - m.ma15_curr) > 0
+            )
+            if directional_and_aligned:
+                if side == "SHORT" and m.close_price - m.kc_lower < 0 and not valid_outer_breakout:
                     return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
-            if side == "LONG":
-                long_extension = m.close_price - m.kc_upper
-                if long_extension > 0 and not valid_outer_breakout:
+                if side == "LONG" and m.close_price - m.kc_upper > 0 and not valid_outer_breakout:
                     return block("VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE")
-            if any(
+            if slope_aligned_breakout and abs(m.quote - m.close_price) <= 0.25 * distance_atr:
+                if (
+                    abs(m.open_price - m.ma15_curr) > distance_atr
+                    and not math.isclose(
+                        abs(m.open_price - m.ma15_curr), distance_atr,
+                        rel_tol=1e-12, abs_tol=0,
+                    )
+                ):
+                    return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
+            elif any(
                 abs(price - m.ma15_curr) > distance_atr
                 and not math.isclose(
                     abs(price - m.ma15_curr), distance_atr,
@@ -663,7 +718,6 @@ class MasterGateFunnel:
         ):
             return block(f"BLOCKED_{side}_MACRO_TREND_CONFLICT")
         squeeze_breakout_long = side == "LONG" and cls.is_squeeze_breakout_long(m)
-        big_body_breakout = cls.is_big_body_breakout(m, side)
         # A fresh top/bottom turn bypasses only the lagging KC slope filter.
         trend_block = cls.swing_trend_block(m, side, priority)
         if trend_block:
@@ -685,6 +739,12 @@ class MasterGateFunnel:
             return block(f"BLOCKED_{side}_MA5_MA15_FRESH_CROSS")
         if sign * (m.close_price - m.open_price) <= 0:
             return block(f"BLOCKED_{side}_DIRECTIONAL_CANDLE")
+        if is_meme_breakout_symbol(m.symbol):
+            valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side)
+            if side == "SHORT" and m.close_price - m.kc_lower < 0 and not valid_outer_breakout:
+                return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
+            if side == "LONG" and m.close_price - m.kc_upper > 0 and not valid_outer_breakout:
+                return block("VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE")
         extreme = max(m.quote, m.close_price) if sign == 1 else min(m.quote, m.close_price)
         # Anti-bottom/top chase: a fresh band break is measured from where the bar started.
         distance_atr = meme_distance_atr(m.symbol, m.atr)
@@ -703,12 +763,17 @@ class MasterGateFunnel:
             cap = multiple * distance_atr
             return value > cap and not math.isclose(value, cap, rel_tol=1e-12, abs_tol=0)
 
-        ma15_limit = MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout else MEME_MA15_EXTENSION_ATR
+        open_bias_breakout = slope_aligned_breakout and abs(m.quote - m.close_price) <= 0.25 * distance_atr
+        ma15_limit = (
+            3.5 if open_bias_breakout
+            else MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout
+            else MEME_MA15_EXTENSION_ATR
+        )
         extreme_over = over_limit(sign * (extreme - m.ma15_curr), MEME_MA15_EXTENSION_ATR)
         if over_limit(sign * (extreme - m.ma15_curr), ma15_limit):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         bias_price = m.open_price if big_body_breakout else extreme
-        if over_limit(sign * (bias_price - m.ma15_curr), ma15_limit):
+        if over_limit(sign * (bias_price - m.ma15_curr), MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout else MEME_MA15_EXTENSION_ATR):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         # When the bias-from-open exemption was actually needed, cap the rail extension tightly.
         breakout_priority = priority in {
@@ -897,3 +962,29 @@ class MasterGateFunnel:
         if candidate_exit_reason not in PROFIT_PIVOT_REASONS:
             return hold("VETO_HOLD_EXIT_AUTHORITY_REQUIRED")
         return GateDecision(True, "CLOSE_POSITION", candidate_exit_reason, details)
+
+
+class MasterOpenGatekeeper(MasterGateFunnel):
+    """Master Open Gatekeeper enforcing four-in-one directional slope/alignment rules,
+    chop/squeeze blacklist, and the four open signal engines (Pivot Cross, Breakout,
+    Continuation, and MA5/MA15 Cross)."""
+
+    @classmethod
+    def validate_open_signal(
+        cls,
+        m: MarketSnapshot,
+        side: str,
+        is_in_cooldown: bool = False,
+    ) -> GateDecision:
+        normalized = str(side or "").upper()
+        if normalized in ("LONG", "OPEN_LONG"):
+            return cls.evaluate_open_long(m, is_in_cooldown=is_in_cooldown)
+        if normalized in ("SHORT", "OPEN_SHORT"):
+            return cls.evaluate_open_short(m, is_in_cooldown=is_in_cooldown)
+        return GateDecision(
+            False,
+            "HOLD",
+            "VETO_INVALID_ENTRY_SIDE",
+            {"symbol": m.symbol, "side": normalized},
+        )
+

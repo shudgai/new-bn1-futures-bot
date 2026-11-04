@@ -304,21 +304,6 @@ class UltimateShortExitGatekeeper:
         if bars_held < MIN_BARS_HELD:
             return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
 
-        if normalized in {
-            "STRUCTURE_EXIT_PROBE",
-            *(reason.upper() for reason in KC_MIDDLE_MA15_BREAK_REASONS.values()),
-        }:
-            opposite_body = -sign * (close - fields["open"]) > 0
-            structure_broken = (
-                -sign * (close - kc_mid) > 0
-                and -sign * (close - fields["ma15"]) > 0
-            )
-            if not opposite_body:
-                return hold(f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED")
-            if not structure_broken:
-                return hold(f"VETO_HOLD_{side}_KC_MIDDLE_MA15_NOT_BROKEN")
-            return allow(KC_MIDDLE_MA15_BREAK_REASONS[side])
-
         if live_atr is not None and live_atr > 0:
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
 

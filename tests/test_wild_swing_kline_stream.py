@@ -3,6 +3,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 import core.engine as engine_module
@@ -268,7 +269,7 @@ def test_rest_kline_fallback_is_throttled_and_reuses_cached_data(symbol, monkeyp
     asyncio.run(scenario())
 
 
-def test_rest_kline_cooldown_is_per_symbol_and_alias_independent():
+def test_rest_kline_cooldown_is_per_symbol_timeframe_and_alias_independent():
     async def scenario():
         engine = _engine_with_kline_cache()
         engine.exchange = type("Exchange", (), {})()
@@ -278,13 +279,45 @@ def test_rest_kline_cooldown_is_per_symbol_and_alias_independent():
         await engine.fetch_klines("LOBSTER/USDT", "1m", limit=2, keep_live=True)
         await engine.fetch_klines(CAP, "15m", limit=2, keep_live=True)
 
-        assert engine.exchange.fetch_ohlcv.await_count == 2
+        assert engine.exchange.fetch_ohlcv.await_count == 3
         assert engine.exchange.fetch_ohlcv.await_args_list[0].args == (
             "龙虾/USDT:USDT",
         )
+        assert engine.exchange.fetch_ohlcv.await_args_list[0].kwargs["timeframe"] == "15m"
         assert engine.exchange.fetch_ohlcv.await_args_list[1].args == (
+            "龙虾/USDT:USDT",
+        )
+        assert engine.exchange.fetch_ohlcv.await_args_list[1].kwargs["timeframe"] == "1m"
+        assert engine.exchange.fetch_ohlcv.await_args_list[2].args == (
             "CAP/USDT:USDT",
         )
+
+    asyncio.run(scenario())
+
+
+def test_rest_empty_response_without_cache_is_logged_and_throttled(monkeypatch):
+    async def scenario():
+        engine = _engine_with_kline_cache()
+        engine.exchange = type("Exchange", (), {})()
+        engine.account.logs = []
+        engine.account.log = lambda message, *_args, **_kwargs: engine.account.logs.append(message)
+        fetch = AsyncMock(return_value=pd.DataFrame())
+        monkeypatch.setattr(engine_module, "fetch_market_klines", fetch)
+        clock = [100.0]
+        monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock[0])
+
+        first = await engine.fetch_klines(PEPE, "1m", limit=20, keep_live=True)
+        clock[0] += 1.0
+        second = await engine.fetch_klines(PEPE, "1m", limit=20, keep_live=True)
+
+        assert first.empty and second.empty
+        fetch.assert_awaited_once()
+        rest_logs = [
+            message for message in engine.account.logs
+            if "1m REST K 線不可用" in message
+        ]
+        assert len(rest_logs) == 1
+        assert "不以缺資料授權新單" in rest_logs[0]
 
     asyncio.run(scenario())
 

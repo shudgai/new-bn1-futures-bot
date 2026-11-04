@@ -20,3 +20,17 @@
 - **Modification Description**: Permit a validated live adverse waterfall to close immediately, including during the cost shield and before five completed bars. Authorization requires a fresh, valid live 1-minute candle, a post-entry candle, an adverse body of at least 1.5 preceding-bar ATR, and the live quote beyond KC middle. Wick-only touches, stale/malformed data, and candles without the required body/structure evidence remain blocked.
 - **Trigger Reason & Requirement**: User requested immediate exit when a structural break occurs with a major waterfall, without waiting for the abnormal candle to finish.
 - **Verification & Test Status**: `tests/test_meme_waterfall_authority.py` and `tests/test_ultimate_exit_red_candle_veto.py` — 342 passed, including Paper/Testnet close-boundary cases for both sides and all three supported meme symbols. A broader related run had 361 passed and 3 unrelated pre-existing failures in entry direction and circuit-breaker boundary tests. No exchange order, deployment, restart, commit, or push was performed for this follow-up.
+
+### [2026-11-04 22:43:33 UTC+8] - Modification Phase: Require confirmed structural exit strength
+- **Author**: shudgai999 / Copilot
+- **Target Files & Lines**: `core/gates/ultimate_short_exit_gatekeeper.py` (`evaluate`); `tests/test_ultimate_exit_red_candle_veto.py`.
+- **Modification Description**: Removed the KC-middle/MA15 special-case exit that bypassed the existing 0.50 ATR buffer and fresh MA5/MA15 cross checks. Ordinary structural exits now use the same confirmed threshold for both sides; inside the cost shield, the existing three-step KC turn confirmation remains mandatory. Verified waterfall and disaster exits are unchanged.
+- **Trigger Reason & Requirement**: User reported the 2026-11-04 22:30 Lobster LONG exit as premature.
+- **Verification & Test Status**: Exit-gate and structure-wiring tests — 89 passed; structural-hold, waterfall, and master-funnel regressions — 1,294 passed; Python compilation and `git diff --check` passed. No exchange order, deployment, restart, commit, or push was performed.
+
+### [2026-11-04 22:49:56 UTC+8] - Modification Phase: Isolate Kline REST fallback by timeframe
+- **Author**: shudgai999 / Copilot
+- **Target Files & Lines**: `core/engine.py` (`_fetch_wild_swing_rest_klines`); `tests/test_wild_swing_kline_stream.py`.
+- **Modification Description**: Keyed REST request cooldowns and no-data log throttling by canonical symbol plus timeframe, preventing a recent request for another timeframe from suppressing a 1m refresh. Empty REST responses with no usable cache now produce a timeframe-specific warning while preserving fail-closed entry behavior.
+- **Trigger Reason & Requirement**: User authorized investigation/fix of PEPE Kline availability only, without relaxing entry filters.
+- **Verification & Test Status**: Kline stream tests — 26 passed; combined Kline, structural-exit, wiring, and waterfall regression tests — 373 passed; compilation and `git diff --check` passed. The historic missing-candle intervals cannot be attributed conclusively to this shared-cooldown bug; no strategy gate was relaxed. No order, deployment, restart, commit, or push was performed.

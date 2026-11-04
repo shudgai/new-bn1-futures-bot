@@ -377,7 +377,7 @@ class TradingEngine:
         self._wild_swing_kline_stream_ready: set[str] = set()
         self._wild_swing_kline_fallback_logged: set[str] = set()
         self._wild_swing_kline_rest_cache: Dict[tuple[str, str], list] = {}
-        self._wild_swing_kline_rest_last_attempt: Dict[str, float] = {}
+        self._wild_swing_kline_rest_last_attempt: Dict[tuple[str, str], float] = {}
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
@@ -1178,7 +1178,23 @@ class TradingEngine:
 
         now = time.monotonic()
         cached_rows = rest_cache.get(cache_key)
-        last_attempt = last_attempts.get(exchange_symbol)
+        last_attempt = last_attempts.get(cache_key)
+
+        def log_unavailable(reason: str) -> None:
+            cooldown_logged_at = getattr(
+                self, "_wild_swing_kline_cooldown_logged_at", None,
+            )
+            if cooldown_logged_at is None:
+                cooldown_logged_at = self._wild_swing_kline_cooldown_logged_at = {}
+            logged_at = time.monotonic()
+            if logged_at - cooldown_logged_at.get(cache_key, 0.0) >= 30.0:
+                cooldown_logged_at[cache_key] = logged_at
+                self.account.log(
+                    f"⚠️ [{symbol}] {timeframe} REST K 線不可用（{reason}），"
+                    "沒有可用快取，本輪不以缺資料授權新單",
+                    "WARNING",
+                )
+
         if (
             last_attempt is not None
             and now - last_attempt < WILD_SWING_KLINE_REST_COOLDOWN_SECONDS
@@ -1190,21 +1206,10 @@ class TradingEngine:
                     timeframe,
                     keep_live=keep_live,
                 )
-            cooldown_logged_at = getattr(
-                self, "_wild_swing_kline_cooldown_logged_at", None,
-            )
-            if cooldown_logged_at is None:
-                cooldown_logged_at = self._wild_swing_kline_cooldown_logged_at = {}
-            if now - cooldown_logged_at.get(exchange_symbol, 0.0) >= 30.0:
-                cooldown_logged_at[exchange_symbol] = now
-                self.account.log(
-                    f"⚠️ [{symbol}] REST K 線仍在 3 秒節流冷卻內且沒有可用快取，"
-                    "本輪不以缺資料授權新單",
-                    "WARNING",
-                )
+            log_unavailable("仍在節流冷卻")
             return pd.DataFrame()
 
-        last_attempts[exchange_symbol] = now
+        last_attempts[cache_key] = now
         fetched = await fetch_market_klines(
             self.exchange,
             symbol,
@@ -1234,6 +1239,7 @@ class TradingEngine:
 
         rows = rest_cache.get(cache_key) or fallback_rows
         if not rows:
+            log_unavailable("REST 嘗試未回傳有效資料")
             return pd.DataFrame()
         return frame_from_ohlcv_snapshot(
             rows[-limit:],
@@ -3006,7 +3012,7 @@ class TradingEngine:
             return False
 
         wild_signal = (meta_dict or {}) if entry_mode == "WILD_SWING" else {}
-        if frame is not None and len(frame) >= 2:
+        if frame is not None and len(frame) >= 2 and not is_authority_entry:
             from core.gates.trend_riding_strategy import can_open_position
             can_open, gate_reason, _ = can_open_position(
                 df=frame,
@@ -3073,6 +3079,8 @@ class TradingEngine:
                 entry_metadata.get("position_uuid")
                 if is_authority_entry else None
             ),
+            'entry_gate_frame': frame if is_authority_entry else None,
+            'entry_gate_quote': price if is_authority_entry else None,
             'entry_pattern': (
                 wild_signal.get('entry_pattern')
                 if entry_mode == "WILD_SWING" else None
@@ -3333,30 +3341,31 @@ class TradingEngine:
                 "BREAK_STRONG_ADD",
                 "BREAK_SINGLE",
             }
-            structure_problem = market_structure_gate_problem(
-                frame,
-                side,
-                quote=price,
-                enforce_ma_direction=not (is_confirmed_wild_outer or is_relaxed_ma_pattern),
-                is_confirmed_outer_entry=is_confirmed_wild_outer or is_relaxed_ma_pattern,
-                is_continuation_entry=is_relaxed_ma_pattern or confirmation_name in {
-                    "CONTINUATION_OUTSIDE_KC",
-                    "CONFIRMED_2BAR_CONTINUATION",
-                    "CONTINUATION",
-                    "KC_CONTINUATION_ENTRY",
-                    "TRIGGER_C_CONTINUATION",
-                    "POST_CLOSE_CONTINUATION_ENTRY",
-                },
-                is_relaxed_ma_entry=is_relaxed_ma_pattern,
-                symbol=symbol,
-            )
-            if structure_problem:
-                self.account.log(
-                    f"MARKET_STRUCTURE_GATE status=VETO reason={structure_problem} "
-                    f"symbol={symbol} side={side}",
-                    "WARNING",
+            if not is_authority_entry:
+                structure_problem = market_structure_gate_problem(
+                    frame,
+                    side,
+                    quote=price,
+                    enforce_ma_direction=not (is_confirmed_wild_outer or is_relaxed_ma_pattern),
+                    is_confirmed_outer_entry=is_confirmed_wild_outer or is_relaxed_ma_pattern,
+                    is_continuation_entry=is_relaxed_ma_pattern or confirmation_name in {
+                        "CONTINUATION_OUTSIDE_KC",
+                        "CONFIRMED_2BAR_CONTINUATION",
+                        "CONTINUATION",
+                        "KC_CONTINUATION_ENTRY",
+                        "TRIGGER_C_CONTINUATION",
+                        "POST_CLOSE_CONTINUATION_ENTRY",
+                    },
+                    is_relaxed_ma_entry=is_relaxed_ma_pattern,
+                    symbol=symbol,
                 )
-                return False
+                if structure_problem:
+                    self.account.log(
+                        f"MARKET_STRUCTURE_GATE status=VETO reason={structure_problem} "
+                        f"symbol={symbol} side={side}",
+                        "WARNING",
+                    )
+                    return False
 
             opened = False
             try:

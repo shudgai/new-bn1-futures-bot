@@ -67,38 +67,28 @@ def verdict(side, opened, close, prev_ma5=FRESH_PREV_MA5):
 def test_fresh_cross_on_reversal_body_beyond_buffer_authorizes_exit(side):
     result = verdict(side, 0.0046926, 0.0046979)
     assert result.verdict == "ALLOW"
-    assert result.code == f"EXIT_{side}_KC_MIDDLE_MA15_BREAK"
+    assert result.code == f"EXIT_{side}_STRUCTURE_BREAK_050ATR"
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
-def test_structure_break_does_not_require_half_atr_or_fresh_ma_cross(side):
-    # A reversal close beyond both structure levels is sufficient even below the
-    # former 0.50 ATR buffer and when MA5 crossed before the current bar.
+def test_structure_break_inside_half_atr_buffer_is_vetoed(side):
     result = verdict(side, 0.0046910, 0.0046920, prev_ma5=STALE_MA5)
-    assert result.verdict == "ALLOW"
-    assert result.code == f"EXIT_{side}_KC_MIDDLE_MA15_BREAK"
-    position = {
-        "side": side,
-        "entry_price": mirror(0.00470653, side),
-        "qty": 1,
-        "open_timestamp": time.time() - 40 * 60,
-    }
-    assert UltimateShortExitGatekeeper.can_execute_exit(
-        "1000PEPE/USDT",
-        position,
-        {},
-        result.code,
-        mirror(0.0046920, side),
-        frame=frame(side, 0.0046910, 0.0046920, STALE_MA5),
-        is_bar_closed=True,
-    )
+    assert result.verdict == "HOLD"
+    assert result.code == f"VETO_HOLD_{side}_WITHIN_050_ATR_BUFFER"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_structure_break_requires_fresh_ma5_ma15_cross(side):
+    result = verdict(side, 0.0046926, 0.0046979, prev_ma5=STALE_MA5)
+    assert result.verdict == "HOLD"
+    assert result.code == f"VETO_HOLD_{side}_MA5_MA15_NOT_CROSSED"
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
 def test_structure_break_must_close_beyond_both_kc_middle_and_ma15(side):
     result = verdict(side, 0.0046895, 0.0046905)
     assert result.verdict == "HOLD"
-    assert result.code == f"VETO_HOLD_{side}_KC_MIDDLE_MA15_NOT_BROKEN"
+    assert result.code == f"VETO_HOLD_{side}_WITHIN_050_ATR_BUFFER"
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
@@ -306,4 +296,4 @@ def test_wick_beyond_structure_levels_does_not_count_without_close_break(side):
     )
 
     assert result.verdict == "HOLD"
-    assert result.code == f"VETO_HOLD_{side}_KC_MIDDLE_MA15_NOT_BROKEN"
+    assert result.code == f"VETO_HOLD_{side}_WITHIN_050_ATR_BUFFER"
