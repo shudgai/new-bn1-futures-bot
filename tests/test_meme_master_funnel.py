@@ -671,8 +671,65 @@ def test_execution_manager_flip_honors_strict_kc_location_veto(monkeypatch):
     ],
 )
 def test_reversal_entry_obeys_strict_macro_kc_location(target_side, reason):
-    m = market(target_side)
+    m = market(target_side, "BTC/USDT")
     assert MasterGateFunnel.pivot_kc_location_veto(m, target_side) == reason
+
+
+@pytest.mark.parametrize(
+    "side,position,allowed",
+    [
+        ("SHORT", 0.29, True),
+        ("SHORT", 0.25, True),
+        ("SHORT", 0.249, False),
+        ("LONG", 0.71, True),
+        ("LONG", 0.75, True),
+        ("LONG", 0.751, False),
+    ],
+)
+def test_meme_pivot_location_uses_relaxed_symmetric_bounds(side, position, allowed):
+    m = market(side, "1000PEPE/USDT")._replace(
+        kc_lower=100.0,
+        kc_upper=104.0,
+        close_price=100.0 + position * 4.0,
+    )
+    expected_reason = None if allowed else f"VETO_{side}_PIVOT_KC_POSITION"
+    assert MasterGateFunnel.pivot_kc_location_veto(m, side) == expected_reason
+
+
+@pytest.mark.parametrize(
+    "side,allowed",
+    [("SHORT", True), ("LONG", True)],
+)
+def test_meme_confirmed_pivot_is_recognized_in_relaxed_kc_zone(side, allowed):
+    if side == "SHORT":
+        position = 0.29
+        close = 97.5 + position * (98.6 - 97.5)
+        m = pivot_market("SHORT")._replace(
+            quote=close, close_price=close, open_price=close + 0.681,
+            high_price=close + 0.691, low_price=close - 0.01,
+            atr=1.5,
+        )
+    else:
+        position = 0.71
+        lower, upper = 100.9, 102.9
+        close = lower + position * (upper - lower)
+        m = pivot_market("LONG")._replace(
+            quote=close, close_price=close, kc_lower=lower, kc_upper=upper,
+            open_price=close - 0.61,
+            high_price=close + 0.01, low_price=close - 0.62,
+            ma5_curr=102.08, ma15_curr=101.8,
+            atr=1.5,
+        )
+    assert MasterGateFunnel.pivot_kc_location_veto(m, side) is None
+    decision = (
+        MasterGateFunnel.evaluate_open_short(m)
+        if side == "SHORT" else MasterGateFunnel.evaluate_open_long(m)
+    )
+    assert decision.can_execute is allowed, decision
+    assert decision.details["priority_channel"] == (
+        "TRIGGER_TOP_PIVOT_CROSS"
+        if side == "SHORT" else "TRIGGER_BOTTOM_PIVOT_CROSS"
+    )
 
 
 @pytest.mark.parametrize("minute,opened,close,high,low,ma5,prev_ma5,ma15,middle,prev_middle,lower,atr,allowed", [

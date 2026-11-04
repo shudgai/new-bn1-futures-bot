@@ -412,6 +412,75 @@ def test_non_breakout_keeps_macro_relative_location(side):
     assert reason == "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION"
 
 
+@pytest.mark.parametrize(
+    "side,position,allowed",
+    [
+        ("SHORT", 0.29, True),
+        ("SHORT", 0.25, True),
+        ("SHORT", 0.249, False),
+        ("LONG", 0.71, True),
+        ("LONG", 0.75, True),
+        ("LONG", 0.751, False),
+    ],
+)
+def test_meme_pivot_revalidation_uses_relaxed_symmetric_kc_bounds(
+    side, position, allowed, monkeypatch,
+):
+    import core.services.entry_methods as entry_methods
+    from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+    from core.gates.master_gate_funnel import GateDecision
+
+    lower, upper = 100.0, 104.0
+    close = lower + position * (upper - lower)
+    opened = close + 0.5 if side == "SHORT" else close - 0.5
+    ma15 = close + 0.5 if side == "SHORT" else close - 0.5
+    rows = [
+        candle(
+            60_000, opened=opened, high=max(opened, close) + 0.02,
+            low=min(opened, close) - 0.02, close=close,
+            upper=upper, lower=lower, middle=102.0,
+            short_ma=close, ma15=ma15, atr=1.0,
+        ),
+        candle(
+            120_000, opened=opened, high=max(opened, close) + 0.02,
+            low=min(opened, close) - 0.02, close=close,
+            upper=upper, lower=lower, middle=102.0,
+            short_ma=close, ma15=ma15, atr=1.0,
+        ),
+    ]
+    market = frame(rows)
+    signal = {
+        "method": THREE_BAR_PIVOT_REVERSAL,
+        "side": side,
+        "confirmation_bar_id": market.iloc[-1]["timestamp"],
+        "event_id": "pivot-revalidation-test",
+        "channel_expanding": False,
+    }
+    monkeypatch.setattr(
+        "core.gates.master_gate_funnel.evaluate_meme_entry_frame",
+        lambda *args, **kwargs: GateDecision(True, "FILTER_PASS", "PASS", {}),
+    )
+    monkeypatch.setattr(
+        entry_methods, "evaluate_entry_method", lambda *args, **kwargs: signal,
+    )
+    monkeypatch.setattr(
+        MacroCandleStructureGate, "can_open",
+        lambda *args, **kwargs: (True, "PASS_TEST_MACRO_GATE"),
+    )
+    result, reason = revalidate_entry_method(
+        market, symbol="1000PEPE/USDT", side=side, quote=close,
+        context={
+            "entry_method_authority": THREE_BAR_PIVOT_REVERSAL,
+            "entry_method_signal": signal,
+            "entry_method_bar_id": signal["confirmation_bar_id"],
+            "entry_method_event_id": signal["event_id"],
+        },
+    )
+    assert result is allowed, reason
+    if not allowed:
+        assert reason == "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION"
+
+
 def test_method_revalidation_requires_same_event():
     rows = [
         candle(60_000, opened=99, high=100.5, low=98.5, close=100,

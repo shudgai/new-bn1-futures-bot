@@ -24,6 +24,8 @@ MEME_BREAKOUT_MA15_EXTENSION_ATR = 1.0
 MEME_BREAKOUT_OPEN_BEYOND_BAND_ATR = 0.25
 PIVOT_KC_POS_LONG_MAX = 0.35
 PIVOT_KC_POS_SHORT_MIN = 0.65
+MEME_PIVOT_KC_POS_LONG_MAX = 0.75
+MEME_PIVOT_KC_POS_SHORT_MIN = 0.25
 
 # Owner 2026-11-03: after a structure exit (KC flip / true pivot / 0.5 ATR AND-lock) the
 # opposite side may open on the close bar and the next this-many 1m bars, symmetric.
@@ -84,6 +86,14 @@ def meme_distance_atr(symbol, atr: float) -> float:
     if not tick or not math.isfinite(atr) or atr <= 0:
         return atr
     return max(atr, MEME_DISTANCE_ATR_MIN_TICKS * tick)
+
+
+def pivot_kc_position_bounds(symbol) -> Tuple[float, float]:
+    """Return the KC location bounds for confirmed pivot entries."""
+    from core.symbol_aliases import is_meme_breakout_symbol
+    if is_meme_breakout_symbol(symbol):
+        return MEME_PIVOT_KC_POS_LONG_MAX, MEME_PIVOT_KC_POS_SHORT_MIN
+    return PIVOT_KC_POS_LONG_MAX, PIVOT_KC_POS_SHORT_MIN
 
 
 class MarketSnapshot(NamedTuple):
@@ -342,12 +352,13 @@ class MasterGateFunnel:
         kc_position = (
             (m.close_price - m.kc_lower) / kc_width if kc_width > 0 else math.nan
         )
+        _, short_min = pivot_kc_position_bounds(m.symbol)
         return (
             m.is_closed
             and body > 0
             and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
             and math.isfinite(kc_position)
-            and kc_position >= PIVOT_KC_POS_SHORT_MIN
+            and kc_position >= short_min
             and m.close_price < m.ma15_curr
             and m.ma5_curr < m.ma5_prev
             and m.ma5_prev >= m.ma15_prev
@@ -363,12 +374,13 @@ class MasterGateFunnel:
         kc_position = (
             (m.close_price - m.kc_lower) / kc_width if kc_width > 0 else math.nan
         )
+        long_max, _ = pivot_kc_position_bounds(m.symbol)
         return (
             m.is_closed
             and body > 0
             and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
             and math.isfinite(kc_position)
-            and kc_position <= PIVOT_KC_POS_LONG_MAX
+            and kc_position <= long_max
             and m.close_price > m.ma15_curr
             and m.ma5_curr > m.ma5_prev
             and m.ma5_prev <= m.ma15_prev
@@ -396,14 +408,15 @@ class MasterGateFunnel:
 
     @staticmethod
     def pivot_kc_location_veto(m: MarketSnapshot, side: str) -> Optional[str]:
-        """Apply the strict Macro Candle location rule only to a flip entry."""
+        """Apply the symbol-specific Macro Candle location rule to a pivot flip."""
         width = m.kc_upper - m.kc_lower
         if not math.isfinite(width) or width <= 0 or side not in ("LONG", "SHORT"):
             return "VETO_PIVOT_KC_LOCATION_DATA"
         kc_position = (m.close_price - m.kc_lower) / width
-        if side == "LONG" and kc_position > PIVOT_KC_POS_LONG_MAX:
+        long_max, short_min = pivot_kc_position_bounds(m.symbol)
+        if side == "LONG" and kc_position > long_max:
             return "VETO_LONG_PIVOT_KC_POSITION"
-        if side == "SHORT" and kc_position < PIVOT_KC_POS_SHORT_MIN:
+        if side == "SHORT" and kc_position < short_min:
             return "VETO_SHORT_PIVOT_KC_POSITION"
         return None
 

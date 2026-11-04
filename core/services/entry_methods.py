@@ -535,11 +535,19 @@ def revalidate_entry_method(
             return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_INVALID"
     elif method != POST_CLOSE_KC_REENTRY and not (
         method == KC_OUTER_PIVOT_REVERSAL and is_meme_breakout_symbol(symbol)
-    ) and (
-        (side == "LONG" and kc_position > 0.35)
-        or (side == "SHORT" and kc_position < 0.65)
     ):
-        return False, "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION"
+        long_position_max, short_position_min = 0.35, 0.65
+        if (
+            is_meme_breakout_symbol(symbol)
+            and method in {THREE_BAR_PIVOT_REVERSAL, MA5_MA15_CROSS}
+        ):
+            from core.gates.master_gate_funnel import pivot_kc_position_bounds
+            long_position_max, short_position_min = pivot_kc_position_bounds(symbol)
+        if (
+            (side == "LONG" and kc_position > long_position_max)
+            or (side == "SHORT" and kc_position < short_position_min)
+        ):
+            return False, "BLOCKED_ENTRY_METHOD_MACRO_KC_RELATIVE_LOCATION"
     relaxed = uses_relaxed_entry_limits(symbol)
     if not relaxed and bias_atr > 1.2:
         return False, "BLOCKED_ENTRY_METHOD_MACRO_MA15_BIAS"
