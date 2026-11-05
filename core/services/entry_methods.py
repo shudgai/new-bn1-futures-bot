@@ -553,6 +553,9 @@ def revalidate_entry_method(
         if live_candle_veto:
             return False, live_candle_veto
 
+    if method == MEME_GATE_ENTRY:
+        return True, "ENTRY_METHOD_REVALIDATED:" + method
+
     from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
 
     closed = closed_entry_candles(frame)

@@ -847,6 +847,9 @@ def test_reentry_execution_retains_claim_and_hourly_limits(monkeypatch, side, ou
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("error, released", [
     ("[FORBIDDEN_ENTRY] MEME_GATE_FRESH_FRAME_UNAVAILABLE", True),
+    ("BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE", True),
+    ("BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_NOT_RED", True),
+    ("BLOCKED_ENTRY_METHOD_FRAME_UNAVAILABLE", True),
     ("[FORBIDDEN_ENTRY] MEME_GATE_DATA_BLOCK", False),
     ("[FORBIDDEN_ENTRY] VETO_VOLUME_CONTRACTION", False),
 ])

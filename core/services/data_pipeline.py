@@ -373,12 +373,16 @@ class DataPipeline:
                 df_calc.attrs["entry_finality_verified"] = is_verified
                 df_calc.attrs["macro_trend"] = macro_trend
                 df_calc.attrs.setdefault("timeframe_ms", df.attrs.get("timeframe_ms", 60_000))
+                if hasattr(df, "attrs") and "snapshot_ms" in df.attrs:
+                    df_calc.attrs.setdefault("snapshot_ms", df.attrs["snapshot_ms"])
         else:
             df_calc = closed_df_with_ind
             if hasattr(df_calc, "attrs"):
                 df_calc.attrs["entry_finality_verified"] = is_verified
                 df_calc.attrs["macro_trend"] = macro_trend
                 df_calc.attrs.setdefault("timeframe_ms", df.attrs.get("timeframe_ms", 60_000))
+                if hasattr(df, "attrs") and "snapshot_ms" in df.attrs:
+                    df_calc.attrs.setdefault("snapshot_ms", df.attrs["snapshot_ms"])
 
         # Carry the snapshot's explicitly computed regime with its frame so
         # downstream gates can distinguish a valid neutral market from a

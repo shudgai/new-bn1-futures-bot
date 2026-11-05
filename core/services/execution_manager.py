@@ -28,7 +28,12 @@ from core.services.market_structure_break import (
 )
 
 logger = logging.getLogger("ExecutionManager")
-TRANSIENT_ENTRY_DATA_ERRORS = ("MEME_GATE_FRESH_FRAME_UNAVAILABLE",)
+TRANSIENT_ENTRY_DATA_ERRORS = (
+    "MEME_GATE_FRESH_FRAME_UNAVAILABLE",
+    "BLOCKED_ENTRY_METHOD_FRAME_UNAVAILABLE",
+    "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE",
+    "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_NOT_RED",
+)
 
 
 # =========================================================================
@@ -4666,6 +4671,7 @@ class ExecutionManager:
 
                 method_frame = (meta or {}).get("raw_df")
                 if method_frame is None:
+                    cls._last_open_error[symbol] = "BLOCKED_ENTRY_METHOD_FRAME_UNAVAILABLE"
                     logger.warning(
                         "ENTRY_METHOD_FINAL_VETO symbol=%s reason=BLOCKED_ENTRY_METHOD_FRAME_UNAVAILABLE",
                         symbol,
@@ -4680,6 +4686,7 @@ class ExecutionManager:
                     final_submission=True,
                 )
                 if not method_allowed:
+                    cls._last_open_error[symbol] = str(method_reason)
                     logger.warning(
                         "ENTRY_METHOD_FINAL_VETO symbol=%s side=%s method=%s reason=%s",
                         symbol, side, entry_method_authority, method_reason,
