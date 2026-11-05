@@ -45,11 +45,13 @@ def _structure_reverse_reasons() -> frozenset:
         KC_FLIP_EXIT_REASONS,
         KC_MIDDLE_MA15_BREAK_REASONS,
         STRUCTURE_EXIT_REASONS,
+        TRUE_OUTER_PIVOT_EXIT_REASONS,
     )
     from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
     return frozenset(r.upper() for r in (
         *KC_FLIP_EXIT_REASONS.values(), *KC_MIDDLE_MA15_BREAK_REASONS.values(),
-        *STRUCTURE_EXIT_REASONS.values(), *PROFIT_PIVOT_REASONS,
+        *STRUCTURE_EXIT_REASONS.values(), *TRUE_OUTER_PIVOT_EXIT_REASONS.values(),
+        *PROFIT_PIVOT_REASONS,
     ))
 
 

@@ -1047,7 +1047,13 @@ class ExecutionManager:
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
             if gate_should_exit and (
                 gate_reason in PROFIT_PIVOT_REASONS
-                or gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+                or (
+                    gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+                    and not (
+                        _is_meme_exit_symbol(symbol)
+                        and gate_reason == "EXIT_BY_EXTREME_WATERFALL"
+                    )
+                )
             ):
                 success = await cls.close_position(
                     account=account,

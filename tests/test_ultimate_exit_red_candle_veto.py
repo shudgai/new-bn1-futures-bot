@@ -297,3 +297,64 @@ def test_wick_beyond_structure_levels_does_not_count_without_close_break(side):
 
     assert result.verdict == "HOLD"
     assert result.code == f"VETO_HOLD_{side}_WITHIN_050_ATR_BUFFER"
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_outer_rail_true_valley_or_peak_pivot_releases_in_profit(side):
+    from core.gates.ultimate_short_exit_gatekeeper import TRUE_OUTER_PIVOT_EXIT_REASONS
+
+    now_minute = int(time.time() // 60)
+    m = lambda v: v if side == "SHORT" else 2 * 0.01710 - v  # noqa: E731
+    # Reproduce 龙虾/USDT 2026-11-05 09:00-09:02 true valley bottom (mirrored for LONG)
+    rows = [
+        dict(
+            timestamp=(now_minute - 3) * 60_000,
+            open=m(0.01706), high=max(m(0.01706), m(0.01703)),
+            low=min(m(0.01706), m(0.01703)), close=m(0.01706),
+            ma5=m(0.017045), ma15=m(0.017090),
+            kc_middle=m(0.017105),
+            kc_upper=max(m(0.017165), m(0.017045)),
+            kc_lower=min(m(0.017165), m(0.017045)),
+            atr=0.000037, is_closed=True,
+        ),
+        dict(
+            timestamp=(now_minute - 2) * 60_000,
+            open=m(0.01706), high=max(m(0.01706), m(0.01701)),
+            low=min(m(0.01706), m(0.01701)), close=m(0.01703),
+            ma5=m(0.017040), ma15=m(0.017086),
+            kc_middle=m(0.017101),
+            kc_upper=max(m(0.017165), m(0.017037)),
+            kc_lower=min(m(0.017165), m(0.017037)),
+            atr=0.000037, is_closed=True,
+        ),
+        dict(
+            timestamp=(now_minute - 1) * 60_000,
+            open=m(0.01703), high=max(m(0.01706), m(0.01702)),
+            low=min(m(0.01706), m(0.01702)), close=m(0.01706),
+            ma5=m(0.017044), ma15=m(0.017083),
+            kc_middle=m(0.017099),
+            kc_upper=max(m(0.017165), m(0.017033)),
+            kc_lower=min(m(0.017165), m(0.017033)),
+            atr=0.000037, is_closed=True,
+        ),
+    ]
+    data = pd.DataFrame(rows)
+    data.attrs.update(timeframe_ms=60_000, snapshot_ms=time.time() * 1000)
+    position = {
+        "side": side,
+        "entry_price": m(0.01709829),
+        "qty": 29242.0,
+        "open_timestamp": (now_minute - 10) * 60,
+    }
+    quote = m(0.01706)
+    result = UltimateShortExitGatekeeper.evaluate(
+        "龙虾/USDT", position, {}, "STRUCTURE_EXIT_PROBE", quote,
+        frame=data, is_bar_closed=True,
+    )
+    assert result.verdict == "ALLOW"
+    assert result.code == TRUE_OUTER_PIVOT_EXIT_REASONS[side]
+    assert UltimateShortExitGatekeeper.can_execute_exit(
+        "龙虾/USDT", position, {}, result.code, quote,
+        frame=data, is_bar_closed=True,
+    )
+

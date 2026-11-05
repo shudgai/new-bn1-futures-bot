@@ -51,6 +51,10 @@ KC_FLIP_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_KC_FLIP_CLOSED_ABOVE_MIDDLE",
     "LONG": "EXIT_LONG_KC_FLIP_CLOSED_BELOW_MIDDLE",
 }
+TRUE_OUTER_PIVOT_EXIT_REASONS = {
+    "SHORT": "EXIT_SHORT_TRUE_VALLEY_BOTTOM",
+    "LONG": "EXIT_LONG_TRUE_PEAK_TOP",
+}
 
 ALLOW, HOLD, DEFER = "ALLOW", "HOLD", "DEFER"
 
@@ -81,7 +85,8 @@ def _minute(value: float) -> int:
 OWN_STRUCTURE_REASONS = frozenset(
     {"STRUCTURE_EXIT_PROBE", *(r.upper() for r in STRUCTURE_EXIT_REASONS.values()),
      *(r.upper() for r in KC_MIDDLE_MA15_BREAK_REASONS.values()),
-     *(r.upper() for r in KC_FLIP_EXIT_REASONS.values())}
+     *(r.upper() for r in KC_FLIP_EXIT_REASONS.values()),
+     *(r.upper() for r in TRUE_OUTER_PIVOT_EXIT_REASONS.values())}
 )
 WATERFALL_EXIT_TOKENS = (
     "EXIT_BY_EXTREME_WATERFALL", "WATERFALL_DROP", "LIVE_ADVERSE_WATERFALL",
@@ -150,6 +155,73 @@ def _kc_flip_release(
         and -sign * (ma5 - ma15) > 0
         and -sign * (ma5 - ma5_prev) > 0
     )
+
+
+def _outer_rail_true_pivot_release(
+    symbol: str, side: str, closed: Any, opened: float, entry: float, quote: float,
+    is_bar_closed: Any, current_time: float,
+) -> bool:
+    """Confirm a 3-bar true outer-rail valley/peak bottom (真谷底/真峰頂) in profit."""
+    if is_bar_closed is False or closed is None or len(closed) < 3:
+        return False
+    b1, b2, b3 = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
+    stamp1 = _float(b1.get("timestamp"))
+    stamp3 = _float(b3.get("timestamp"))
+    if stamp1 is None or stamp3 is None:
+        return False
+    bar_minute = _minute(stamp3)
+    opened_minute = _minute(opened)
+    if (
+        bar_minute != int(current_time // 60) - 1
+        or bar_minute - opened_minute < MIN_BARS_HELD
+        or _minute(stamp1) < opened_minute
+    ):
+        return False
+    o1, h1, l1, c1 = (_float(b1.get(k)) for k in ("open", "high", "low", "close"))
+    o2, h2, l2, c2 = (_float(b2.get(k)) for k in ("open", "high", "low", "close"))
+    o3, h3, l3, c3 = (_float(b3.get(k)) for k in ("open", "high", "low", "close"))
+    kc_u1, kc_l1 = _float(b1.get("kc_upper")), _float(b1.get("kc_lower"))
+    kc_u2, kc_l2 = _float(b2.get("kc_upper")), _float(b2.get("kc_lower"))
+    ma5_2, ma5_3 = _float(b2.get("ma5")), _float(b3.get("ma5"))
+    atr2 = _float(b2.get("atr"))
+    values = [
+        o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3,
+        kc_u1, kc_l1, kc_u2, kc_l2, ma5_2, ma5_3, atr2,
+    ]
+    if any(v is None for v in values) or min(values) <= 0:
+        return False
+    mid2 = (o2 + c2) / 2.0
+    if side == "SHORT":
+        valley_low = min(l1, l2)
+        return (
+            (l2 <= kc_l2 or l1 <= kc_l1)
+            and l2 < l1
+            and l2 < l3
+            and c2 <= o2
+            and (entry - valley_low) >= 0.5 * atr2
+            and c3 < entry
+            and quote < entry
+            and c3 > o3
+            and c3 > mid2
+            and c3 > ma5_3
+            and ma5_3 > ma5_2
+        )
+    if side == "LONG":
+        peak_high = max(h1, h2)
+        return (
+            (h2 >= kc_u2 or h1 >= kc_u1)
+            and h2 > h1
+            and h2 > h3
+            and c2 >= o2
+            and (peak_high - entry) >= 0.5 * atr2
+            and c3 > entry
+            and quote > entry
+            and c3 < o3
+            and c3 < mid2
+            and c3 < ma5_3
+            and ma5_3 < ma5_2
+        )
+    return False
 
 
 class UltimateShortExitGatekeeper:
@@ -303,6 +375,11 @@ class UltimateShortExitGatekeeper:
         evidence["bars_held"] = bars_held
         if bars_held < MIN_BARS_HELD:
             return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
+
+        if normalized in OWN_STRUCTURE_REASONS and _outer_rail_true_pivot_release(
+            symbol, side, closed, opened, entry, quote, is_bar_closed, current_time,
+        ):
+            return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
 
         if live_atr is not None and live_atr > 0:
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
