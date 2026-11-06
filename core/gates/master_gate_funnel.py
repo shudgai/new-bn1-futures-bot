@@ -408,13 +408,58 @@ class MasterGateFunnel:
         cls, m: MarketSnapshot, position_side: str,
     ) -> Optional[Tuple[str, str]]:
         """Return the opposite side only for a closed, confirmed top/bottom reversal."""
-        side = str(position_side or "").upper()
-        if not m.is_closed or m.timeframe_ms != 60_000.0:
+        return cls.evaluate_top_bottom_flip(m, position_side)
+
+    @classmethod
+    def evaluate_top_bottom_flip(
+        cls, m: MarketSnapshot, position_side: Optional[str] = None,
+    ) -> Optional[Tuple[str, str]]:
+        """
+        ⚡ 一、 核心極速通道：斷頭級「真峰頂 / 真谷底」瞬間平倉＋反手開倉 (Zero-Delay Position Flip)
+        當 1m K 棒確定收線 (is_bar_closed == True) 當下，一旦識別出斷頭級轉向，
+        100% 繞過平倉緩衝區、100% 秒解 Cooldown 與豁免大週期滯後限制：
+
+        1. 真峰頂 / 斷頭轉向 (平多+開空 / 無倉開空)：
+           (1) 1m K 棒為「實體紅 K (陰線下殺，close < open, Body >= 0.35 ATR)」
+           (2) 1m 收盤價實質跌破 MA15 且跌破 KC 中軌
+           (3) MA5 實質向下死叉 MA15 (ma5_curr < ma15_curr) 或 MA5 陡峭向下跌破 MA15
+
+        2. 真谷底 / V轉反彈 (平空+開多 / 無倉開多)：
+           (1) 1m K 棒為「實體綠 K (陽線反彈，close > open, Body >= 0.35 ATR)」
+           (2) 1m 收盤價強勢站回 MA15 且站上 KC 中軌
+           (3) MA5 實質向上金叉 MA15 (ma5_curr > ma15_curr) 或 MA5 陡峭向上突破 MA15
+        """
+        if not m.is_closed or m.timeframe_ms != 60_000.0 or not math.isfinite(m.atr) or m.atr <= 0:
             return None
-        if side == "LONG" and cls.is_top_pivot_short(m):
-            return "SHORT", "TRIGGER_TOP_PIVOT_CROSS"
-        if side == "SHORT" and cls.is_bottom_pivot_long(m):
-            return "LONG", "TRIGGER_BOTTOM_PIVOT_CROSS"
+
+        side = str(position_side or "").upper() if position_side else None
+
+        # 頂部斷頭轉向 -> 開空
+        is_top_flip = (
+            m.close_price < m.open_price
+            and (m.open_price - m.close_price) >= 0.35 * m.atr
+            and m.close_price < m.ma15_curr
+            and m.close_price < m.kc_middle
+            and m.ma5_curr < m.ma15_curr
+            and m.ma5_curr < m.ma5_prev
+        )
+        if is_top_flip:
+            if side is None or side in ("LONG", "FLAT", ""):
+                return "SHORT", "TRIGGER_TOP_PIVOT_CROSS"
+
+        # 底部V轉反彈 -> 開多
+        is_bottom_flip = (
+            m.close_price > m.open_price
+            and (m.close_price - m.open_price) >= 0.35 * m.atr
+            and m.close_price > m.ma15_curr
+            and m.close_price > m.kc_middle
+            and m.ma5_curr > m.ma15_curr
+            and m.ma5_curr > m.ma5_prev
+        )
+        if is_bottom_flip:
+            if side is None or side in ("SHORT", "FLAT", ""):
+                return "LONG", "TRIGGER_BOTTOM_PIVOT_CROSS"
+
         return None
 
     @classmethod

@@ -424,12 +424,13 @@ class UltimateShortExitGatekeeper:
         # 100% 豁免後續 0.50 ATR 緩衝區，直接在頂部第一時間高位授權平倉！
         candle_body = abs(close - fields["open"])
         fresh_ma_cross = -sign * (fields["ma5_prev"] - fields["ma15_prev"]) <= 0 and -sign * (fields["ma5"] - fields["ma15"]) > 0
+        ma_reversed = -sign * (fields["ma5"] - fields["ma15"]) > 0 and -sign * (fields["ma5"] - fields["ma5_prev"]) > 0
         fast_reversal = (
             -sign * (close - fields["open"]) > 0
             and candle_body >= 0.35 * atr
             and -sign * (close - fields["kc_middle"]) > 0
             and -sign * (close - fields["ma15"]) > 0
-            and fresh_ma_cross
+            and (fresh_ma_cross or (ma_reversed and not beyond_buffer))
         )
         if fast_reversal and (
             not beyond_buffer
