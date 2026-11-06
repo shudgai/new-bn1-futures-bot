@@ -166,7 +166,7 @@ def _outer_rail_true_pivot_release(
     symbol: str, side: str, closed: Any, opened: float, entry: float, quote: float,
     is_bar_closed: Any, current_time: float,
 ) -> bool:
-    """Confirm a 3-bar true outer-rail valley/peak bottom (真谷底/真峰頂) in profit."""
+    """Confirm a 3-bar true valley/peak bottom (真谷底/真峰頂) in profit or reversal."""
     if is_bar_closed is False or closed is None or len(closed) < 3:
         return False
     b1, b2, b3 = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
@@ -176,11 +176,7 @@ def _outer_rail_true_pivot_release(
         return False
     bar_minute = _minute(stamp3)
     opened_minute = _minute(opened)
-    if (
-        bar_minute != int(current_time // 60) - 1
-        or bar_minute - opened_minute < MIN_BARS_HELD
-        or _minute(stamp1) < opened_minute
-    ):
+    if bar_minute != int(current_time // 60) - 1:
         return False
     o1, h1, l1, c1 = (_float(b1.get(k)) for k in ("open", "high", "low", "close"))
     o2, h2, l2, c2 = (_float(b2.get(k)) for k in ("open", "high", "low", "close"))
@@ -196,36 +192,41 @@ def _outer_rail_true_pivot_release(
     if any(v is None for v in values) or min(values) <= 0:
         return False
     mid2 = (o2 + c2) / 2.0
+    # True Pivot Check:
+    # SHORT -> True Valley (真谷底): bar 2 lowest point (l2 < l1 and l2 < l3), bar 3 confirms with green reversal (c3 > o3, c3 > mid2, c3 > ma5_3)
+    # 只要形成真谷底確認，且處於獲利或已實質探底展開（valley_low <= entry），立即在谷底平倉，絕不拖到中軌！
     if side == "SHORT":
         valley_low = min(l1, l2)
-        return (
-            (l2 <= kc_l2 or l1 <= kc_l1)
-            and l2 < l1
+        # 只要三點真谷底確立且谷底曾低於開倉價或獲利展開
+        is_true_valley = (
+            l2 < l1
             and l2 < l3
-            and c2 <= o2
-            and (entry - valley_low) >= 0.5 * atr2
-            and c3 < entry
-            and quote < entry
             and c3 > o3
             and c3 > mid2
             and c3 > ma5_3
             and ma5_3 > ma5_2
         )
+        if is_true_valley:
+            # 獲利展開或谷底低於成本，或至少持倉形成確定性底部
+            if (entry - valley_low) >= 0.25 * atr2 or quote <= entry * 1.002:
+                return True
+        return False
+    # LONG -> True Peak (真峰頂): bar 2 highest point (h2 > h1 and h2 > h3), bar 3 confirms with red reversal (c3 < o3, c3 < mid2, c3 < ma5_3)
+    # 只要形成真峰頂確認，且處於獲利或已實質衝高展開（peak_high >= entry），立即在頂部平倉，絕不拖到中軌！
     if side == "LONG":
         peak_high = max(h1, h2)
-        return (
-            (h2 >= kc_u2 or h1 >= kc_u1)
-            and h2 > h1
+        is_true_peak = (
+            h2 > h1
             and h2 > h3
-            and c2 >= o2
-            and (peak_high - entry) >= 0.5 * atr2
-            and c3 > entry
-            and quote > entry
             and c3 < o3
             and c3 < mid2
             and c3 < ma5_3
             and ma5_3 < ma5_2
         )
+        if is_true_peak:
+            if (peak_high - entry) >= 0.25 * atr2 or quote >= entry * 0.998:
+                return True
+        return False
     return False
 
 
@@ -376,15 +377,18 @@ class UltimateShortExitGatekeeper:
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
 
-        bars_held = bar_minute - _minute(opened)
-        evidence["bars_held"] = bars_held
-        if bars_held < MIN_BARS_HELD:
-            return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
-
+        # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit)
+        # 使用者與策略核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底市價平倉獲利了結！
+        # 絕不拖延、絕不走過頭到中軌或反側外軌，100% 豁免持倉滿 5 根 K 棒限制！
         if normalized in OWN_STRUCTURE_REASONS and _outer_rail_true_pivot_release(
             symbol, side, closed, opened, entry, quote, is_bar_closed, current_time,
         ):
             return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
+
+        bars_held = bar_minute - _minute(opened)
+        evidence["bars_held"] = bars_held
+        if bars_held < MIN_BARS_HELD:
+            return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
 
         if live_atr is not None and live_atr > 0:
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
