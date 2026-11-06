@@ -281,6 +281,9 @@ class MasterGateFunnel:
             or cls.is_early_long(m) or cls.is_top_pivot_short(m)
             or cls.is_squeeze_breakout_long(m) or cls.is_bottom_pivot_long(m)
             or cls.is_big_body_breakout(m, "LONG") or cls.is_big_body_breakout(m, "SHORT")
+            or cls.is_outer_rail_continuation(m, "LONG") or cls.is_outer_rail_continuation(m, "SHORT")
+            or cls.is_continuation_entry(m, "LONG") or cls.is_continuation_entry(m, "SHORT")
+            or cls.is_express_trend_entry(m, "LONG") or cls.is_express_trend_entry(m, "SHORT")
         )
         kc_width = m.kc_upper - m.kc_lower
         if math.isfinite(m.kc_width_max_20) and m.kc_width_max_20 > 0:
@@ -504,6 +507,30 @@ class MasterGateFunnel:
         )
 
     @staticmethod
+    def is_express_trend_entry(m: MarketSnapshot, side: str) -> bool:
+        """Express Trend Channel: trend-aligned breakout/continuation with body >= 0.35 ATR,
+        MA5 > MA15 (or < for short) diverging in direction, and close beyond KC middle/MA15 or outer rail."""
+        if side not in ("LONG", "SHORT") or not math.isfinite(m.atr) or m.atr <= 0:
+            return False
+        sign = 1 if side == "LONG" else -1
+        body = sign * (m.close_price - m.open_price)
+        threshold = 0.35 * m.atr
+        band = m.kc_upper if side == "LONG" else m.kc_lower
+        beyond_mid_or_rail = (
+            (sign * (m.close_price - m.kc_middle) > 0 and sign * (m.close_price - m.ma15_curr) > 0)
+            or sign * (m.close_price - band) > 0
+        )
+        return (
+            m.is_closed
+            and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and beyond_mid_or_rail
+            and sign * (m.ma5_curr - m.ma15_curr) > 0
+            and sign * (m.ma5_curr - m.ma5_prev) > 0
+            and sign * (m.kc_middle - m.kc_middle_prev) > 0
+        )
+
+    @staticmethod
     def is_ma_cross_slope_entry(m: MarketSnapshot, side: str) -> bool:
         """A fresh cross is priority only when KC, MA5, and MA15 slopes are established."""
         if side not in ("LONG", "SHORT") or not math.isfinite(m.atr) or m.atr <= 0:
@@ -567,11 +594,15 @@ class MasterGateFunnel:
                 return "TRIGGER_TOP_PIVOT_CROSS"
             if cls.is_big_body_breakout(m, "SHORT"):
                 return "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+            if cls.is_express_trend_entry(m, "SHORT"):
+                return "TRIGGER_EXPRESS_TREND_SHORT"
         elif side == "LONG":
             if cls.is_bottom_pivot_long(m):
                 return "TRIGGER_BOTTOM_PIVOT_CROSS"
             if cls.is_big_body_breakout(m, "LONG"):
                 return "TRIGGER_EARLY_BREAKOUT_CHANNEL"
+            if cls.is_express_trend_entry(m, "LONG"):
+                return "TRIGGER_EXPRESS_TREND_LONG"
         if cls.is_ma_cross_slope_entry(m, side):
             return MA_CROSS_SLOPE_TRIGGER
         return None
@@ -595,6 +626,8 @@ class MasterGateFunnel:
             "TRIGGER_1148_SQUEEZE_BREAKOUT",
             "TRIGGER_A_EARLY_BODY_BREAKDOWN",
             "TRIGGER_A_SQUEEZE_EXPANSION",
+            "TRIGGER_EXPRESS_TREND_LONG",
+            "TRIGGER_EXPRESS_TREND_SHORT",
         }
         pivot_turn = priority in {
             "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
@@ -667,9 +700,10 @@ class MasterGateFunnel:
             and sign * (m.ma15_curr - m.ma15_prev) > 0
             and sign * (m.kc_middle - m.kc_middle_prev) > 0
         )
+        is_express_trend = cls.is_express_trend_entry(m, side)
         if is_meme_breakout_symbol(m.symbol):
             distance_atr = meme_distance_atr(m.symbol, m.atr)
-            valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side)
+            valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side) or is_express_trend
             directional_and_aligned = (
                 sign * (m.close_price - m.open_price) > 0
                 and sign * (m.ma5_curr - m.ma5_prev) > 0
@@ -680,19 +714,19 @@ class MasterGateFunnel:
                     return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
                 if side == "LONG" and m.close_price - m.kc_upper > 0 and not valid_outer_breakout:
                     return block("VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE")
-            if slope_aligned_breakout and abs(m.quote - m.close_price) <= 0.25 * distance_atr:
+            if (slope_aligned_breakout or is_express_trend) and abs(m.quote - m.close_price) <= 0.25 * distance_atr:
                 if (
-                    abs(m.open_price - m.ma15_curr) > distance_atr
+                    abs(m.open_price - m.ma15_curr) > (3.5 * distance_atr if is_express_trend else distance_atr)
                     and not math.isclose(
-                        abs(m.open_price - m.ma15_curr), distance_atr,
+                        abs(m.open_price - m.ma15_curr), (3.5 * distance_atr if is_express_trend else distance_atr),
                         rel_tol=1e-12, abs_tol=0,
                     )
                 ):
                     return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
             elif any(
-                abs(price - m.ma15_curr) > distance_atr
+                abs(price - m.ma15_curr) > (3.5 * distance_atr if is_express_trend else distance_atr)
                 and not math.isclose(
-                    abs(price - m.ma15_curr), distance_atr,
+                    abs(price - m.ma15_curr), (3.5 * distance_atr if is_express_trend else distance_atr),
                     rel_tol=1e-12, abs_tol=0,
                 )
                 for price in (m.quote, m.close_price)
@@ -752,7 +786,7 @@ class MasterGateFunnel:
         if sign * (m.close_price - m.open_price) <= 0:
             return block(f"BLOCKED_{side}_DIRECTIONAL_CANDLE")
         if is_meme_breakout_symbol(m.symbol):
-            valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side)
+            valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side) or is_express_trend
             if side == "SHORT" and m.close_price - m.kc_lower < 0 and not valid_outer_breakout:
                 return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
             if side == "LONG" and m.close_price - m.kc_upper > 0 and not valid_outer_breakout:
@@ -775,17 +809,18 @@ class MasterGateFunnel:
             cap = multiple * distance_atr
             return value > cap and not math.isclose(value, cap, rel_tol=1e-12, abs_tol=0)
 
-        open_bias_breakout = slope_aligned_breakout and abs(m.quote - m.close_price) <= 0.25 * distance_atr
+        open_bias_breakout = (slope_aligned_breakout or is_express_trend) and abs(m.quote - m.close_price) <= 0.25 * distance_atr
         ma15_limit = (
             3.5 if open_bias_breakout
+            else 3.5 if is_express_trend
             else MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout
             else MEME_MA15_EXTENSION_ATR
         )
         extreme_over = over_limit(sign * (extreme - m.ma15_curr), MEME_MA15_EXTENSION_ATR)
         if over_limit(sign * (extreme - m.ma15_curr), ma15_limit):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
-        bias_price = m.open_price if big_body_breakout else extreme
-        if over_limit(sign * (bias_price - m.ma15_curr), MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout else MEME_MA15_EXTENSION_ATR):
+        bias_price = m.open_price if (big_body_breakout or is_express_trend) else extreme
+        if over_limit(sign * (bias_price - m.ma15_curr), ma15_limit if is_express_trend else (MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout else MEME_MA15_EXTENSION_ATR)):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         # When the bias-from-open exemption was actually needed, cap the rail extension tightly.
         breakout_priority = priority in {
@@ -795,6 +830,8 @@ class MasterGateFunnel:
             "TRIGGER_1148_SQUEEZE_BREAKOUT",
             "TRIGGER_A_EARLY_BODY_BREAKDOWN",
             "TRIGGER_A_SQUEEZE_EXPANSION",
+            "TRIGGER_EXPRESS_TREND_LONG",
+            "TRIGGER_EXPRESS_TREND_SHORT",
         }
         band_limit = (
             3.0 if breakout_priority
@@ -834,6 +871,8 @@ class MasterGateFunnel:
             trigger_hit = "TRIGGER_OUTER_RAIL_CONTINUATION_LONG"
         elif cls.is_continuation_entry(m, "LONG"):
             trigger_hit = "TRIGGER_TREND_CONTINUATION_LONG"
+        elif cls.is_express_trend_entry(m, "LONG"):
+            trigger_hit = "TRIGGER_EXPRESS_TREND_LONG"
         elif (
             m.kc_middle <= m.low_price <= m.kc_middle + 0.35 * m.atr
             and m.ma5_prev > m.ma15_prev and m.ma5_curr > m.ma15_curr
@@ -894,6 +933,8 @@ class MasterGateFunnel:
             trigger_hit = "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT"
         elif cls.is_continuation_entry(m, "SHORT"):
             trigger_hit = "TRIGGER_TREND_CONTINUATION_SHORT"
+        elif cls.is_express_trend_entry(m, "SHORT"):
+            trigger_hit = "TRIGGER_EXPRESS_TREND_SHORT"
 
         if not trigger_hit:
             trigger_hit = cls.priority_channel(m, "SHORT")
