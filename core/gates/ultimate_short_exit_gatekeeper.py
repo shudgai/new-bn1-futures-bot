@@ -192,41 +192,54 @@ def _outer_rail_true_pivot_release(
     if any(v is None for v in values) or min(values) <= 0:
         return False
     mid2 = (o2 + c2) / 2.0
-    # True Pivot Check:
-    # SHORT -> True Valley (真谷底): bar 2 lowest point (l2 < l1 and l2 < l3), bar 3 confirms with green reversal (c3 > o3, c3 > mid2, c3 > ma5_3)
-    # 只要形成真谷底確認，且處於獲利或已實質探底展開（valley_low <= entry），立即在谷底平倉，絕不拖到中軌！
+    # True Pivot Check (AGENTS.md 核心授權規範):
+    # 1. 持倉呼吸防洗鐵律：開倉後若尚未實質獲利展開（多單最高浮動漲幅 < 0.5 ATR 且 ROE < 5%；空單同理），
+    #    價格在成本價附近的 1m 小陰小陽或均線盤中抖動回踩，100% 判定為「成本區間正常呼吸回踩（PULLBACK）」，一票否決平倉！
+    # 2. 方案 A 真峰谷獲利了結（True Pivot Exit）：
+    #    - 前提條件：開倉後已實質獲利展開（多單 peak_gain >= 0.5 ATR 或 peak_roe >= 5% 且出場仍保有淨利 c3 > entry 與 quote > entry；空單同理）。
+    #    - 峰值位置：必須衝破或觸碰同側 KC 外軌（多單 h2 >= kc_u2 或 h1 >= kc_u1；空單 l2 <= kc_l2 或 l1 <= kc_l1），或實體遠離中軌確立波段頂/底部。
+    #    - 確認棒反轉：多單三點頂部樞紐（h2 > h1 且 h2 > h3，第 3 棒收陰跌破中點且跌破 MA5）；空單三點底部樞紐（l2 < l1 且 l2 < l3，第 3 棒收陽突破中點且站上 MA5）。
     if side == "SHORT":
         valley_low = min(l1, l2)
-        # 只要三點真谷底確立且谷底曾低於開倉價或獲利展開
+        gain_atr = (entry - valley_low) / atr2
+        gain_roe = (entry - valley_low) / entry * 5.0
+        profit_expanded = gain_atr >= 0.5 or gain_roe >= 0.05
+        at_outer_rail = (l2 <= kc_l2 or l1 <= kc_l1)
+        in_profit = c3 < entry and quote < entry
+
         is_true_valley = (
-            l2 < l1
+            at_outer_rail
+            and l2 < l1
             and l2 < l3
             and c3 > o3
             and c3 > mid2
             and c3 > ma5_3
             and ma5_3 > ma5_2
+            and profit_expanded
+            and in_profit
         )
-        if is_true_valley:
-            # 獲利展開或谷底低於成本，或至少持倉形成確定性底部
-            if (entry - valley_low) >= 0.25 * atr2 or quote <= entry * 1.002:
-                return True
-        return False
-    # LONG -> True Peak (真峰頂): bar 2 highest point (h2 > h1 and h2 > h3), bar 3 confirms with red reversal (c3 < o3, c3 < mid2, c3 < ma5_3)
-    # 只要形成真峰頂確認，且處於獲利或已實質衝高展開（peak_high >= entry），立即在頂部平倉，絕不拖到中軌！
+        return is_true_valley
+
     if side == "LONG":
         peak_high = max(h1, h2)
+        gain_atr = (peak_high - entry) / atr2
+        gain_roe = (peak_high - entry) / entry * 5.0
+        profit_expanded = gain_atr >= 0.5 or gain_roe >= 0.05
+        at_outer_rail = (h2 >= kc_u2 or h1 >= kc_u1)
+        in_profit = c3 > entry and quote > entry
+
         is_true_peak = (
-            h2 > h1
+            at_outer_rail
+            and h2 > h1
             and h2 > h3
             and c3 < o3
             and c3 < mid2
             and c3 < ma5_3
             and ma5_3 < ma5_2
+            and profit_expanded
+            and in_profit
         )
-        if is_true_peak:
-            if (peak_high - entry) >= 0.25 * atr2 or quote >= entry * 0.998:
-                return True
-        return False
+        return is_true_peak
     return False
 
 
