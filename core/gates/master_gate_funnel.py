@@ -714,14 +714,31 @@ class MasterGateFunnel:
         if side not in ("LONG", "SHORT"):
             return block("VETO_INVALID_ENTRY_SIDE")
 
-        # 🚨 鐵律一票否決：順勢交易與防逆勢開倉 (Anti-Counter-Trend & KC Slope Lock)
+        # 🚨 鐵律一票否決 1：100% 收線確認 (is_bar_closed == True)
+        if not getattr(m, "is_closed", True):
+            return block("VETO_ENTRY_BAR_NOT_CLOSED")
+
+        # 🚨 鐵律一票否決 2：K 棒顏色硬鎖 (綠 K 陽線 100% 阻斷開空，紅 K 陰線 100% 阻斷開多)
+        # 開空必須確定為實體紅 K (close < open 且 quote < open)，陽線 100% 一票否決！
+        if side == "SHORT" and (m.close_price >= m.open_price or m.quote >= m.open_price):
+            return block("VETO_SHORT_ON_GREEN_CANDLE")
+        # 開多必須確定為實體綠 K (close > open 且 quote > open)，陰線 100% 一票否決！
+        if side == "LONG" and (m.close_price <= m.open_price or m.quote <= m.open_price):
+            return block("VETO_LONG_ON_RED_CANDLE")
+
+        # 🚨 鐵律一票否決 3：順勢交易與防逆勢開倉 (Anti-Counter-Trend & KC Slope Lock)
         # 1. 標頭寫明「KC 向上 (只評估多單)」(m.kc_middle >= m.kc_middle_prev) 時，100% 嚴禁開空！
         # 2. 標頭寫明「KC 向下 (只評估空單)」(m.kc_middle <= m.kc_middle_prev) 時，100% 嚴禁開多！
         kc_diff = m.kc_middle - m.kc_middle_prev
+        macro_str = str(getattr(m, "macro_trend", "") or "").upper()
         if side == "SHORT" and (kc_diff >= 0 or math.isclose(kc_diff, 0, rel_tol=1e-12, abs_tol=0)):
             return block("BLOCKED_SHORT_ON_BULLISH_TREND")
         if side == "LONG" and (kc_diff <= 0 or math.isclose(kc_diff, 0, rel_tol=1e-12, abs_tol=0)):
             return block("BLOCKED_LONG_ON_BEARISH_TREND")
+        if side == "SHORT" and macro_str == "BULLISH":
+            return block("BLOCKED_SHORT_MACRO_TREND_CONFLICT")
+        if side == "LONG" and macro_str == "BEARISH":
+            return block("BLOCKED_LONG_MACRO_TREND_CONFLICT")
 
         try:
             priority = cls.priority_channel(m, side)
@@ -965,12 +982,19 @@ class MasterGateFunnel:
         elif (
             m.close_price < m.kc_lower
             and m.quote < m.kc_lower
+            and m.close_price < m.open_price
+            and (m.kc_middle - m.kc_middle_prev) < 0
             and m.ma15_curr < m.ma15_prev
             and m.ma5_curr < m.ma5_prev
         ):
             trigger_hit = "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
-        elif (m.close_price < m.kc_lower and m.quote < m.kc_lower
-              and m.ma15_curr < m.ma15_prev):
+        elif (
+            m.close_price < m.kc_lower
+            and m.quote < m.kc_lower
+            and m.close_price < m.open_price
+            and (m.kc_middle - m.kc_middle_prev) < 0
+            and m.ma15_curr < m.ma15_prev
+        ):
             trigger_hit = "TRIGGER_C_BREAKDOWN_LOWER_RAIL"
         elif cls.is_slope_aligned_trend_entry(m, "SHORT"):
             trigger_hit = "TRIGGER_ALIGNED_TREND_SLOPES"
@@ -1074,6 +1098,17 @@ class MasterOpenGatekeeper(MasterGateFunnel):
     """Master Open Gatekeeper enforcing four-in-one directional slope/alignment rules,
     chop/squeeze blacklist, and the four open signal engines (Pivot Cross, Breakout,
     Continuation, and MA5/MA15 Cross)."""
+
+    @classmethod
+    def can_execute_entry(
+        cls,
+        m: MarketSnapshot,
+        side: str,
+        is_in_cooldown: bool = False,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Unified entry prefilter interface returning (can_execute, reason, details)."""
+        decision = cls.validate_open_signal(m, side, is_in_cooldown=is_in_cooldown)
+        return decision.can_execute, decision.reason, decision.details
 
     @classmethod
     def validate_open_signal(
