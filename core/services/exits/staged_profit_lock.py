@@ -340,59 +340,66 @@ def evaluate_staged_profit_lock(
         or (floor_roe is not None and (net_roe_pct <= floor_roe or math.isclose(net_roe_pct, floor_roe, rel_tol=1e-9, abs_tol=1e-9)))
     )
 
-    # 🎯 方案 1 觸發判定：最高淨利 >= 5.0%，且自最高點回吐 >= 20%
+    # ══════════════════════════════════════════════════════════════════
+    # 核心修復：階梯鎖利底線（Lock Floor）強制出場優先權
+    # 當持倉處於 Stage 1 或 Stage 2 且利潤已觸及/跌破 Lock Floor：
+    # 立即觸發鎖利出場，嚴禁被 MA3/MA15 均線排列或一般續抱濾網一票否決！
+    # ══════════════════════════════════════════════════════════════════
+    if hit_floor:
+        if stage == 2:
+            reason = EXIT_REASON_TIER2
+            meta["cause"] = (
+                f"階梯鎖利第二階段強制觸發 ({reason}): "
+                f"最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
+                f"現利縮水至 {net_pnl:.2f}U ({net_roe_pct:.2f}%) 觸及/跌破鎖利底線 {floor_pnl:.2f}U ({floor_roe:.2f}%)，"
+                f"鎖利底線享有最高強制出場優先權（嚴禁被均線濾網一票否決），落袋保利！"
+            )
+            return True, reason, meta
+        elif stage == 1:
+            reason = EXIT_REASON_TIER1
+            meta["cause"] = (
+                f"階梯鎖利第一階段強制觸發 ({reason}): "
+                f"最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
+                f"現利縮水至 {net_pnl:.2f}U ({net_roe_pct:.2f}%) 觸及/跌破鎖利底線 {floor_pnl:.2f}U ({floor_roe:.2f}%)，"
+                f"鎖利底線享有最高強制出場優先權（嚴禁被均線濾網一票否決），落袋保利！"
+            )
+            return True, reason, meta
+
+    # 🎯 方案 1 觸發判定（僅用於尚未觸及 Lock Floor 時之一般趨勢輔助鎖利）：
+    # 最高淨利 >= 5.0%，且自最高點回吐 >= 20%
     scheme1_triggered = False
+    entry_p = float(position.get("entry_price") or 0.0)
     if highest_pnl > 0 and (highest_roe >= 5.0 or (entry_p > 0 and (highest_pnl / entry_p) >= 0.05)):
         profit_drawdown = (highest_pnl - net_pnl) / highest_pnl
         if profit_drawdown >= 0.20 or math.isclose(profit_drawdown, 0.20, rel_tol=1e-9, abs_tol=1e-9):
             scheme1_triggered = True
 
-    if hit_floor or scheme1_triggered:
-        # 🎯 方案 1 核心過濾：若回吐跌破鎖利底線或回吐達 20%，若 MA3 仍未反轉，判定為插針/假拉回，一票否決鎖利！
+    if scheme1_triggered:
+        # 🎯 方案 1 核心過濾：尚未跌破 Lock Floor，但回吐達 20% 時，若 MA3 仍未反轉，判定為插針/假拉回，續抱！
         # 但若利潤已經大幅回吐接近成本線 (net_roe_pct <= 1.5% 且最高浮盈 >= 5%)，絕不否決，強制平倉保本保手續費！
         is_near_breakeven = (highest_roe >= 5.0 and net_roe_pct <= 1.5)
         if not is_near_breakeven and current_ma3 is not None and current_ma15 is not None:
             if pos_side == "SHORT" and current_ma3 <= current_ma15:
                 meta["cause"] = (
                     f"[忽略鎖利] 最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，現利縮水至 {net_pnl:.2f}U，"
-                    f"但 MA3 ({current_ma3:.6f}) 仍低於 MA15 ({current_ma15:.6f})，趨勢未反轉，"
+                    f"尚未跌破階梯鎖利底線，且 MA3 ({current_ma3:.6f}) 仍低於 MA15 ({current_ma15:.6f})，趨勢未反轉，"
                     f"判定為插針洗盤雜訊，一票否決平倉，繼續讓利潤奔跑！"
                 )
                 return False, "VETO_HOLD_SCHEME1_MA3_MA15_FILTER", meta
             elif pos_side == "LONG" and current_ma3 >= current_ma15:
                 meta["cause"] = (
                     f"[忽略鎖利] 最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，現利縮水至 {net_pnl:.2f}U，"
-                    f"但 MA3 ({current_ma3:.6f}) 仍高於 MA15 ({current_ma15:.6f})，趨勢未反轉，"
+                    f"尚未跌破階梯鎖利底線，且 MA3 ({current_ma3:.6f}) 仍高於 MA15 ({current_ma15:.6f})，趨勢未反轉，"
                     f"判定為插針洗盤雜訊，一票否決平倉，繼續讓利潤奔跑！"
                 )
                 return False, "VETO_HOLD_SCHEME1_MA3_MA15_FILTER", meta
 
-        if scheme1_triggered and not hit_floor:
-            reason = EXIT_REASON_SCHEME1
-            meta["cause"] = (
-                f"方案1鎖利觸發 ({reason}): 最高浮盈 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
-                f"回吐達 {(highest_pnl-net_pnl)/highest_pnl*100:.1f}% >= 20%，且 MA3/MA15 趨勢已反轉，落袋保利！"
-            )
-            return True, reason, meta
-
-        if stage == 2:
-            reason = EXIT_REASON_TIER2
-            meta["cause"] = (
-                f"階梯鎖利第二階段觸發 ({reason}): "
-                f"最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
-                f"現利縮水至 {net_pnl:.2f}U ({net_roe_pct:.2f}%) 跌破鎖利底線 {floor_pnl:.2f}U ({floor_roe:.2f}%)，"
-                f"且 MA3/MA15 趨勢已反轉，落袋保利！"
-            )
-            return True, reason, meta
-        elif stage == 1:
-            reason = EXIT_REASON_TIER1
-            meta["cause"] = (
-                f"階梯鎖利第一階段觸發 ({reason}): "
-                f"最高淨利 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
-                f"現利縮水至 {net_pnl:.2f}U ({net_roe_pct:.2f}%) 跌破鎖利底線 {floor_pnl:.2f}U ({floor_roe:.2f}%)，"
-                f"且 MA3/MA15 趨勢已反轉，落袋保利！"
-            )
-            return True, reason, meta
+        reason = EXIT_REASON_SCHEME1
+        meta["cause"] = (
+            f"方案1鎖利觸發 ({reason}): 最高浮盈 {highest_pnl:.2f}U ({highest_roe:.2f}%)，"
+            f"回吐達 {(highest_pnl-net_pnl)/highest_pnl*100:.1f}% >= 20%，且 MA3/MA15 趨勢已反轉，落袋保利！"
+        )
+        return True, reason, meta
 
     return False, None, meta
 

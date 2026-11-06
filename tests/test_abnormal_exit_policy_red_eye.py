@@ -210,7 +210,7 @@ def test_final_entry_math_revalidates_swing_pivot_before_its_direction_override(
             kc_middle=100.5 if i < 2 else 99.5 if i == 2 else 100.,
             kc_upper=110.5 if i == 3 else 110., kc_lower=89.5 if i == 3 else 90.,
             ma3=100. if i == 3 else 99.,
-            ma5=98.5 if i == 3 else 99.,
+            ma5=99.8 if i == 3 else 99.0,
             ma15=99.6 if i == 3 else 99.5,
         ))
     frame = pd.DataFrame(rows)
@@ -222,7 +222,7 @@ def test_final_entry_math_revalidates_swing_pivot_before_its_direction_override(
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_true_peak_or_valley_holds_without_kc_direction_reversal(side, monkeypatch):
+def test_confirmed_true_peak_or_valley_exits_without_waiting_for_midline(side, monkeypatch):
     from core.gates.unified_pipeline_gates import ExitGate
     base = 1_700_000_000_000
 
@@ -237,7 +237,7 @@ def test_confirmed_true_peak_or_valley_holds_without_kc_direction_reversal(side,
             dict(timestamp=base + 180_000, open=103., high=103.2, low=101.5, close=101.8,
                  ma5=101.8, ema13=100.5, ma15=100.5, atr=1., kc_upper=110., kc_middle=100.5, kc_lower=90.),
         ]
-        expected_reason = "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+        expected_reason = "EARLY_PIVOT_PEAK_EXIT"
     else:
         rows = [
             dict(timestamp=base, open=100., high=100.5, low=99.5, close=100.,
@@ -249,7 +249,7 @@ def test_confirmed_true_peak_or_valley_holds_without_kc_direction_reversal(side,
             dict(timestamp=base + 180_000, open=98., high=99.5, low=97.8, close=99.2,
                  ma5=99.2, ema13=99.5, ma15=99.5, atr=1., kc_upper=110., kc_middle=99.5, kc_lower=90.),
         ]
-        expected_reason = "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+        expected_reason = "EARLY_PIVOT_VALLEY_EXIT"
     frame = pd.DataFrame(rows)
     frame["is_closed"] = True
     frame.attrs["timeframe_ms"] = 60_000
@@ -257,10 +257,6 @@ def test_confirmed_true_peak_or_valley_holds_without_kc_direction_reversal(side,
     position = _position(side)
     position["open_timestamp"] = base / 1000.0
 
-    monkeypatch.setattr(
-        ExitGate, "_evaluate_with_holding_rules",
-        staticmethod(lambda *_args, **_kwargs: (False, "VETO_HOLD", {})),
-    )
     monkeypatch.setattr(
         "core.services.exits.abnormal_candle_exit.two_closed_adverse_abnormal_evidence",
         lambda *_args, **_kwargs: None,
@@ -273,13 +269,14 @@ def test_confirmed_true_peak_or_valley_holds_without_kc_direction_reversal(side,
         position, {"raw_df": frame, "current_price": float(frame.iloc[-1].close), "atr": 1.0},
     )
 
-    assert should_exit is False
-    assert reason == "VETO_HOLD"
-    from core.services.exits.authorized_position_exit import automated_position_exit_allowed
-    assert not automated_position_exit_allowed(
-        "CAP/USDT", position, {}, expected_reason, float(frame.iloc[-1].close),
-        frame=frame,
+    assert should_exit is True
+    assert reason == expected_reason
+    from core.services.math_execution_gate import validate_exit_math
+    allowed, math_reason, _ = validate_exit_math(
+        position, frame, float(frame.iloc[-1].close),
+        close_reason=reason, now_ms=base + 180_000,
     )
+    assert allowed, math_reason
 
 
 def test_confirmed_pivot_without_wave_gain_remains_held(monkeypatch):

@@ -1043,6 +1043,7 @@ class ExecutionManager:
             gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
                 pos=current_position,
                 market_data=market_data,
+                account=account,
             )
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
             if gate_should_exit and (
@@ -3723,23 +3724,21 @@ class ExecutionManager:
             swing_pivot = None
             if raw_swing_pivot:
                 pivot_side = raw_swing_pivot.get("side")
-                # 谷底/頂部轉折開倉：只要極短線 MA5 拐頭順向且收線同色，即可第一時間進場，豁免 slow 慢線位置限制！
-                # 但必須嚴格遵守順勢鐵律：KC 中軌向下或破中軌嚴禁開多；KC 中軌向上或站上中軌嚴禁開空！
+                # 谷底/頂部轉折開倉：只要極短線 MA5 拐頭順向且收線同色，即可第一時間進場，豁免 slow 慢線位置與 KC 中軌位置限制！
+                # 谷底做多：只要非極端拉遠空頭、MA5 明顯向上拐頭、收陽線、未被前波阻力或超買壓制
+                # 頂部做空：只要非極端拉遠多頭、MA5 明顯向下拐頭、收陰線、未被前波支撐或超賣壓制
                 if pivot_side == "LONG":
                     pivot_long_ok = (
                         (not is_zoomed_out_bearish)
                         and (not is_macro_bear)
                         and is_entry_ma5_trending_up
                         and is_candle_bullish
-                        and (kc_slope >= 0)
-                        and (curr_close >= kc_mid_val)
-                        and (entry_ma5_curr >= kc_mid_val)
-                        and (entry_ma5_curr > ma15_curr)
+                        and allow_long_defense
                     )
                     if not pivot_long_ok:
                         logger.warning(
-                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反開多門檻 "
-                            f"(zoomed_bear={is_zoomed_out_bearish}, entry_ma5_up={is_entry_ma5_trending_up}, entry_ma5_above_ma15={entry_ma5_curr > ma15_curr}, bullish={is_candle_bullish}, slope={kc_slope:.8f}, close_over_mid={curr_close >= kc_mid_val})，一票否決！"
+                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反轉折開多門檻 "
+                            f"(zoomed_bear={is_zoomed_out_bearish}, entry_ma5_up={is_entry_ma5_trending_up}, bullish={is_candle_bullish})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -3749,15 +3748,12 @@ class ExecutionManager:
                         and (not is_macro_bull)
                         and is_entry_ma5_trending_down
                         and is_candle_bearish
-                        and (kc_slope <= 0)
-                        and (curr_close <= kc_mid_val)
-                        and (entry_ma5_curr <= kc_mid_val)
-                        and (entry_ma5_curr < ma15_curr)
+                        and allow_short_defense
                     )
                     if not pivot_short_ok:
                         logger.warning(
-                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反開空門檻 "
-                            f"(zoomed_bull={is_zoomed_out_bullish}, entry_ma5_down={is_entry_ma5_trending_down}, entry_ma5_below_ma15={entry_ma5_curr < ma15_curr}, bearish={is_candle_bearish}, slope={kc_slope:.8f}, close_under_mid={curr_close <= kc_mid_val})，一票否決！"
+                            f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反轉折開空門檻 "
+                            f"(zoomed_bull={is_zoomed_out_bullish}, entry_ma5_down={is_entry_ma5_trending_down}, bearish={is_candle_bearish})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -3765,9 +3761,9 @@ class ExecutionManager:
             is_swing_pivot = bool(swing_pivot)
             if is_swing_pivot:
                 candidate_side = swing_pivot["side"]
-                if candidate_side == "LONG" and (not is_zoomed_out_bearish and kc_slope >= 0 and curr_close >= kc_mid_val):
+                if candidate_side == "LONG" and (not is_zoomed_out_bearish):
                     can_long = True
-                elif candidate_side == "SHORT" and (not is_zoomed_out_bullish and kc_slope <= 0 and curr_close <= kc_mid_val):
+                elif candidate_side == "SHORT" and (not is_zoomed_out_bullish):
                     can_short = True
 
             # 🏛️ Stage 3.2 MTF 雙重過濾硬鎖定（情況 A/B/C/D 絕對執行）：
@@ -3949,16 +3945,18 @@ class ExecutionManager:
                     }
 
                 # 0.1 ⚖️ 【使用者最高鐵律】：MA5 必須在 MA15 上方 (entry_ma5_curr > ma15_curr) 才准開多單；MA5 必須在 MA15 下方 (entry_ma5_curr < ma15_curr) 才准開空單！
-                if candidate_side == "LONG" and entry_ma5_curr <= ma15_curr:
-                    logger.info(
-                        f"🚫 [BLOCKED_MA5_MA15_RULE] {symbol} 開多但 MA5 ({entry_ma5_curr:.6f}) <= MA15 ({ma15_curr:.6f})，嚴格一票否決！"
-                    )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_MA5_NOT_ABOVE_MA15", "details": "MA5 必須在 MA15 上方才准開多單！"}
-                if candidate_side == "SHORT" and entry_ma5_curr >= ma15_curr:
-                    logger.info(
-                        f"🚫 [BLOCKED_MA5_MA15_RULE] {symbol} 開空但 MA5 ({entry_ma5_curr:.6f}) >= MA15 ({ma15_curr:.6f})，嚴格一票否決！"
-                    )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_MA5_NOT_BELOW_MA15", "details": "MA5 必須在 MA15 下方才准開空單！"}
+                # 轉折特例 (is_swing_pivot) 豁免慢線限制，搶佔谷底/峰頂先機
+                if not is_swing_pivot:
+                    if candidate_side == "LONG" and entry_ma5_curr <= ma15_curr:
+                        logger.info(
+                            f"🚫 [BLOCKED_MA5_MA15_RULE] {symbol} 開多但 MA5 ({entry_ma5_curr:.6f}) <= MA15 ({ma15_curr:.6f})，嚴格一票否決！"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_MA5_NOT_ABOVE_MA15", "details": "MA5 必須在 MA15 上方才准開多單！"}
+                    if candidate_side == "SHORT" and entry_ma5_curr >= ma15_curr:
+                        logger.info(
+                            f"🚫 [BLOCKED_MA5_MA15_RULE] {symbol} 開空但 MA5 ({entry_ma5_curr:.6f}) >= MA15 ({ma15_curr:.6f})，嚴格一票否決！"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_MA5_NOT_BELOW_MA15", "details": "MA5 必須在 MA15 下方才准開空單！"}
 
                 # 0.12 🛑 【使用者最高鐵律：中軌走平、MA5走平、KC變小、KC喇叭口過度擴張一律不開倉】
                 is_kc_mid_flat = bool((atr_v > 0 and abs(kc_slope) < 0.03 * atr_v) or abs(kc_slope) < 1e-6)
@@ -4029,42 +4027,44 @@ class ExecutionManager:
 
                 # 1. 空頭趨勢嚴禁開多：拉遠看是空頭 (is_zoomed_out_bearish) 或 3棒/5棒 KC 中軌下行 (kc_slope_3_ref <= 0 or kc_slope_5_ref < 0) 或 MA15 下行 (m15_c < m15_p or m15_slope_3_ref < 0 or m15_slope_5_ref < 0) 或 KC 單棒中軌下行 (kc_slope <= 0) 或收盤位於中軌/MA15之下 或 MA5 低於中軌 或 MA5 未向上 或 非陽線，100% 一票否決開多！
                 # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 3棒/5棒 KC 中軌上行 (kc_slope_3_ref >= 0 or kc_slope_5_ref > 0) 或 MA15 上行 (m15_c > m15_p or m15_slope_3_ref > 0 or m15_slope_5_ref > 0) 或 KC 單棒中軌上行 (kc_slope >= 0) 或收盤位於中軌/MA15之上 或 MA5 高於中軌 或 MA5 未向下 或 非陰線，100% 一票否決開空！
-                if candidate_side == "LONG" and (
-                    is_zoomed_out_bearish
-                    or is_macro_htf_bearish
-                    or is_macro_bear
-                    or macro_trend == "BEARISH"
-                    or kc_slope <= 0
-                    or m15_c < m15_p
-                    or curr_close < kc_mid_val
-                    or curr_close < ma15_curr
-                    or entry_ma5_curr < kc_mid_val
-                    or entry_ma5_curr <= entry_ma5_prev
-                    or curr_close <= curr_open
-                ):
-                    logger.info(
-                        f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} 違反開多精準方向門檻 (拉遠空頭={is_zoomed_out_bearish}, "
-                        f"kc_slope_3={kc_slope_3_ref:.8f}, kc_slope_5={kc_slope_5_ref:.8f}, m15_slope_5={m15_slope_5_ref:.8f}, slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f})，100% 絕對禁止在空頭下降通道中開多！"
-                    )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "拉遠看或中軌/MA15為空頭下降趨勢，強制阻斷買多！"}
-                if candidate_side == "SHORT" and (
-                    is_zoomed_out_bullish
-                    or is_macro_htf_bullish
-                    or is_macro_bull
-                    or macro_trend == "BULLISH"
-                    or kc_slope >= 0
-                    or m15_c > m15_p
-                    or curr_close > kc_mid_val
-                    or curr_close > ma15_curr
-                    or entry_ma5_curr > kc_mid_val
-                    or entry_ma5_curr >= entry_ma5_prev
-                    or curr_close >= curr_open
-                ):
-                    logger.info(
-                        f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} 違反開空精準方向門檻 (拉遠多頭={is_zoomed_out_bullish}, "
-                        f"kc_slope_3={kc_slope_3_ref:.8f}, kc_slope_5={kc_slope_5_ref:.8f}, m15_slope_5={m15_slope_5_ref:.8f}, slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f})，100% 絕對禁止在多頭上升通道中開空！"
-                    )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": "拉遠看或中軌/MA15為多頭上升趨勢，強制阻斷賣空！"}
+                # 轉折特例 (is_swing_pivot) 豁免常規趨勢限制，但仍受嚴格拉遠大勢防護 (not is_zoomed_out_bearish/bullish)
+                if not is_swing_pivot:
+                    if candidate_side == "LONG" and (
+                        is_zoomed_out_bearish
+                        or is_macro_htf_bearish
+                        or is_macro_bear
+                        or macro_trend == "BEARISH"
+                        or kc_slope <= 0
+                        or m15_c < m15_p
+                        or curr_close < kc_mid_val
+                        or curr_close < ma15_curr
+                        or entry_ma5_curr < kc_mid_val
+                        or entry_ma5_curr <= entry_ma5_prev
+                        or curr_close <= curr_open
+                    ):
+                        logger.info(
+                            f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} 違反開多精準方向門檻 (拉遠空頭={is_zoomed_out_bearish}, "
+                            f"kc_slope_3={kc_slope_3_ref:.8f}, kc_slope_5={kc_slope_5_ref:.8f}, m15_slope_5={m15_slope_5_ref:.8f}, slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f})，100% 絕對禁止在空頭下降通道中開多！"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "拉遠看或中軌/MA15為空頭下降趨勢，強制阻斷買多！"}
+                    if candidate_side == "SHORT" and (
+                        is_zoomed_out_bullish
+                        or is_macro_htf_bullish
+                        or is_macro_bull
+                        or macro_trend == "BULLISH"
+                        or kc_slope >= 0
+                        or m15_c > m15_p
+                        or curr_close > kc_mid_val
+                        or curr_close > ma15_curr
+                        or entry_ma5_curr > kc_mid_val
+                        or entry_ma5_curr >= entry_ma5_prev
+                        or curr_close >= curr_open
+                    ):
+                        logger.info(
+                            f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} 違反開空精準方向門檻 (拉遠多頭={is_zoomed_out_bullish}, "
+                            f"kc_slope_3={kc_slope_3_ref:.8f}, kc_slope_5={kc_slope_5_ref:.8f}, m15_slope_5={m15_slope_5_ref:.8f}, slope={kc_slope:.8f}, close={curr_close:.8f}, kc_mid={kc_mid_val:.8f})，100% 絕對禁止在多頭上升通道中開空！"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": "拉遠看或中軌/MA15為多頭上升趨勢，強制阻斷賣空！"}
 
                 # ── 🛡️ 妖幣專用 3 大開倉前防護審查 (Demon Coin Defense Pre-Entry Gate) ──
                 # 1. 訊號冷卻期機制 (Cooldown Period) - 若大週期已正式扭轉且站穩中軌與 MA5，豁免舊反手冷卻鎖死
@@ -4097,32 +4097,36 @@ class ExecutionManager:
 
                 if candidate_side == "LONG":
                     # 🛑 2026-11-01 使用者鐵律：entry_ma5 沒在 ma15 上方且方向向上不可以開多，向上只能開多！
-                    if not hard_long_allowed:
-                        logger.warning(
-                            f"🛑 [HARD_LONG_VETO] {symbol} {candidate_signal} 違反開多絕對門檻 "
-                            f"(entry_ma5_up={is_entry_ma5_trending_up}, entry_ma5>ma15={is_entry_ma5_above_slow}, bullish={is_candle_bullish})，一票否決！"
-                        )
-                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_LONG_MA5_OR_CANDLE"}
-                    if not direction_long_ok:
-                        logger.warning(
-                            f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開多方向鎖 "
-                            f"(entry_ma5={entry_ma5_curr:.6f}, kc_mid={kc_mid_val:.6f}, entry_ma5_prev={entry_ma5_prev:.6f})，一票否決！"
-                        )
-                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_LONG"}
+                    # 轉折特例 (is_swing_pivot) 豁免慢線限制，搶佔谷底先機
+                    if not is_swing_pivot:
+                        if not hard_long_allowed:
+                            logger.warning(
+                                f"🛑 [HARD_LONG_VETO] {symbol} {candidate_signal} 違反開多絕對門檻 "
+                                f"(entry_ma5_up={is_entry_ma5_trending_up}, entry_ma5>ma15={is_entry_ma5_above_slow}, bullish={is_candle_bullish})，一票否決！"
+                            )
+                            return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_LONG_MA5_OR_CANDLE"}
+                        if not direction_long_ok:
+                            logger.warning(
+                                f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開多方向鎖 "
+                                f"(entry_ma5={entry_ma5_curr:.6f}, kc_mid={kc_mid_val:.6f}, entry_ma5_prev={entry_ma5_prev:.6f})，一票否決！"
+                            )
+                            return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_LONG"}
                 elif candidate_side == "SHORT":
                     # 🛑 2026-11-01 使用者鐵律：entry_ma5 沒在 ma15 下方且方向沒向下不要開空，向下只能開空！
-                    if not hard_short_allowed:
-                        logger.warning(
-                            f"🛑 [HARD_SHORT_VETO] {symbol} {candidate_signal} 違反開空絕對門檻 "
-                            f"(entry_ma5_down={is_entry_ma5_trending_down}, entry_ma5<ma15={is_entry_ma5_below_slow}, bearish={is_candle_bearish})，一票否決！"
-                        )
-                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_SHORT_MA5_OR_CANDLE"}
-                    if not direction_short_ok:
-                        logger.warning(
-                            f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開空方向鎖 "
-                            f"(entry_ma5={entry_ma5_curr:.6f}, kc_mid={kc_mid_val:.6f}, entry_ma5_prev={entry_ma5_prev:.6f})，一票否決！"
-                        )
-                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_SHORT"}
+                    # 轉折特例 (is_swing_pivot) 豁免慢線限制，搶佔峰頂先機
+                    if not is_swing_pivot:
+                        if not hard_short_allowed:
+                            logger.warning(
+                                f"🛑 [HARD_SHORT_VETO] {symbol} {candidate_signal} 違反開空絕對門檻 "
+                                f"(entry_ma5_down={is_entry_ma5_trending_down}, entry_ma5<ma15={is_entry_ma5_below_slow}, bearish={is_candle_bearish})，一票否決！"
+                            )
+                            return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HARD_SHORT_MA5_OR_CANDLE"}
+                        if not direction_short_ok:
+                            logger.warning(
+                                f"🛑 [DIRECTION_MASTER_LOCK] {symbol} {candidate_signal} 違反開空方向鎖 "
+                                f"(entry_ma5={entry_ma5_curr:.6f}, kc_mid={kc_mid_val:.6f}, entry_ma5_prev={entry_ma5_prev:.6f})，一票否決！"
+                            )
+                            return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_DIRECTION_MASTER_LOCK_SHORT"}
 
                 # ── 🧬 妖幣專用 3 大風控與籌碼濾網 (Meme Coin Anti-Fakeout Engine) ──
                 from core.symbol_aliases import is_meme_breakout_symbol

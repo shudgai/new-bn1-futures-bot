@@ -55,6 +55,10 @@ TRUE_OUTER_PIVOT_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_TRUE_VALLEY_BOTTOM",
     "LONG": "EXIT_LONG_TRUE_PEAK_TOP",
 }
+FAST_TOP_EXIT_REASONS = {
+    "SHORT": "EXIT_SHORT_FAST_BOTTOM_BREAK_MA15_MID",
+    "LONG": "EXIT_LONG_FAST_TOP_BREAK_MA15_MID",
+}
 
 ALLOW, HOLD, DEFER = "ALLOW", "HOLD", "DEFER"
 
@@ -86,7 +90,8 @@ OWN_STRUCTURE_REASONS = frozenset(
     {"STRUCTURE_EXIT_PROBE", *(r.upper() for r in STRUCTURE_EXIT_REASONS.values()),
      *(r.upper() for r in KC_MIDDLE_MA15_BREAK_REASONS.values()),
      *(r.upper() for r in KC_FLIP_EXIT_REASONS.values()),
-     *(r.upper() for r in TRUE_OUTER_PIVOT_EXIT_REASONS.values())}
+     *(r.upper() for r in TRUE_OUTER_PIVOT_EXIT_REASONS.values()),
+     *(r.upper() for r in FAST_TOP_EXIT_REASONS.values())}
 )
 WATERFALL_EXIT_TOKENS = (
     "EXIT_BY_EXTREME_WATERFALL", "WATERFALL_DROP", "LIVE_ADVERSE_WATERFALL",
@@ -392,6 +397,21 @@ class UltimateShortExitGatekeeper:
                 ):
                     return allow(KC_FLIP_EXIT_REASONS[side])
                 return hold(f"VETO_HOLD_{side}_COST_SHIELD")
+
+        # 🚀 頂部/底部大實體 K 線貫穿極速平倉通道 (Fast Top / Bottom Exit Channel)
+        # 解決龍蝦/PEPE峰頂滯後平多：脫離成本保護盾(Cost Shield)後，當收線時出現大實體逆向K線(陰線下殺 Body >= 0.35 ATR 貫穿 KC 中軌與 MA15 且 MA5 死叉 MA15)，
+        # 100% 豁免後續 0.50 ATR 緩衝區，直接在頂部第一時間高位授權平倉！
+        candle_body = abs(close - fields["open"])
+        fresh_ma_cross = -sign * (fields["ma5_prev"] - fields["ma15_prev"]) <= 0 and -sign * (fields["ma5"] - fields["ma15"]) > 0
+        fast_reversal = (
+            -sign * (close - fields["open"]) > 0
+            and candle_body >= 0.35 * atr
+            and -sign * (close - fields["kc_middle"]) > 0
+            and -sign * (close - fields["ma15"]) > 0
+            and fresh_ma_cross
+        )
+        if fast_reversal and (normalized in FAST_TOP_EXIT_REASONS.values() or "FAST_TOP" in normalized or "FAST_BOTTOM" in normalized):
+            return allow(FAST_TOP_EXIT_REASONS[side])
 
         buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
         evidence["structure_line"] = buffer_line

@@ -194,8 +194,11 @@ class ExitGate:
             market_data.symbol if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("symbol", "")
         )
-        if (priority_result[0] and priority_result[1] in ExitGate.ABSOLUTE_SAFETY_REASONS
-                and not meme_strategy_disaster_disabled(symbol, priority_result[1])):
+        if (priority_result[0] and (
+            priority_result[1] in ExitGate.ABSOLUTE_SAFETY_REASONS
+            or priority_result[1] in ExitGate.PIVOT_EXIT_REASONS
+            or priority_result[1] in ExitGate.PROFIT_LOCK_EXIT_REASONS
+        ) and not meme_strategy_disaster_disabled(symbol, priority_result[1])):
             return priority_result
         frame = (
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
@@ -1036,11 +1039,9 @@ class ExitGate:
                         and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
                     )
 
-                    # 🛑 2026-11-01 核心修正：回踩 MA15 或 KC 中軌且結構完好（未實質跌破 MA15/KC 中軌）絕不平多！
-                    # 只有當實體收盤價跌破 MA15 或 KC 中軌，或已獲利巨大 (peak_roe >= 15%)，才允許放行真峰頂出場
-                    is_structure_intact = float(confirm["close"]) >= ma15 or float(confirm["close"]) >= kc_mid
-                    if is_structure_intact and peak_roe < 0.15:
-                        strong_peak_reversal = False
+                    # 🛑 2026-10-22/2026-11-06 核心修正：方案 A 真峰頂獲利了結
+                    # 只要中間棒確認為局部峰頂、第三棒收黑跌破實體中軸，且已脫離成本區 (peak_move >= 0.5 ATR 或 peak_roe >= 5%)，
+                    # 立即獲利了結平多，嚴禁因價格仍在 KC 中軌或 MA15 上方而強行續抱把利潤吐光！
                     if strong_peak_reversal:
                         return True, "EARLY_PIVOT_PEAK_EXIT", {
                             **meta, "pivot_meta": {"peak_high": float(peak["high"]),
