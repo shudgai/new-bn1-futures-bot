@@ -761,20 +761,11 @@ class MasterGateFunnel:
             candle_body = m.open_price - m.close_price
             if candle_body < 0.35 * m.atr and not math.isclose(candle_body, 0.35 * m.atr, rel_tol=1e-12, abs_tol=0):
                 return block("BLOCKED_SHORT_CANDLE_BODY_TOO_SMALL")
-            # 🚨 2 號框位置：KC 下軌超賣區 100% 絕對禁止開空（防地板空）
-            # 當收盤價或最新價位於 KC 下軌外側或貼近下軌 (close_price <= KC_Lower + 0.3 * ATR) 時，
-            # 判定為 2 號框極端超賣谷底區，100% 一票否決開空！
-            oversold_threshold = m.kc_lower + 0.3 * m.atr
-            if m.close_price <= oversold_threshold or m.quote <= oversold_threshold:
-                return block("BLOCKED_SHORT_KC_LOWER_OVERSOLD")
 
         # 🚨 做多開倉 (OPEN_LONG) MA5 斜率與發散硬鎖
         # 1. MA5 實質向上斜率驗證：MA5 必須向上發散 (MA5_curr > MA5_prev1)
         # 2. MA5 必須在 MA15 上方 (MA5 > MA15)
         # 3. 當根 K 棒必須為實體綠 K / 陽線 (close - open >= 0.35 * ATR)，嚴禁紅 K 陰線下殺接飛刀！
-        # 4. 🚨 KC 上軌超買區 100% 絕對禁止開多（防天花板追多）
-        #    當收盤價或最新價位於 KC 上軌外側或貼近上軌 (close_price >= KC_Upper - 0.3 * ATR) 時，
-        #    判定為天花板極端超買區，100% 一票否決開多！
         if side == "LONG":
             ma5_slope_up = m.ma5_curr - m.ma5_prev
             if ma5_slope_up <= 0:
@@ -784,9 +775,6 @@ class MasterGateFunnel:
             candle_body = m.close_price - m.open_price
             if candle_body < 0.35 * m.atr and not math.isclose(candle_body, 0.35 * m.atr, rel_tol=1e-12, abs_tol=0):
                 return block("BLOCKED_LONG_CANDLE_BODY_TOO_SMALL")
-            overbought_threshold = m.kc_upper - 0.3 * m.atr
-            if m.close_price >= overbought_threshold or m.quote >= overbought_threshold:
-                return block("BLOCKED_LONG_KC_UPPER_OVERBOUGHT")
 
         try:
             priority = cls.priority_channel(m, side)

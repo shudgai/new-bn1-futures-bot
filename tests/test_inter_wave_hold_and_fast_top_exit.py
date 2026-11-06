@@ -351,17 +351,17 @@ def test_master_open_gatekeeper_blacklist_and_validation():
     assert not decision_red.can_execute
     assert decision_red.reason in {"BLOCKED_LONG_DIRECTIONAL_CANDLE", "BLOCKED_LONG_CANDLE_NOT_BULLISH"}
 
-    # 驗證 KC 下軌超賣區 (close <= kc_lower + 0.3 * atr) 100% 一票否決開空（防地板空）
+    # 驗證 KC 向下空頭格局下，超遠離下軌地板追空 (close < kc_lower - 0.8*atr 且乖離過大) 被 FOMO 地板空否決
     snap_oversold_short = MarketSnapshot(
         symbol="1000PEPE/USDT",
-        quote=97.2,
+        quote=95.0,
         open_price=98.5,
-        close_price=97.2, # kc_lower(97.0) + 0.3*atr(0.6) = 97.6，97.2 在超賣區內
+        close_price=95.0, # 遠離 kc_lower(97.0) 達到 2.0 (1.0 ATR)，且 MA15(99.0) - close(95.0) = 4.0 (2.0 ATR)
         high_price=98.5,
-        low_price=97.0,
-        ma3_curr=97.5,
+        low_price=95.0,
+        ma3_curr=96.0,
         ma3_prev=98.0,
-        ma5_curr=97.8,
+        ma5_curr=96.5,
         ma5_prev=98.5,
         ma15_curr=99.0,
         ma15_prev=99.2,
@@ -376,7 +376,7 @@ def test_master_open_gatekeeper_blacklist_and_validation():
     )
     decision_oversold = MasterOpenGatekeeper.validate_open_signal(snap_oversold_short, "SHORT")
     assert not decision_oversold.can_execute
-    assert decision_oversold.reason == "BLOCKED_SHORT_KC_LOWER_OVERSOLD"
+    assert decision_oversold.reason in {"BLOCKED_SHORT_OVERSOLD_FLOOR_FOMO", "BLOCKED_SHORT_MA15_EXTENSION_1_ATR"}
 
     # 驗證大趨勢 KC 向上時 100% 嚴禁開空
     snap_bullish_short = snap_oversold_short._replace(
