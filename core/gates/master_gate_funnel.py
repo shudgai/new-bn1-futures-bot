@@ -754,6 +754,20 @@ class MasterGateFunnel:
             if candle_body < 0.35 * m.atr and not math.isclose(candle_body, 0.35 * m.atr, rel_tol=1e-12, abs_tol=0):
                 return block("BLOCKED_SHORT_CANDLE_BODY_TOO_SMALL")
 
+        # 🚨 做多開倉 (OPEN_LONG) MA5 斜率與發散硬鎖
+        # 1. MA5 實質向上斜率驗證：MA5 必須向上發散 (MA5_curr > MA5_prev1)
+        # 2. MA5 必須在 MA15 上方 (MA5 > MA15)
+        # 3. 當根 K 棒必須為實體綠 K / 陽線 (close > open)，嚴禁紅 K 陰線下殺接飛刀！
+        if side == "LONG":
+            ma5_slope_up = m.ma5_curr - m.ma5_prev
+            if ma5_slope_up <= 0:
+                return block("BLOCKED_LONG_MA5_SLOPE_TOO_FLAT")
+            if m.ma5_curr <= m.ma15_curr:
+                return block("BLOCKED_LONG_MA5_NOT_ABOVE_MA15")
+            candle_body = m.close_price - m.open_price
+            if candle_body <= 0:
+                return block("BLOCKED_LONG_CANDLE_NOT_BULLISH")
+
         try:
             priority = cls.priority_channel(m, side)
         except (TypeError, ValueError):

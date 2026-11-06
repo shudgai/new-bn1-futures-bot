@@ -322,15 +322,26 @@ class CentralEntryGate:
             "is_swing_pivot": is_swing_pivot,
             "direction_override": direction_override,
         }
-        if outer_pivot_authorized:
+        from core.services.entry_methods import MEME_GATE_ENTRY
+        meme_authorized = has_entry_method_context and entry_method_context.get("entry_method_authority") == MEME_GATE_ENTRY
+        # 🚨 鐵律：即使是 MEME_GATE_ENTRY 或轉折特例，當 K 棒反向（多單收黑/空單收紅）或大趨勢/MA5逆向時，100% 嚴禁豁免一票否決！
+        is_candle_violating = dir_reason in {
+            "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE",
+            "BLOCKED_DIRECTION_LOCK_SHORT_NOT_BEARISH_CANDLE",
+            "BLOCKED_DIRECTION_LOCK_LONG_SLOPE_DOWN",
+            "BLOCKED_DIRECTION_LOCK_SHORT_SLOPE_UP",
+            "BLOCKED_DIRECTION_LOCK_LONG_MA5_BELOW_SLOW",
+            "BLOCKED_DIRECTION_LOCK_SHORT_MA5_ABOVE_SLOW",
+            "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+            "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
+        }
+        if meme_authorized and not is_candle_violating:
+            checks["direction_master_lock"].update(status="PASS", reason="VERIFIED_MEME_GATE_DIRECTION")
+        if outer_pivot_authorized and not is_candle_violating:
             checks["direction_master_lock"].update(
                 status="PASS", reason="VERIFIED_KC_OUTER_PIVOT_DIRECTION_AUTHORITY",
             )
-        from core.services.entry_methods import MEME_GATE_ENTRY
-        meme_authorized = has_entry_method_context and entry_method_context.get("entry_method_authority") == MEME_GATE_ENTRY
-        if meme_authorized:
-            checks["direction_master_lock"].update(status="PASS", reason="VERIFIED_MEME_GATE_DIRECTION")
-        if not dir_ok and not outer_pivot_authorized and not meme_authorized:
+        if not dir_ok and (not outer_pivot_authorized or is_candle_violating) and (not meme_authorized or is_candle_violating):
             veto_reason = dir_reason
             if dir_reason == "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE":
                 veto_reason = "VETO_BEARISH_CANDLE_FOR_LONG"

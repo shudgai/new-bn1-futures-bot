@@ -310,3 +310,44 @@ def test_master_open_gatekeeper_blacklist_and_validation():
     )
     decision = MasterOpenGatekeeper.validate_open_signal(snap_bearish, "LONG")
     assert not decision.can_execute
+    assert decision.reason in {
+        "BLOCKED_LONG_DIRECTIONAL_CANDLE",
+        "BLOCKED_LONG_ON_BEARISH_TREND",
+        "BLOCKED_LONG_MACRO_TREND_CONFLICT",
+        "BLOCKED_LONG_MA5_SLOPE_TOO_FLAT",
+        "BLOCKED_LONG_MA5_NOT_ABOVE_MA15",
+        "BLOCKED_LONG_CANDLE_NOT_BULLISH",
+    }
+
+    # 驗證 MA5 走平 / 微幅向下時開多 100% 一票否決
+    snap_flat_ma5 = snap_bearish._replace(
+        macro_trend="BULLISH",
+        kc_middle=100.2,
+        kc_middle_prev=100.1,
+        ma5_curr=100.0,
+        ma5_prev=100.0, # 走平
+        ma15_curr=99.0,
+        close_price=101.0,
+        open_price=100.0,
+        quote=101.0,
+    )
+    decision_flat = MasterOpenGatekeeper.validate_open_signal(snap_flat_ma5, "LONG")
+    assert not decision_flat.can_execute
+    assert decision_flat.reason == "BLOCKED_LONG_MA5_SLOPE_TOO_FLAT"
+
+    # 驗證下殺陰線 (close <= open) 時開多 100% 一票否決
+    snap_red_candle = snap_bearish._replace(
+        macro_trend="BULLISH",
+        kc_middle=100.2,
+        kc_middle_prev=100.1,
+        ma5_curr=101.0,
+        ma5_prev=100.0,
+        ma15_curr=99.0,
+        close_price=99.5,
+        open_price=100.5, # 紅K / 陰線下殺
+        quote=99.5,
+    )
+    decision_red = MasterOpenGatekeeper.validate_open_signal(snap_red_candle, "LONG")
+    assert not decision_red.can_execute
+    assert decision_red.reason in {"BLOCKED_LONG_DIRECTIONAL_CANDLE", "BLOCKED_LONG_CANDLE_NOT_BULLISH"}
+
