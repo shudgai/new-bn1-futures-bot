@@ -70,6 +70,11 @@ PROFIT_LOCK_TOKENS = (
     "TRAILING_PROFIT_LOCK", "EXIT_BY_SCHEME1_PROFIT_LOCK",
 )
 
+BOTTOM_REVERSAL_EXIT_REASONS = {
+    "SHORT": "EXIT_SHORT_BOTTOM_GREEN_CANDLE_MA5",
+    "LONG": "EXIT_LONG_TOP_RED_CANDLE_MA5",
+}
+
 ALLOW, HOLD, DEFER = "ALLOW", "HOLD", "DEFER"
 
 
@@ -102,6 +107,7 @@ OWN_STRUCTURE_REASONS = frozenset(
      *(r.upper() for r in KC_FLIP_EXIT_REASONS.values()),
      *(r.upper() for r in TRUE_OUTER_PIVOT_EXIT_REASONS.values()),
      *(r.upper() for r in FAST_TOP_EXIT_REASONS.values()),
+     *(r.upper() for r in BOTTOM_REVERSAL_EXIT_REASONS.values()),
      "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
      "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
      "EXIT_BY_SCHEME1_PROFIT_LOCK_MA3_MA15",
@@ -452,6 +458,43 @@ class UltimateShortExitGatekeeper:
             symbol, side, closed, opened, entry, quote, is_bar_closed, current_time,
         ):
             return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
+
+        # ⚡ 谷底/頂部陽線/陰線極速平倉斷路器 (Bottom / Top Reversal Exit Gate - 2026-11-06 最新授權)
+        # 1. 空單谷底極速平倉：持有空單且價格處於超賣谷底區 (close < fields["ma15"])，
+        #    當 1m 收盤為實體綠 K (close > open, body >= 0.35 * atr) 且收盤站上 MA5 (close > ma5) 且 MA5 向上拐頭 (ma5 > ma5_prev)，
+        #    100% 豁免 MA15 / KC 中軌到達限制，立即秒級授權平空，第一時間落袋為安，並授權反手開多！
+        # 2. 多單頂部極速平倉：持有多單且價格處於頂部超買區 (close > fields["ma15"])，
+        #    當 1m 收盤為實體紅 K (close < open, body >= 0.35 * atr) 且收盤跌破 MA5 (close < ma5) 且 MA5 向下拐頭 (ma5 < ma5_prev)，
+        #    100% 豁免 MA15 / KC 中軌到達限制，立即秒級授權平多，第一時間落袋為安，並授權反手開空！
+        if side == "SHORT" and close < fields["ma15"]:
+            is_bottom_green_candle = (
+                close > fields["open"]
+                and (close - fields["open"]) >= 0.35 * atr
+                and close > fields["ma5"]
+                and fields["ma5"] > fields["ma5_prev"]
+            )
+            if is_bottom_green_candle and (
+                normalized in OWN_STRUCTURE_REASONS
+                or "BOTTOM" in normalized
+                or "VALLEY" in normalized
+                or "REVERSAL" in normalized
+            ):
+                return allow(BOTTOM_REVERSAL_EXIT_REASONS[side])
+
+        if side == "LONG" and close > fields["ma15"]:
+            is_top_red_candle = (
+                close < fields["open"]
+                and (fields["open"] - close) >= 0.35 * atr
+                and close < fields["ma5"]
+                and fields["ma5"] < fields["ma5_prev"]
+            )
+            if is_top_red_candle and (
+                normalized in OWN_STRUCTURE_REASONS
+                or "TOP" in normalized
+                or "PEAK" in normalized
+                or "REVERSAL" in normalized
+            ):
+                return allow(BOTTOM_REVERSAL_EXIT_REASONS[side])
 
         # 🛡️ 核心鐵律：多頭主升浪 100% 強制死抱鐵律 (Trend Wave Hold Gate)
         # 1. 【大趨勢「KC 向上」未跌破 MA15 100% 絕對禁止平多（最高鐵律）】：

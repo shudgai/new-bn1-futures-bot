@@ -2085,6 +2085,8 @@ class ExecutionManager:
                     or "VALLEY" in str(reason).upper()
                     or "BULLISH_TREND_REVERSAL" in str(reason).upper()
                     or "V_REVERSAL" in str(reason).upper()
+                    or "BOTTOM_GREEN_CANDLE" in str(reason).upper()
+                    or "BOTTOM" in str(reason).upper()
                 )
                 is_flip_to_long = bool(pos_side == "SHORT" and is_real_bottom)
 
