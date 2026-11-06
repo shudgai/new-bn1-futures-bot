@@ -721,10 +721,10 @@ class MasterGateFunnel:
         # 🚨 鐵律一票否決 2：K 棒顏色硬鎖 (綠 K 陽線 100% 阻斷開空，紅 K 陰線 100% 阻斷開多)
         # 開空必須確定為實體紅 K (close < open 且 quote < open)，陽線 100% 一票否決！
         if side == "SHORT" and (m.close_price >= m.open_price or m.quote >= m.open_price):
-            return block("VETO_SHORT_ON_GREEN_CANDLE")
+            return block("BLOCKED_SHORT_DIRECTIONAL_CANDLE")
         # 開多必須確定為實體綠 K (close > open 且 quote > open)，陰線 100% 一票否決！
         if side == "LONG" and (m.close_price <= m.open_price or m.quote <= m.open_price):
-            return block("VETO_LONG_ON_RED_CANDLE")
+            return block("BLOCKED_LONG_DIRECTIONAL_CANDLE")
 
         # 🚨 鐵律一票否決 3：順勢交易與防逆勢開倉 (Anti-Counter-Trend & KC Slope Lock)
         # 1. 標頭寫明「KC 向上 (只評估多單)」(m.kc_middle >= m.kc_middle_prev) 時，100% 嚴禁開空！
@@ -739,6 +739,20 @@ class MasterGateFunnel:
             return block("BLOCKED_SHORT_MACRO_TREND_CONFLICT")
         if side == "LONG" and macro_str == "BEARISH":
             return block("BLOCKED_LONG_MACRO_TREND_CONFLICT")
+
+        # 🚨 做空開倉 (OPEN_SHORT) MA5 斜率與發散硬鎖
+        # 1. MA5 實質向下斜率驗證：(MA5_prev1 - MA5_curr) >= 0.15 * ATR
+        # 2. MA5 必須在 MA15 下方 (MA5 < MA15)
+        # 3. 當根 K 棒必須為實體紅 K (open - close >= 0.35 * ATR)
+        if side == "SHORT":
+            ma5_slope_down = m.ma5_prev - m.ma5_curr
+            if ma5_slope_down < 0.15 * m.atr and not math.isclose(ma5_slope_down, 0.15 * m.atr, rel_tol=1e-12, abs_tol=0):
+                return block("BLOCKED_SHORT_MA5_SLOPE_TOO_FLAT")
+            if m.ma5_curr >= m.ma15_curr:
+                return block("BLOCKED_SHORT_MA5_NOT_BELOW_MA15")
+            candle_body = m.open_price - m.close_price
+            if candle_body < 0.35 * m.atr and not math.isclose(candle_body, 0.35 * m.atr, rel_tol=1e-12, abs_tol=0):
+                return block("BLOCKED_SHORT_CANDLE_BODY_TOO_SMALL")
 
         try:
             priority = cls.priority_channel(m, side)
