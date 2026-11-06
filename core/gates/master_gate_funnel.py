@@ -635,6 +635,16 @@ class MasterGateFunnel:
             return GateDecision(False, "HOLD", reason, details)
         if side not in ("LONG", "SHORT"):
             return block("VETO_INVALID_ENTRY_SIDE")
+
+        # 🚨 鐵律一票否決：順勢交易與防逆勢開倉 (Anti-Counter-Trend & KC Slope Lock)
+        # 1. 標頭寫明「KC 向上 (只評估多單)」(m.kc_middle >= m.kc_middle_prev) 時，100% 嚴禁開空！
+        # 2. 標頭寫明「KC 向下 (只評估空單)」(m.kc_middle <= m.kc_middle_prev) 時，100% 嚴禁開多！
+        kc_diff = m.kc_middle - m.kc_middle_prev
+        if side == "SHORT" and (kc_diff >= 0 or math.isclose(kc_diff, 0, rel_tol=1e-12, abs_tol=0)):
+            return block("BLOCKED_SHORT_ON_BULLISH_TREND")
+        if side == "LONG" and (kc_diff <= 0 or math.isclose(kc_diff, 0, rel_tol=1e-12, abs_tol=0)):
+            return block("BLOCKED_LONG_ON_BEARISH_TREND")
+
         try:
             priority = cls.priority_channel(m, side)
         except (TypeError, ValueError):

@@ -368,7 +368,7 @@ def test_exchange_order_boundary_blocks_top_reversal_short_in_bull_trend():
         "entry_gate_quote": float(frame.iloc[-1]["close"]),
     }
 
-    with pytest.raises(ValueError, match="BLOCKED_SHORT_KC_DIRECTION"):
+    with pytest.raises(ValueError, match=r"BLOCKED_SHORT_KC_DIRECTION|BLOCKED_SHORT_ON_BULLISH_TREND"):
         asyncio.run(account._send_order(
             "CAP/USDT",
             "market",

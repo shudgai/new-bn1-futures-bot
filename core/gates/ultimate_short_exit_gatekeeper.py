@@ -398,6 +398,10 @@ class UltimateShortExitGatekeeper:
                     return allow(KC_FLIP_EXIT_REASONS[side])
                 return hold(f"VETO_HOLD_{side}_COST_SHIELD")
 
+        buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
+        evidence["structure_line"] = buffer_line
+        beyond_buffer = -sign * (close - buffer_line) > 0
+
         # 🚀 頂部/底部大實體 K 線貫穿極速平倉通道 (Fast Top / Bottom Exit Channel)
         # 解決龍蝦/PEPE峰頂滯後平多：脫離成本保護盾(Cost Shield)後，當收線時出現大實體逆向K線(陰線下殺 Body >= 0.35 ATR 貫穿 KC 中軌與 MA15 且 MA5 死叉 MA15)，
         # 100% 豁免後續 0.50 ATR 緩衝區，直接在頂部第一時間高位授權平倉！
@@ -410,12 +414,15 @@ class UltimateShortExitGatekeeper:
             and -sign * (close - fields["ma15"]) > 0
             and fresh_ma_cross
         )
-        if fast_reversal and (normalized in FAST_TOP_EXIT_REASONS.values() or "FAST_TOP" in normalized or "FAST_BOTTOM" in normalized):
+        if fast_reversal and (
+            not beyond_buffer
+            or normalized in FAST_TOP_EXIT_REASONS.values()
+            or "FAST_TOP" in normalized
+            or "FAST_BOTTOM" in normalized
+        ):
             return allow(FAST_TOP_EXIT_REASONS[side])
 
-        buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
-        evidence["structure_line"] = buffer_line
-        if not -sign * (close - buffer_line) > 0:
+        if not beyond_buffer:
             return hold(f"VETO_HOLD_{side}_WITHIN_050_ATR_BUFFER")
         ma5, ma15, ma5_prev = fields["ma5"], fields["ma15"], fields["ma5_prev"]
         # Fresh cross only: MA5 must have been on the position side of MA15 on the previous bar.
