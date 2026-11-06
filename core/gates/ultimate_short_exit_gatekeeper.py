@@ -221,13 +221,20 @@ def _outer_rail_true_pivot_release(
         at_outer_rail = (l2 <= kc_l2 or l1 <= kc_l1)
         in_profit = c3 < entry and quote < entry
 
+        # 空單真谷底平倉鐵律（True Valley Exit）：
+        # 1. 必須收出具有明確向上動能的陽線 (c3 - o3 >= 0.35 * atr2)
+        # 2. 必須強勢收盤站上 MA5 (c3 > ma5_3) 且站上中間棒高點或實體中點
+        # 3. 若依然壓制在 MA15 之下且僅為微幅小反彈，100% 判定為下跌途中的健康反抽，絕非真谷底！
+        is_strong_rebound_candle = (c3 - o3) >= 0.35 * atr2
         is_true_valley = (
             at_outer_rail
             and l2 < l1
             and l2 < l3
             and c3 > o3
+            and is_strong_rebound_candle
             and c3 > mid2
-            and (c3 > ma5_3 or ma5_3 > ma5_2)
+            and c3 > ma5_3
+            and (ma5_3 > ma5_2 or c3 > h2)
             and profit_expanded
             and in_profit
         )
@@ -241,13 +248,19 @@ def _outer_rail_true_pivot_release(
         at_outer_rail = (h2 >= kc_u2 or h1 >= kc_u1)
         in_profit = c3 > entry and quote > entry
 
+        # 多單真峰頂平倉鐵律（True Peak Exit）：
+        # 1. 必須收出具有明確向下下殺動能的陰線 (o3 - c3 >= 0.35 * atr2)
+        # 2. 必須明確跌破 MA5 (c3 < ma5_3) 且跌破中間棒低點或實體中點
+        is_strong_drop_candle = (o3 - c3) >= 0.35 * atr2
         is_true_peak = (
             at_outer_rail
             and h2 > h1
             and h2 > h3
             and c3 < o3
+            and is_strong_drop_candle
             and c3 < mid2
-            and (c3 < ma5_3 or ma5_3 < ma5_2)
+            and c3 < ma5_3
+            and (ma5_3 < ma5_2 or c3 < l2)
             and profit_expanded
             and in_profit
         )
