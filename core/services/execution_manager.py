@@ -2106,10 +2106,10 @@ class ExecutionManager:
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
-                # 🛑 2026-10-31 核心重構：平倉與開倉徹底解耦（Decouple Exit & Entry）！
-                # 嚴禁平倉後同 K 棒立刻反手開倉，避免多空雙向互洗。
-                # 平倉後回歸觀望（NONE），由後續主流程嚴格依據大週期順勢尋找下一次開倉訊號！
-                can_flip = False
+                # 🟢 斷頭與谷底轉折反手授權（Position Flip）：
+                # 當收線出現確定性真峰谷或結構貫穿反轉時，授權秒級反手，絕不放跑主升浪/主跌浪！
+                from core.symbol_aliases import is_meme_breakout_symbol
+                can_flip = is_meme_breakout_symbol(symbol) and (is_flip_to_long or is_flip_to_short)
 
                 if can_flip and (is_flip_to_long or is_flip_to_short):
                     flip_side = "LONG" if is_flip_to_long else "SHORT"
