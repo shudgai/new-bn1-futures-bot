@@ -346,6 +346,7 @@ class UltimateShortExitGatekeeper:
             fields[key] = _float(current.get(key))
         fields["ma5_prev"] = _float(previous.get("ma5"))
         fields["ma15_prev"] = _float(previous.get("ma15"))
+        fields["kc_middle_prev"] = _float(previous.get("kc_middle"))
         # Same ATR convention as the entry snapshot: the previous completed bar.
         fields["atr"] = _float(previous.get("atr"))
         if any(v is None or v <= 0 for v in fields.values()):
@@ -389,6 +390,36 @@ class UltimateShortExitGatekeeper:
         if (side == "SHORT" and close > fields["kc_upper"]) or (
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
+
+        # 🛡️ 核心鐵律：多頭主升浪 100% 強制死抱不平倉 (Trend Wave Hold Gate)
+        # 1. 當持有多單且 KC 中軌向上發散 (kc_slope > 0) 時，
+        #    除非當根已收線大實體紅 K (陰線) 實質跌破 MA15 與 KC 中軌且 MA5 死叉 MA15 (真峰頂/斷頭轉向)，
+        #    否則 100% 傳回 False 阻斷平多，堅決死抱主升浪！
+        kc_slope = fields["kc_middle"] - fields["kc_middle_prev"]
+        if side == "LONG" and kc_slope > 0:
+            is_true_top_break = (
+                close < fields["open"]
+                and (fields["open"] - close) >= 0.35 * atr
+                and close < fields["ma15"]
+                and close < fields["kc_middle"]
+                and fields["ma5"] < fields["ma15"]
+            )
+            if not is_true_top_break:
+                return hold("VETO_HOLD_LONG_TREND_WAVE_ABOVE_MID")
+
+        # 2. 當持有空單且 KC 中軌向下發散 (kc_slope < 0) 時，
+        #    除非當根已收線大實體綠 K (陽線) 實質突破 MA15 與 KC 中軌且 MA5 金叉 MA15 (真谷底/V轉反彈)，
+        #    否則 100% 傳回 False 阻斷平空，堅決死抱主降浪！
+        if side == "SHORT" and kc_slope < 0:
+            is_true_bottom_break = (
+                close > fields["open"]
+                and (close - fields["open"]) >= 0.35 * atr
+                and close > fields["ma15"]
+                and close > fields["kc_middle"]
+                and fields["ma5"] > fields["ma15"]
+            )
+            if not is_true_bottom_break:
+                return hold("VETO_HOLD_SHORT_TREND_WAVE_BELOW_MID")
 
         # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit)
         # 使用者與策略核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底市價平倉獲利了結！

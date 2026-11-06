@@ -8,6 +8,7 @@ core/services/data_pipeline.py
 """
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
+import math
 import pandas as pd
 import numpy as np
 from core.services.technical_indicators import compute_keltner_channels
@@ -338,19 +339,22 @@ class DataPipeline:
         slow_slope_5 = slow_slope_10
 
         # Retain the separate HTF regime for existing emergency-exit evidence.
+        # 防單根微幅毛刺誤殺大趨勢：若拉遠均線處於多頭排列或價格仍在容許緩衝內，維持 BULLISH
+        bull_buffer = 0.5 * atr_val if (math.isfinite(atr_val) and atr_val > 0) else 0.0
         is_htf_bull = (
             not zoomed_out_bearish
             and (
-                (ema_fast >= ema_slow and (macro_slope_10 >= 0 or slow_slope_10 >= 0) and quote >= ema60)
-                or (quote > ema60 and macro_slope_10 > 0)
+                (ema_fast >= ema_slow and (macro_slope_10 >= 0 or slow_slope_10 >= 0) and quote >= (ema60 - bull_buffer))
+                or (quote > (ema60 - bull_buffer) and macro_slope_10 > 0)
+                or (zoomed_out_bullish and (quote >= (ema60 - bull_buffer) or ema_slow >= ema60))
             )
         )
         is_htf_bear = (
             not zoomed_out_bullish
             and (
-                (ema_fast <= ema_slow and (macro_slope_10 <= 0 or slow_slope_10 <= 0) and quote <= ema60)
-                or (quote < ema60 and macro_slope_10 < 0)
-                or zoomed_out_bearish
+                (ema_fast <= ema_slow and (macro_slope_10 <= 0 or slow_slope_10 <= 0) and quote <= (ema60 + bull_buffer))
+                or (quote < (ema60 + bull_buffer) and macro_slope_10 < 0)
+                or (zoomed_out_bearish and (quote <= (ema60 + bull_buffer) or ema_slow <= ema60))
             )
         )
 
