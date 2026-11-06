@@ -406,34 +406,23 @@ class UltimateShortExitGatekeeper:
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
 
-        # 🔒 階梯鎖利底線（Floor Lock）與保本保利最高優先放行
-        # 當部位獲利達到 Stage 1 (+10% ROE) 或 Stage 2 (+20% ROE) 以上，或利潤已觸及/跌破鎖利底線時，
-        # 必須無條件放行落袋保利，一票否決「死抱主升浪中軌」，堅決守住利潤！
-        from core.services.exits.staged_profit_lock import evaluate_staged_profit_lock
-        staged_exit, staged_reason, staged_meta = evaluate_staged_profit_lock(
-            dict(position), quote, side,
-            current_ma3=fields.get("ma5"), current_ma15=fields.get("ma15"),
-        )
-        if staged_exit and staged_reason:
-            evidence.update(staged_meta)
-            evidence["profit_lock_trigger"] = staged_reason
-            logger.warning("[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s reason=%s STAGED_LOCK_PRIORITY",
-                           symbol, side, staged_reason, reason)
-            return ExitVerdict(ALLOW, staged_reason, evidence)
-
-        # 🛡️ 核心鐵律：多頭平倉最高權限一票否決鐵律 (Anti-Premature Exit Gate)
-        # 1. 【未跌破 MA15 100% 絕對禁止平多（鐵律）】：
-        #    當 1m 收盤價仍位於 MA15 上方 (close >= ma15) 時，100% 認定為「多頭回踩洗盤」，傳回 False 阻斷平多，強制死抱部位！
-        # 2. 【綠 K 陽線 100% 絕對禁止平多】：
+        # 🛡️ 核心鐵律：多頭主升浪 100% 強制死抱鐵律 (Trend Wave Hold Gate)
+        # 1. 【大趨勢「KC 向上」未跌破 MA15 100% 絕對禁止平多（最高鐵律）】：
+        #    當 1m 收盤價仍位於 MA15 上方 (close >= ma15) 時，100% 認定為「多頭主升浪貼軌推升 / 洗盤」，【Gate 100% 傳回 False 阻斷平多】！強制死抱部位讓利潤奔跑！
+        # 2. 【MA5 未實質死叉 100% 絕對禁止平多】：
+        #    評估平多時，若 MA5 尚未實質向下死叉 MA15 (ma5 >= ma15)，100% 傳回 False 一票否決，嚴禁被單根上影線或回踩小紅 K 過敏騙出場！
+        # 3. 【綠 K 陽線 100% 絕對禁止平多】：
         #    當前 1m K 棒收盤若為「實體綠 K / 陽線 (close > open)」，100% 傳回 False 一票否決！
-        # 3. 【只有真跌破 MA15 ＋ 實體紅 K 陰線才授權平多】：
+        # 4. 【只有大實體紅 K 實質貫穿跌破 MA15 ＋ MA5 死叉才授權平多】：
         #    唯有同時滿足：(1) 實體紅 K (close < open 且 open - close >= 0.35 * atr)
         #                 (2) 收盤價實質跌破 MA15 (close < ma15) 且跌破 KC 中軌 (close < kc_middle)
-        #                 (3) MA5 死叉 MA15 (ma5 < ma15)
+        #                 (3) MA5 實質死叉 MA15 (ma5 < ma15)
         #    若不滿足，100% 傳回 False 阻斷平多！
         if side == "LONG":
             if close >= fields["ma15"]:
                 return hold("VETO_HOLD_LONG_ABOVE_MA15")
+            if fields["ma5"] >= fields["ma15"]:
+                return hold("VETO_HOLD_LONG_MA5_ABOVE_MA15")
             if close > fields["open"]:
                 return hold("VETO_HOLD_LONG_ON_GREEN_CANDLE")
             is_true_top_break = (
@@ -446,10 +435,12 @@ class UltimateShortExitGatekeeper:
             if not is_true_top_break:
                 return hold("VETO_HOLD_LONG_TREND_WAVE_ABOVE_MID")
 
-        # 空頭平倉最高權限一票否決鐵律 (Symmetric Anti-Premature Exit Gate)
+        # 空頭主降浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
         if side == "SHORT":
             if close <= fields["ma15"]:
                 return hold("VETO_HOLD_SHORT_BELOW_MA15")
+            if fields["ma5"] <= fields["ma15"]:
+                return hold("VETO_HOLD_SHORT_MA5_BELOW_MA15")
             if close < fields["open"]:
                 return hold("VETO_HOLD_SHORT_ON_RED_CANDLE")
             is_true_bottom_break = (
