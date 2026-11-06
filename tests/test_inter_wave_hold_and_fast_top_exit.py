@@ -351,3 +351,41 @@ def test_master_open_gatekeeper_blacklist_and_validation():
     assert not decision_red.can_execute
     assert decision_red.reason in {"BLOCKED_LONG_DIRECTIONAL_CANDLE", "BLOCKED_LONG_CANDLE_NOT_BULLISH"}
 
+    # 驗證 KC 下軌超賣區 (close <= kc_lower + 0.3 * atr) 100% 一票否決開空（防地板空）
+    snap_oversold_short = MarketSnapshot(
+        symbol="1000PEPE/USDT",
+        quote=97.2,
+        open_price=98.5,
+        close_price=97.2, # kc_lower(97.0) + 0.3*atr(0.6) = 97.6，97.2 在超賣區內
+        high_price=98.5,
+        low_price=97.0,
+        ma3_curr=97.5,
+        ma3_prev=98.0,
+        ma5_curr=97.8,
+        ma5_prev=98.5,
+        ma15_curr=99.0,
+        ma15_prev=99.2,
+        kc_upper=103.0,
+        kc_middle=100.0,
+        kc_middle_prev=100.1,
+        kc_lower=97.0,
+        atr=2.0,
+        macro_trend="BEARISH",
+        ma_cross_count_8=0,
+        is_closed=True,
+    )
+    decision_oversold = MasterOpenGatekeeper.validate_open_signal(snap_oversold_short, "SHORT")
+    assert not decision_oversold.can_execute
+    assert decision_oversold.reason == "BLOCKED_SHORT_KC_LOWER_OVERSOLD"
+
+    # 驗證大趨勢 KC 向上時 100% 嚴禁開空
+    snap_bullish_short = snap_oversold_short._replace(
+        kc_middle=100.2,
+        kc_middle_prev=100.1, # KC 向上
+        macro_trend="BULLISH",
+    )
+    decision_bullish_short = MasterOpenGatekeeper.validate_open_signal(snap_bullish_short, "SHORT")
+    assert not decision_bullish_short.can_execute
+    assert decision_bullish_short.reason in {"BLOCKED_SHORT_ON_BULLISH_TREND", "BLOCKED_SHORT_MACRO_TREND_CONFLICT"}
+
+

@@ -753,6 +753,12 @@ class MasterGateFunnel:
             candle_body = m.open_price - m.close_price
             if candle_body < 0.35 * m.atr and not math.isclose(candle_body, 0.35 * m.atr, rel_tol=1e-12, abs_tol=0):
                 return block("BLOCKED_SHORT_CANDLE_BODY_TOO_SMALL")
+            # 🚨 KC 下軌超賣區 100% 絕對禁止開空（防地板空）
+            # 當收盤價或最新價位於 KC 下軌外側或貼近下軌 (close_price <= KC_Lower + 0.3 * ATR) 時，
+            # 判定為極端超賣谷底區，100% 一票否決開空！
+            oversold_threshold = m.kc_lower + 0.3 * m.atr
+            if m.close_price <= oversold_threshold or m.quote <= oversold_threshold:
+                return block("BLOCKED_SHORT_KC_LOWER_OVERSOLD")
 
         # 🚨 做多開倉 (OPEN_LONG) MA5 斜率與發散硬鎖
         # 1. MA5 實質向上斜率驗證：MA5 必須向上發散 (MA5_curr > MA5_prev1)
