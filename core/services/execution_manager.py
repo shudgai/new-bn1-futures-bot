@@ -1316,6 +1316,25 @@ class ExecutionManager:
                     current_price=curr_quote,
                     macro_trend="BULLISH" if is_zoomed_out_bullish else ("BEARISH" if is_zoomed_out_bearish else macro_trend),
                 )
+
+                # 🛡️ 交易所端原生條件單同步掛載 (Exchange Native Stop Order Sync)：
+                # 當持倉出現有效鎖利防守價時，立即調用 ExchangeOrderManager 掛載或推進交易所端 Native Stop 條件單！
+                trailing_stop_p = float(current_position.get("trailing_stop_price", 0.0) or 0.0)
+                if trailing_stop_p > 0 and account is not None:
+                    from core.services.ExchangeOrderManager import ExchangeOrderManager
+                    try:
+                        asyncio.create_task(
+                            ExchangeOrderManager.place_or_update_native_stop_order(
+                                account=account,
+                                symbol=symbol,
+                                position=current_position,
+                                target_stop_price=trailing_stop_p,
+                                atr=atr_v,
+                            )
+                        )
+                    except Exception as err:
+                        logger.warning(f"⚠️ [NATIVE_STOP_TRIGGER_ERR] {symbol}: {err}")
+
                 if staged_exit_needed and not should_exit:
                     # ⚠️ 順勢大週期一單到底與獲利鎖定平衡：
                     # 大週期熊市持有空單、或大週期牛市持有多單時，僅一票否決 Stage 1 (零利潤成本保本)，防止在剛開倉呼吸時被震下車！
@@ -4670,6 +4689,8 @@ class ExecutionManager:
                             persisted_bars.pop(symbol, None)
                     # 徹底撤銷交易所端殘留的所有條件委託單，防範孤兒止損單
                     try:
+                        from core.services.ExchangeOrderManager import ExchangeOrderManager
+                        await ExchangeOrderManager.cancel_native_stop_order(account, symbol)
                         if hasattr(account, "_cancel_all_orders"):
                             await account._cancel_all_orders(symbol)
                     except Exception as cancel_exc:
