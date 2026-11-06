@@ -477,8 +477,8 @@ class MasterGateFunnel:
         confirmed_pivot = (
             is_meme_breakout_symbol(m.symbol)
             and (
-                side == "SHORT" and cls.is_top_pivot_short(m)
-                or side == "LONG" and cls.is_bottom_pivot_long(m)
+                side == "SHORT" and (cls.is_top_pivot_short(m) or cls.evaluate_position_flip(m, "LONG") == ("SHORT", "TRIGGER_TOP_PIVOT_CROSS"))
+                or side == "LONG" and (cls.is_bottom_pivot_long(m) or cls.evaluate_position_flip(m, "SHORT") == ("LONG", "TRIGGER_BOTTOM_PIVOT_CROSS"))
             )
         )
         if confirmed_pivot:
@@ -895,6 +895,18 @@ class MasterGateFunnel:
             "TRIGGER_EXPRESS_TREND_LONG",
             "TRIGGER_EXPRESS_TREND_SHORT",
         }
+        # 🚨 阻斷天花板追多 / 地板追空 (Anti-FOMO Overbought / Oversold Ceiling Block)
+        # 1. 天花板追多一票否決：當 1m 收盤價遠離 KC 上軌 (close > KC_Upper + 0.8 * ATR)，
+        #    且 MA5 距離 MA15 乖離過大時，100% 傳回 False 阻斷開多，嚴禁買在長陽線頂部天花板！
+        # 2. 地板追空一票否決：當 1m 收盤價遠離 KC 下軌 (close < KC_Lower - 0.8 * ATR)，
+        #    且 MA5 距離 MA15 乖離過大時，100% 傳回 False 阻斷開空，嚴禁空在長陰線底部地板！
+        if side == "LONG" and (m.close_price > m.kc_upper + 0.8 * m.atr or m.quote > m.kc_upper + 0.8 * m.atr):
+            if (m.ma5_curr - m.ma15_curr) > 0.8 * m.atr or (m.close_price - m.ma15_curr) > 1.2 * m.atr:
+                return block("BLOCKED_LONG_OVERBOUGHT_CEILING_FOMO")
+        if side == "SHORT" and (m.close_price < m.kc_lower - 0.8 * m.atr or m.quote < m.kc_lower - 0.8 * m.atr):
+            if (m.ma15_curr - m.ma5_curr) > 0.8 * m.atr or (m.ma15_curr - m.close_price) > 1.2 * m.atr:
+                return block("BLOCKED_SHORT_OVERSOLD_FLOOR_FOMO")
+
         band_limit = (
             3.0 if breakout_priority
             else 0.8 if big_body_breakout and extreme_over
