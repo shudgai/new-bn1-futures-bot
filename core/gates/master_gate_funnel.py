@@ -777,9 +777,11 @@ class MasterGateFunnel:
             and sign * (m.kc_middle - m.kc_middle_prev) > 0
         )
         is_express_trend = cls.is_express_trend_entry(m, side)
+        is_continuation = cls.is_outer_rail_continuation(m, side) or cls.is_continuation_entry(m, side)
+        is_trend_ride = is_express_trend or is_continuation
         if is_meme_breakout_symbol(m.symbol):
             distance_atr = meme_distance_atr(m.symbol, m.atr)
-            valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side) or is_express_trend
+            valid_outer_breakout = big_body_breakout or is_trend_ride
             directional_and_aligned = (
                 sign * (m.close_price - m.open_price) > 0
                 and sign * (m.ma5_curr - m.ma5_prev) > 0
@@ -790,19 +792,19 @@ class MasterGateFunnel:
                     return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
                 if side == "LONG" and m.close_price - m.kc_upper > 0 and not valid_outer_breakout:
                     return block("VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE")
-            if (slope_aligned_breakout or is_express_trend) and abs(m.quote - m.close_price) <= 0.25 * distance_atr:
+            if (slope_aligned_breakout or is_trend_ride) and abs(m.quote - m.close_price) <= 0.25 * distance_atr:
                 if (
-                    abs(m.open_price - m.ma15_curr) > (3.5 * distance_atr if is_express_trend else distance_atr)
+                    abs(m.open_price - m.ma15_curr) > (3.5 * distance_atr if is_trend_ride else distance_atr)
                     and not math.isclose(
-                        abs(m.open_price - m.ma15_curr), (3.5 * distance_atr if is_express_trend else distance_atr),
+                        abs(m.open_price - m.ma15_curr), (3.5 * distance_atr if is_trend_ride else distance_atr),
                         rel_tol=1e-12, abs_tol=0,
                     )
                 ):
                     return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
             elif any(
-                abs(price - m.ma15_curr) > (3.5 * distance_atr if is_express_trend else distance_atr)
+                abs(price - m.ma15_curr) > (3.5 * distance_atr if is_trend_ride else distance_atr)
                 and not math.isclose(
-                    abs(price - m.ma15_curr), (3.5 * distance_atr if is_express_trend else distance_atr),
+                    abs(price - m.ma15_curr), (3.5 * distance_atr if is_trend_ride else distance_atr),
                     rel_tol=1e-12, abs_tol=0,
                 )
                 for price in (m.quote, m.close_price)
@@ -885,18 +887,18 @@ class MasterGateFunnel:
             cap = multiple * distance_atr
             return value > cap and not math.isclose(value, cap, rel_tol=1e-12, abs_tol=0)
 
-        open_bias_breakout = (slope_aligned_breakout or is_express_trend) and abs(m.quote - m.close_price) <= 0.25 * distance_atr
+        open_bias_breakout = (slope_aligned_breakout or is_trend_ride) and abs(m.quote - m.close_price) <= 0.25 * distance_atr
         ma15_limit = (
             3.5 if open_bias_breakout
-            else 3.5 if is_express_trend
+            else 3.5 if is_trend_ride
             else MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout
             else MEME_MA15_EXTENSION_ATR
         )
         extreme_over = over_limit(sign * (extreme - m.ma15_curr), MEME_MA15_EXTENSION_ATR)
         if over_limit(sign * (extreme - m.ma15_curr), ma15_limit):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
-        bias_price = m.open_price if (big_body_breakout or is_express_trend) else extreme
-        if over_limit(sign * (bias_price - m.ma15_curr), ma15_limit if is_express_trend else (MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout else MEME_MA15_EXTENSION_ATR)):
+        bias_price = m.open_price if (big_body_breakout or is_trend_ride) else extreme
+        if over_limit(sign * (bias_price - m.ma15_curr), ma15_limit if is_trend_ride else (MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout else MEME_MA15_EXTENSION_ATR)):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         # When the bias-from-open exemption was actually needed, cap the rail extension tightly.
         breakout_priority = priority in {
