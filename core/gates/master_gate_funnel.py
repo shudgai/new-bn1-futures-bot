@@ -830,6 +830,10 @@ class MasterGateFunnel:
             trigger_hit = "TRIGGER_A_SQUEEZE_EXPANSION"
         elif cls.is_early_long(m):
             trigger_hit = "TRIGGER_EARLY_0748_BREAKOUT"
+        elif cls.is_outer_rail_continuation(m, "LONG"):
+            trigger_hit = "TRIGGER_OUTER_RAIL_CONTINUATION_LONG"
+        elif cls.is_continuation_entry(m, "LONG"):
+            trigger_hit = "TRIGGER_TREND_CONTINUATION_LONG"
         elif (
             m.kc_middle <= m.low_price <= m.kc_middle + 0.35 * m.atr
             and m.ma5_prev > m.ma15_prev and m.ma5_curr > m.ma15_curr
@@ -886,6 +890,10 @@ class MasterGateFunnel:
             trigger_hit = "TRIGGER_C_BREAKDOWN_LOWER_RAIL"
         elif cls.is_slope_aligned_trend_entry(m, "SHORT"):
             trigger_hit = "TRIGGER_ALIGNED_TREND_SLOPES"
+        elif cls.is_outer_rail_continuation(m, "SHORT"):
+            trigger_hit = "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT"
+        elif cls.is_continuation_entry(m, "SHORT"):
+            trigger_hit = "TRIGGER_TREND_CONTINUATION_SHORT"
 
         if not trigger_hit:
             trigger_hit = cls.priority_channel(m, "SHORT")
