@@ -227,8 +227,7 @@ def _outer_rail_true_pivot_release(
             and l2 < l3
             and c3 > o3
             and c3 > mid2
-            and c3 > ma5_3
-            and ma5_3 > ma5_2
+            and (c3 > ma5_3 or ma5_3 > ma5_2)
             and profit_expanded
             and in_profit
         )
@@ -248,8 +247,7 @@ def _outer_rail_true_pivot_release(
             and h2 > h3
             and c3 < o3
             and c3 < mid2
-            and c3 < ma5_3
-            and ma5_3 < ma5_2
+            and (c3 < ma5_3 or ma5_3 < ma5_2)
             and profit_expanded
             and in_profit
         )
@@ -434,6 +432,14 @@ class UltimateShortExitGatekeeper:
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
 
+        # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit - 優先於趨勢波段續抱審查)
+        # 核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底/峰頂市價平倉獲利了結！
+        # 絕不拖延、絕不坐過山車回到中軌或反側外軌，一票否決「健康回踩續抱 (VETO_HOLD)」，100% 豁免持倉滿 5 根限制！
+        if normalized in OWN_STRUCTURE_REASONS and _outer_rail_true_pivot_release(
+            symbol, side, closed, opened, entry, quote, is_bar_closed, current_time,
+        ):
+            return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
+
         # 🛡️ 核心鐵律：多頭主升浪 100% 強制死抱鐵律 (Trend Wave Hold Gate)
         # 1. 【大趨勢「KC 向上」未跌破 MA15 100% 絕對禁止平多（最高鐵律）】：
         #    當 1m 收盤價仍位於 MA15 上方 (close >= ma15) 時，100% 認定為「多頭主升浪貼軌推升 / 洗盤」，【Gate 100% 傳回 False 阻斷平多】！強制死抱部位讓利潤奔跑！
@@ -480,14 +486,6 @@ class UltimateShortExitGatekeeper:
             )
             if not is_true_bottom_break:
                 return hold("VETO_HOLD_SHORT_TREND_WAVE_BELOW_MID")
-
-        # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit)
-        # 使用者與策略核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底市價平倉獲利了結！
-        # 絕不拖延、絕不走過頭到中軌或反側外軌，100% 豁免持倉滿 5 根 K 棒限制！
-        if normalized in OWN_STRUCTURE_REASONS and _outer_rail_true_pivot_release(
-            symbol, side, closed, opened, entry, quote, is_bar_closed, current_time,
-        ):
-            return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
 
         bars_held = bar_minute - _minute(opened)
         evidence["bars_held"] = bars_held
