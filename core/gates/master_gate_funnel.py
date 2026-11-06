@@ -728,34 +728,42 @@ class MasterGateFunnel:
 
         # 🚨 鐵律一票否決 3：順勢交易與防逆勢開倉 (Anti-Counter-Trend & KC Slope Lock)
         # 1. 標頭寫明「KC 向上 (只評估多單)」(m.kc_middle >= m.kc_middle_prev) 時，100% 嚴禁開空！
+        #    【特例豁免】：若出現 1 號框「頂部斷頭轉向 (TRIGGER_TOP_PIVOT_CROSS)」，中軌尚在滯後階段，
+        #    允許一票豁免中軌滯後，當根收線第一時間市價開空，絕不允許漏掉起跌點！
         # 2. 標頭寫明「KC 向下 (只評估空單)」(m.kc_middle <= m.kc_middle_prev) 時，100% 嚴禁開多！
+        #    【特例豁免】：若出現底部 V 轉轉向 (TRIGGER_BOTTOM_PIVOT_CROSS)，允許一票豁免中軌滯後開多。
         kc_diff = m.kc_middle - m.kc_middle_prev
         macro_str = str(getattr(m, "macro_trend", "") or "").upper()
+        is_top_flip_signal = cls.evaluate_position_flip(m, "LONG") == ("SHORT", "TRIGGER_TOP_PIVOT_CROSS")
+        is_bottom_flip_signal = cls.evaluate_position_flip(m, "SHORT") == ("LONG", "TRIGGER_BOTTOM_PIVOT_CROSS")
+
         if side == "SHORT" and (kc_diff >= 0 or math.isclose(kc_diff, 0, rel_tol=1e-12, abs_tol=0)):
-            return block("BLOCKED_SHORT_ON_BULLISH_TREND")
+            if not is_top_flip_signal:
+                return block("BLOCKED_SHORT_ON_BULLISH_TREND")
         if side == "LONG" and (kc_diff <= 0 or math.isclose(kc_diff, 0, rel_tol=1e-12, abs_tol=0)):
-            return block("BLOCKED_LONG_ON_BEARISH_TREND")
+            if not is_bottom_flip_signal:
+                return block("BLOCKED_LONG_ON_BEARISH_TREND")
         if side == "SHORT" and macro_str == "BULLISH":
             return block("BLOCKED_SHORT_MACRO_TREND_CONFLICT")
         if side == "LONG" and macro_str == "BEARISH":
             return block("BLOCKED_LONG_MACRO_TREND_CONFLICT")
 
         # 🚨 做空開倉 (OPEN_SHORT) MA5 斜率與發散硬鎖
-        # 1. MA5 實質向下斜率驗證：(MA5_prev1 - MA5_curr) >= 0.15 * ATR
+        # 1. MA5 實質向下斜率驗證：MA5 必須向下發散 (MA5_curr < MA5_prev1)
         # 2. MA5 必須在 MA15 下方 (MA5 < MA15)
         # 3. 當根 K 棒必須為實體紅 K (open - close >= 0.35 * ATR)
         if side == "SHORT":
             ma5_slope_down = m.ma5_prev - m.ma5_curr
-            if ma5_slope_down < 0.15 * m.atr and not math.isclose(ma5_slope_down, 0.15 * m.atr, rel_tol=1e-12, abs_tol=0):
+            if ma5_slope_down <= 0:
                 return block("BLOCKED_SHORT_MA5_SLOPE_TOO_FLAT")
             if m.ma5_curr >= m.ma15_curr:
                 return block("BLOCKED_SHORT_MA5_NOT_BELOW_MA15")
             candle_body = m.open_price - m.close_price
             if candle_body < 0.35 * m.atr and not math.isclose(candle_body, 0.35 * m.atr, rel_tol=1e-12, abs_tol=0):
                 return block("BLOCKED_SHORT_CANDLE_BODY_TOO_SMALL")
-            # 🚨 KC 下軌超賣區 100% 絕對禁止開空（防地板空）
+            # 🚨 2 號框位置：KC 下軌超賣區 100% 絕對禁止開空（防地板空）
             # 當收盤價或最新價位於 KC 下軌外側或貼近下軌 (close_price <= KC_Lower + 0.3 * ATR) 時，
-            # 判定為極端超賣谷底區，100% 一票否決開空！
+            # 判定為 2 號框極端超賣谷底區，100% 一票否決開空！
             oversold_threshold = m.kc_lower + 0.3 * m.atr
             if m.close_price <= oversold_threshold or m.quote <= oversold_threshold:
                 return block("BLOCKED_SHORT_KC_LOWER_OVERSOLD")
