@@ -421,12 +421,21 @@ class UltimateShortExitGatekeeper:
                            symbol, side, staged_reason, reason)
             return ExitVerdict(ALLOW, staged_reason, evidence)
 
-        # 🛡️ 核心鐵律：多頭主升浪 100% 強制死抱不平倉 (Trend Wave Hold Gate)
-        # 1. 當持有多單且 KC 中軌向上發散 (kc_slope > 0) 時，
-        #    除非當根已收線大實體紅 K (陰線) 實質跌破 MA15 與 KC 中軌且 MA5 死叉 MA15 (真峰頂/斷頭轉向)，
-        #    否則 100% 傳回 False 阻斷平多，堅決死抱主升浪！
-        kc_slope = fields["kc_middle"] - fields["kc_middle_prev"]
-        if side == "LONG" and kc_slope > 0:
+        # 🛡️ 核心鐵律：多頭平倉最高權限一票否決鐵律 (Anti-Premature Exit Gate)
+        # 1. 【未跌破 MA15 100% 絕對禁止平多（鐵律）】：
+        #    當 1m 收盤價仍位於 MA15 上方 (close >= ma15) 時，100% 認定為「多頭回踩洗盤」，傳回 False 阻斷平多，強制死抱部位！
+        # 2. 【綠 K 陽線 100% 絕對禁止平多】：
+        #    當前 1m K 棒收盤若為「實體綠 K / 陽線 (close > open)」，100% 傳回 False 一票否決！
+        # 3. 【只有真跌破 MA15 ＋ 實體紅 K 陰線才授權平多】：
+        #    唯有同時滿足：(1) 實體紅 K (close < open 且 open - close >= 0.35 * atr)
+        #                 (2) 收盤價實質跌破 MA15 (close < ma15) 且跌破 KC 中軌 (close < kc_middle)
+        #                 (3) MA5 死叉 MA15 (ma5 < ma15)
+        #    若不滿足，100% 傳回 False 阻斷平多！
+        if side == "LONG":
+            if close >= fields["ma15"]:
+                return hold("VETO_HOLD_LONG_ABOVE_MA15")
+            if close > fields["open"]:
+                return hold("VETO_HOLD_LONG_ON_GREEN_CANDLE")
             is_true_top_break = (
                 close < fields["open"]
                 and (fields["open"] - close) >= 0.35 * atr
@@ -437,10 +446,12 @@ class UltimateShortExitGatekeeper:
             if not is_true_top_break:
                 return hold("VETO_HOLD_LONG_TREND_WAVE_ABOVE_MID")
 
-        # 2. 當持有空單且 KC 中軌向下發散 (kc_slope < 0) 時，
-        #    除非當根已收線大實體綠 K (陽線) 實質突破 MA15 與 KC 中軌且 MA5 金叉 MA15 (真谷底/V轉反彈)，
-        #    否則 100% 傳回 False 阻斷平空，堅決死抱主降浪！
-        if side == "SHORT" and kc_slope < 0:
+        # 空頭平倉最高權限一票否決鐵律 (Symmetric Anti-Premature Exit Gate)
+        if side == "SHORT":
+            if close <= fields["ma15"]:
+                return hold("VETO_HOLD_SHORT_BELOW_MA15")
+            if close < fields["open"]:
+                return hold("VETO_HOLD_SHORT_ON_RED_CANDLE")
             is_true_bottom_break = (
                 close > fields["open"]
                 and (close - fields["open"]) >= 0.35 * atr

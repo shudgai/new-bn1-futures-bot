@@ -66,9 +66,64 @@ def test_green_candle_upward_structure_vetoes_close_long():
     )
     # 必須一票否決續抱！
     assert verdict.verdict == "HOLD"
-    assert verdict.code == "VETO_HOLD_LONG_OPPOSITE_BODY_REQUIRED"
+    assert verdict.code in ("VETO_HOLD_LONG_OPPOSITE_BODY_REQUIRED", "VETO_HOLD_LONG_ABOVE_MA15", "VETO_HOLD_LONG_ON_GREEN_CANDLE")
     assert not UltimateShortExitGatekeeper.can_execute_exit(
         "1000PEPE/USDT", pos, {}, "STRUCTURE_EXIT_PROBE", 103.5,
+        frame=df, is_bar_closed=True,
+    )
+
+
+def test_above_ma15_vetoes_close_long():
+    """驗證未跌破 MA15 (close >= ma15) 時，100% 認定為回踩洗盤，絕對禁止平多！"""
+    now_min = int(time.time() // 60)
+    # 建立 6 根已收線 K 棒，最新一根為小紅 K 回踩但收盤穩在 MA15 之上
+    rows = []
+    for i in range(5):
+        rows.append({
+            "timestamp": (now_min - 6 + i) * 60_000,
+            "open": 98.0 + i * 1.0,
+            "close": 98.5 + i * 1.0,
+            "high": 99.0 + i * 1.0,
+            "low": 97.5 + i * 1.0,
+            "ma5": 99.0 + i * 0.8,
+            "ma15": 98.0 + i * 0.5,
+            "kc_middle": 98.0 + i * 0.4,
+            "kc_upper": 102.0 + i * 0.4,
+            "kc_lower": 94.0 + i * 0.4,
+            "atr": 2.0,
+            "is_closed": True,
+        })
+    # 第 6 根：小陰線回踩，close 101.5 > ma15 100.5
+    rows.append({
+        "timestamp": (now_min - 1) * 60_000,
+        "open": 102.0,
+        "close": 101.5,
+        "high": 102.5,
+        "low": 101.0,
+        "ma5": 102.0,
+        "ma15": 100.5,
+        "kc_middle": 100.0,
+        "kc_upper": 103.0,
+        "kc_lower": 97.0,
+        "atr": 2.0,
+        "is_closed": True,
+    })
+    df = _make_frame(rows)
+    pos = {
+        "symbol": "龙虾/USDT",
+        "side": "LONG",
+        "entry_price": 99.0,
+        "qty": 1000.0,
+        "open_timestamp": (now_min - 10) * 60,
+    }
+    verdict = UltimateShortExitGatekeeper.evaluate(
+        "龙虾/USDT", pos, {}, "STRUCTURE_EXIT_PROBE", 101.5,
+        frame=df, is_bar_closed=True,
+    )
+    assert verdict.verdict == "HOLD"
+    assert verdict.code == "VETO_HOLD_LONG_ABOVE_MA15"
+    assert not UltimateShortExitGatekeeper.can_execute_exit(
+        "龙虾/USDT", pos, {}, "STRUCTURE_EXIT_PROBE", 101.5,
         frame=df, is_bar_closed=True,
     )
 
