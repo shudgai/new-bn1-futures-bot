@@ -59,6 +59,14 @@ FAST_TOP_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_FAST_BOTTOM_BREAK_MA15_MID",
     "LONG": "EXIT_LONG_FAST_TOP_BREAK_MA15_MID",
 }
+PROFIT_LOCK_GATE_REASONS = {
+    "SHORT": "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
+    "LONG": "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
+}
+PROFIT_LOCK_TOKENS = (
+    "STAGED_PROFIT_LOCK", "PROFIT_LOCK", "RATCHET_PROFIT_LOCK",
+    "TRAILING_PROFIT_LOCK", "EXIT_BY_SCHEME1_PROFIT_LOCK",
+)
 
 ALLOW, HOLD, DEFER = "ALLOW", "HOLD", "DEFER"
 
@@ -91,7 +99,11 @@ OWN_STRUCTURE_REASONS = frozenset(
      *(r.upper() for r in KC_MIDDLE_MA15_BREAK_REASONS.values()),
      *(r.upper() for r in KC_FLIP_EXIT_REASONS.values()),
      *(r.upper() for r in TRUE_OUTER_PIVOT_EXIT_REASONS.values()),
-     *(r.upper() for r in FAST_TOP_EXIT_REASONS.values())}
+     *(r.upper() for r in FAST_TOP_EXIT_REASONS.values()),
+     "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
+     "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
+     "EXIT_BY_SCHEME1_PROFIT_LOCK_MA3_MA15",
+     "PROFIT_LOCK"}
 )
 WATERFALL_EXIT_TOKENS = (
     "EXIT_BY_EXTREME_WATERFALL", "WATERFALL_DROP", "LIVE_ADVERSE_WATERFALL",
@@ -298,7 +310,10 @@ class UltimateShortExitGatekeeper:
             return hold("VETO_HOLD_ORDINARY_PULLBACK_UNTIL_STRUCTURE_BREAK")
 
         def allow(code: str) -> ExitVerdict:
-            if normalized not in OWN_STRUCTURE_REASONS | OWN_DISASTER_REASONS:
+            if (
+                normalized not in OWN_STRUCTURE_REASONS | OWN_DISASTER_REASONS
+                and not any(token in normalized for token in PROFIT_LOCK_TOKENS)
+            ):
                 # Gate-only authority: foreign labels (e.g. numeric hard SL) keep their own policy.
                 return ExitVerdict(DEFER, "VETO_PASSED_LEGACY_AUTHORITY_REQUIRED", evidence)
             evidence["exit_type"] = code
@@ -390,6 +405,21 @@ class UltimateShortExitGatekeeper:
         if (side == "SHORT" and close > fields["kc_upper"]) or (
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
+
+        # 🔒 階梯鎖利底線（Floor Lock）與保本保利最高優先放行
+        # 當部位獲利達到 Stage 1 (+10% ROE) 或 Stage 2 (+20% ROE) 以上，或利潤已觸及/跌破鎖利底線時，
+        # 必須無條件放行落袋保利，一票否決「死抱主升浪中軌」，堅決守住利潤！
+        from core.services.exits.staged_profit_lock import evaluate_staged_profit_lock
+        staged_exit, staged_reason, staged_meta = evaluate_staged_profit_lock(
+            dict(position), quote, side,
+            current_ma3=fields.get("ma5"), current_ma15=fields.get("ma15"),
+        )
+        if staged_exit and staged_reason:
+            evidence.update(staged_meta)
+            evidence["profit_lock_trigger"] = staged_reason
+            logger.warning("[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s reason=%s STAGED_LOCK_PRIORITY",
+                           symbol, side, staged_reason, reason)
+            return ExitVerdict(ALLOW, staged_reason, evidence)
 
         # 🛡️ 核心鐵律：多頭主升浪 100% 強制死抱不平倉 (Trend Wave Hold Gate)
         # 1. 當持有多單且 KC 中軌向上發散 (kc_slope > 0) 時，

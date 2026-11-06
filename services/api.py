@@ -211,8 +211,14 @@ def positions_with_triggers():
         meta = engine.account.position_meta.get(symbol, {})
         if "channel_profit_protection" in meta:
             merged["channel_profit_protection"] = meta["channel_profit_protection"]
+        
+        staged_state = merged.get("staged_profit_lock_state") or meta.get("staged_profit_lock_state") or {}
+        staged_armed = bool(staged_state.get("armed"))
+        staged_lock_net = float(staged_state.get("lock_floor_net_pnl") or 0.0)
+
         merged["trailing_profit_lock_armed"] = bool(
-            merged.get("profit_floor_armed") is True
+            staged_armed
+            or merged.get("profit_floor_armed") is True
             or meta.get("profit_floor_armed") is True
         )
             
@@ -307,19 +313,55 @@ def positions_with_triggers():
                 "phase": current_phase,
             }
         else:
-            merged["ratchet_floor"]      = None
-            merged["phase_info"]         = None
-            if "locked_profit_usdt" not in merged:
-                merged["locked_profit_usdt"] = 0.0
-            if "channel_profit_protection" not in merged or not merged.get("channel_profit_protection"):
+            # 檢查新版階梯鎖利 (staged_profit_lock) 是否已啟動
+            if staged_armed and staged_lock_net > 0 and entry > 0 and qty > 0:
+                side = merged.get("side", "")
+                stage_num = int(staged_state.get("stage") or 1)
+                # 從 locked net pnl 反推鎖利底線價格:
+                # LONG: net_pnl = (P - Entry)*Qty - (Entry + P)*Qty*Fee - P*Qty*Slippage
+                # net_pnl = P*Qty*(1 - Fee - Slippage) - Entry*Qty*(1 + Fee)
+                # P = (net_pnl + Entry*Qty*(1 + Fee)) / (Qty*(1 - Fee - Slippage))
+                # SHORT: net_pnl = (Entry - P)*Qty - (Entry + P)*Qty*Fee - P*Qty*Slippage
+                # net_pnl = Entry*Qty*(1 - Fee) - P*Qty*(1 + Fee + Slippage)
+                # P = (Entry*Qty*(1 - Fee) - net_pnl) / (Qty*(1 + Fee + Slippage))
+                fee_rate = TAKER_FEE_RATE
+                slippage = SLIPPAGE_PCT
+                if side == "LONG":
+                    denom = qty * (1.0 - fee_rate - slippage)
+                    staged_floor_price = (staged_lock_net + entry * qty * (1.0 + fee_rate)) / denom if denom > 0 else entry
+                else:
+                    denom = qty * (1.0 + fee_rate + slippage)
+                    staged_floor_price = (entry * qty * (1.0 - fee_rate) - staged_lock_net) / denom if denom > 0 else entry
+                
+                staged_floor_price = round(max(0.0, staged_floor_price), 8)
+                merged["ratchet_floor"] = staged_floor_price
+                merged["phase_info"] = f"Stage{stage_num}"
+                merged["locked_profit_usdt"] = round(staged_lock_net, 4)
+                merged["locked_phase"] = stage_num
+                merged["stop_price"] = staged_floor_price
+                merged["breakeven_price"] = staged_floor_price
                 merged["channel_profit_protection"] = {
-                    "locked_net": 0.0,
-                    "breakeven_price": None,
-                    "armed": False,
-                    "status": "WAIT_TRIGGER",
-                    "peak_profit_atr": round(max_profit_atr, 2),
+                    "locked_net": round(staged_lock_net, 4),
+                    "breakeven_price": staged_floor_price,
+                    "armed": True,
+                    "status": "ARMED",
+                    "phase": stage_num,
+                    "lock_floor_roe_pct": staged_state.get("lock_floor_roe_pct"),
                 }
-            merged["locked_phase"]       = 0
+            else:
+                merged["ratchet_floor"]      = None
+                merged["phase_info"]         = None
+                if "locked_profit_usdt" not in merged:
+                    merged["locked_profit_usdt"] = 0.0
+                if "channel_profit_protection" not in merged or not merged.get("channel_profit_protection"):
+                    merged["channel_profit_protection"] = {
+                        "locked_net": 0.0,
+                        "breakeven_price": None,
+                        "armed": False,
+                        "status": "WAIT_TRIGGER",
+                        "peak_profit_atr": round(max_profit_atr, 2),
+                    }
+                merged["locked_phase"]       = 0
 
         result.append(merged)
     return result
