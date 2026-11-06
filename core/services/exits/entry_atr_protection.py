@@ -243,7 +243,9 @@ async def enforce_atr_protection(account, symbol, price):
                 return False
 
             # ⚠️ 【四大離場門檻總鎖定】：未滿足離場門檻，絕對一票否決平倉！
-            if not check_trend_lock_exit_permission(position, frame, price):
+            # 🚨 極端安全風控例外 (Waterfalls / Hard SL / Disasters 100% 豁免總鎖定)
+            from core.services.math_execution_gate import is_emergency_exit
+            if not is_emergency_exit(exit_reason) and not check_trend_lock_exit_permission(position, frame, price):
                 account.log(
                     f"🛡️ [TREND_LOCK_MASTER_VETO] symbol={symbol} side={position.get('side')} "
                     f"未滿足四大極限離場門檻，entry_atr_protection 一票否決 KC 結構平倉，強制續抱！(reason={exit_reason})",
@@ -372,7 +374,8 @@ async def enforce_atr_protection(account, symbol, price):
         meta.update({key: copy.deepcopy(position[key])
                      for key in STATE_KEYS if key in position})
         account.save_state()
-    if frame is not None and not check_trend_lock_exit_permission(position, frame, price):
+    from core.services.math_execution_gate import is_emergency_exit
+    if frame is not None and not is_emergency_exit(reason) and not check_trend_lock_exit_permission(position, frame, price):
         account.log(
             f"🛡️ [TREND_LOCK_MASTER_VETO] symbol={symbol} side={position.get('side')} "
             f"未滿足四大極限離場門檻，entry_atr_protection 一票否決 Channel Swing 平倉，強制續抱！(reason={reason})",

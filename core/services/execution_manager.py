@@ -3868,8 +3868,27 @@ class ExecutionManager:
                 logger.info(f"🚫 [RATE_LIMIT] {symbol} 1 小時內已開倉 {len(entry_history)} 次，達到上限 ({cls.MAX_ENTRIES_PER_HOUR} 次)，禁止開倉！")
                 return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED"}
 
-            # 🎯 最高優先級：敏捷突破/穿中軌/順勢延續優先點火，次之真谷底/真峰頂第一時間點火
-            if is_agile_trigger and agile_signal:
+            # 🎯 最高優先級：頂部斷頭 (Top Pivot Breakdown) / 底部V轉 (Bottom Pivot Reversal) 極速點火
+            from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_check_symbol
+            from core.gates.master_gate_funnel import market_snapshot_from_frame, MasterGateFunnel
+            is_meme_sym = _is_meme_check_symbol(symbol)
+            snap_for_pivot = None
+            if is_meme_sym and raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 2:
+                try:
+                    snap_for_pivot = market_snapshot_from_frame(raw_df, symbol, curr_quote, macro_trend)
+                except Exception:
+                    snap_for_pivot = None
+
+            is_top_pivot_candidate = bool(snap_for_pivot and MasterGateFunnel.is_top_pivot_short(snap_for_pivot))
+            is_bottom_pivot_candidate = bool(snap_for_pivot and MasterGateFunnel.is_bottom_pivot_long(snap_for_pivot))
+
+            if is_top_pivot_candidate:
+                candidate_signal = "SWING_PIVOT_SHORT"
+                can_short = True
+            elif is_bottom_pivot_candidate:
+                candidate_signal = "SWING_PIVOT_LONG"
+                can_long = True
+            elif is_agile_trigger and agile_signal:
                 candidate_signal = agile_signal
             elif is_true_bottom and (not is_zoomed_out_bearish) and hard_long_allowed and kc_slope >= 0 and curr_close >= kc_mid_val and entry_ma5_curr >= kc_mid_val:
                 candidate_signal = "SWING_PIVOT_LONG"

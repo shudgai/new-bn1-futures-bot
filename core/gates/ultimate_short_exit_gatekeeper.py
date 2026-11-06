@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Any, Mapping, NamedTuple, Optional
+from typing import Any, Dict, Mapping, NamedTuple, Optional, Tuple
+
+import pandas as pd
 
 from core.services.candle_data import closed_entry_candles
 
@@ -258,8 +260,9 @@ def _outer_rail_true_pivot_release(
 class UltimateShortExitGatekeeper:
     """Highest-priority exit veto; also mirrors the identical rules for LONG."""
 
-    @staticmethod
+    @classmethod
     def evaluate(
+        cls,
         symbol: str,
         position: Mapping[str, Any],
         metadata: Mapping[str, Any] | None,
@@ -296,6 +299,16 @@ class UltimateShortExitGatekeeper:
                 position, frame, price,
             )
             if waterfall_evidence is None:
+                # 🚨 檢查盤中極速瀑布緊急出場通道 check_waterfall_emergency_exit (100% 豁免 is_bar_closed)
+                is_emerg, emerg_reason, emerg_ev = cls.check_waterfall_emergency_exit(
+                    symbol, position, metadata, price, frame=frame
+                )
+                if is_emerg:
+                    logger.warning(
+                        "[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s (via emergency waterfall) "
+                        "evidence=%s", symbol, side, emerg_reason, emerg_ev,
+                    )
+                    return ExitVerdict(ALLOW, emerg_reason, emerg_ev)
                 return hold("VETO_WATERFALL_LIVE_BODY_OR_STRUCTURE_NOT_CONFIRMED")
             waterfall_evidence.update({"symbol": symbol, "reason": reason})
             logger.warning(
@@ -352,6 +365,21 @@ class UltimateShortExitGatekeeper:
             evidence["loss_atr"] = round(loss_atr, 4)
             if loss_atr > DISASTER_LOSS_ATR:
                 return allow(DISASTER_LOSS_REASONS[side])
+
+        # 🚨 盤中極速大瀑布緊急避險出口 (Waterfall Emergency Exit - 100% 豁免 is_bar_closed 收線限制)
+        # 當候選平倉原因為 WATERFALL 相關、或盤中報價觸發瀑布熔斷且不是普通探針結構探測時放行
+        if any(token in normalized for token in WATERFALL_EXIT_TOKENS) or (
+            normalized not in ("STRUCTURE_EXIT_PROBE",) and is_bar_closed is not False
+        ):
+            is_emerg_wf, emerg_wf_reason, emerg_wf_ev = cls.check_waterfall_emergency_exit(
+                symbol, position, metadata, quote, frame=frame
+            )
+            if is_emerg_wf:
+                logger.warning(
+                    "[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s (intra-bar emergency circuit breaker) evidence=%s",
+                    symbol, side, emerg_wf_reason, emerg_wf_ev,
+                )
+                return ExitVerdict(ALLOW, emerg_wf_reason, emerg_wf_ev)
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
         current, previous = closed.iloc[-1], closed.iloc[-2]
@@ -520,6 +548,84 @@ class UltimateShortExitGatekeeper:
         """True only for an authoritative ALLOW; HOLD and DEFER both return False."""
         return cls.evaluate(symbol, position, metadata, reason, price, frame=frame,
                             is_bar_closed=is_bar_closed, now=now).allowed
+
+    @classmethod
+    def check_waterfall_emergency_exit(
+        cls,
+        symbol: str,
+        position: Mapping[str, Any],
+        metadata: Mapping[str, Any] | None,
+        price: float,
+        *,
+        frame: Any = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        🚨 盤中極速大瀑布緊急避險出口 (100% 豁免 is_bar_closed，毫秒級防崩盤熔斷)
+        做多時：
+          (1) 盤中最新報價 (Quote) 垂直貫穿跌破 KC 中軌與 MA15 深度達 > 0.5 ATR
+          (2) 單根盤中未收線 K 棒下殺幅度 (Live Candle Drop) 超過 1.2 ATR
+        做空時：
+          (1) 盤中最新報價 (Quote) 垂直爆拉突破 KC 中軌與 MA15 深度達 > 0.5 ATR
+          (2) 單根盤中未收線 K 棒拉升幅度 (Live Candle Pump) 超過 1.2 ATR
+        """
+        evidence: Dict[str, Any] = {"symbol": symbol, "quote": price}
+        if frame is None or not isinstance(frame, pd.DataFrame) or len(frame) < 2:
+            return False, "INSUFFICIENT_FRAME", evidence
+
+        side = str((position or {}).get("side") or "").upper()
+        if side not in ("LONG", "SHORT"):
+            return False, "INVALID_SIDE", evidence
+
+        try:
+            curr_candle = frame.iloc[-1]
+            prev_candle = frame.iloc[-2]
+            live_open = _float(curr_candle.get("open")) or price
+            atr_val = _float(prev_candle.get("atr")) or _float(curr_candle.get("atr")) or 0.0
+            from core.gates.master_gate_funnel import meme_distance_atr
+            dist_atr = meme_distance_atr(symbol, atr_val) if atr_val > 0 else 0.0
+            if dist_atr <= 0:
+                return False, "INVALID_ATR", evidence
+
+            kc_mid = _float(curr_candle.get("kc_middle")) or _float(prev_candle.get("kc_middle"))
+            ma15 = _float(curr_candle.get("ma15")) or _float(prev_candle.get("ma15"))
+            if kc_mid is None or ma15 is None:
+                return False, "INVALID_STRUCTURE_INDICATORS", evidence
+
+            evidence.update({
+                "side": side,
+                "live_open": live_open,
+                "dist_atr": dist_atr,
+                "kc_middle": kc_mid,
+                "ma15": ma15,
+            })
+
+            if side == "LONG":
+                # 條件 1：即時價貫穿跌破 KC 中軌與 MA15 深度 > 0.5 ATR
+                penetrates_mid_ma15 = (price < (kc_mid - 0.5 * dist_atr)) and (price < (ma15 - 0.5 * dist_atr))
+                # 條件 2：單根盤中 K 棒下殺幅度超過 1.2 ATR
+                single_bar_dump = (live_open - price) >= 1.2 * dist_atr
+
+                if penetrates_mid_ma15 or single_bar_dump:
+                    reason = "EXIT_BY_EXTREME_WATERFALL"
+                    evidence["trigger"] = "PENETRATES_MID_MA15" if penetrates_mid_ma15 else "SINGLE_BAR_DUMP"
+                    return True, reason, evidence
+
+            elif side == "SHORT":
+                # 條件 1：即時價貫穿突破 KC 中軌與 MA15 深度 > 0.5 ATR
+                penetrates_mid_ma15 = (price > (kc_mid + 0.5 * dist_atr)) and (price > (ma15 + 0.5 * dist_atr))
+                # 條件 2：單根盤中 K 棒拉升幅度超過 1.2 ATR
+                single_bar_pump = (price - live_open) >= 1.2 * dist_atr
+
+                if penetrates_mid_ma15 or single_bar_pump:
+                    reason = "EXIT_BY_EXTREME_WATERFALL"
+                    evidence["trigger"] = "PENETRATES_MID_MA15" if penetrates_mid_ma15 else "SINGLE_BAR_PUMP"
+                    return True, reason, evidence
+
+            return False, "NO_WATERFALL_CRITERIA_MET", evidence
+
+        except Exception as exc:
+            logger.error("WATERFALL_EMERGENCY_EXIT_CHECK_ERROR symbol=%s error=%s", symbol, exc)
+            return False, f"ERROR_{exc}", evidence
 
     @classmethod
     def structure_exit_candidate(cls, symbol, position, metadata, price, frame, *, now=None):
