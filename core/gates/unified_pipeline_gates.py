@@ -168,6 +168,7 @@ class ExitGate:
         current_price: Optional[float] = None,
         atr: Optional[float] = None,
         kc_slope: Optional[float] = None,
+        account: Optional[Any] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """Hold through pullbacks until a profitable confirmed pivot or emergency."""
         from core.services.exits.authorized_position_exit import strategy_exit_bar_block_reason
