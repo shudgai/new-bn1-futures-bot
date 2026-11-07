@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from core.services.market_consolidation_filter import (
+    check_entry_signal,
     evaluate_market_blacklist,
     is_market_in_consolidation,
 )
@@ -213,3 +214,92 @@ def test_central_entry_gate_accepts_revalidated_meme_method_with_low_volume(monk
 
     assert result.passed, result.reason
     assert result.checks["market_blacklist"]["evidence"]["meme_structural_volume_override"]
+
+
+def test_zero_trust_entry_gate_rules_a_to_h_and_check_entry_signal():
+    # Valid trend base frame -> check_entry_signal returns OPEN_LONG
+    valid_df = _base_frame()
+    valid_df["ma3"] = valid_df["ma5"] + 0.15
+    valid_df["close"] = valid_df["ma3"] + 0.10
+    valid_df["open"] = valid_df["close"] - 0.25
+    valid_df["high"] = valid_df["close"] + 0.05
+    valid_df["low"] = valid_df["open"] - 0.05
+    res_valid = check_entry_signal(valid_df, -1, side="LONG")
+    assert res_valid["action"] == "OPEN_LONG"
+    assert res_valid["can_execute"] is True
+
+    # 0. Unclosed bar (is_kline_closed == False) -> 100% ACTION: PASS
+    unclosed_df = valid_df.copy()
+    unclosed_df.loc[unclosed_df.index[-1], "is_closed"] = False
+    res_unclosed = check_entry_signal(unclosed_df, -1, side="LONG")
+    assert res_unclosed["action"] == "PASS"
+    assert res_unclosed["reason"] == "VETO_BAR_NOT_CLOSED"
+    assert is_market_in_consolidation(unclosed_df, -1) is True
+
+    # Rule A: Flat MA3 / KC Middle -> ACTION: PASS
+    flat_df = valid_df.copy()
+    flat_df.loc[flat_df.index[-10:], "ma3"] = 102.0
+    res_a = check_entry_signal(flat_df, -1, side="LONG")
+    assert res_a["action"] == "PASS"
+    assert res_a["reason"] == "VETO_FLAT_MA5_OR_KC_MIDLINE"
+
+    # Rule B: Wave Entanglement (MA3 / MA15 >= 2 crosses in last 8 bars) -> ACTION: PASS
+    wave_df = valid_df.copy()
+    wave_offsets = np.array([0.20, -0.20, 0.25, -0.25, 0.30, 0.35, 0.40, 0.50])
+    wave_df.loc[wave_df.index[-8:], "ma3"] = (
+        wave_df.loc[wave_df.index[-8:], "ma15"].to_numpy() + wave_offsets
+    )
+    res_b = check_entry_signal(wave_df, -1, side="LONG")
+    assert res_b["action"] == "PASS"
+    assert res_b["reason"] == "VETO_MA5_MA15_CHOP"
+    assert res_b["details"]["ma3_ma15_recent_crossings"] >= 2
+
+    # Rule C: KC Big Mouth (Bandwidth >= 2.0x average bandwidth) -> ACTION: PASS
+    horn_df = valid_df.copy()
+    horn_df.loc[horn_df.index[-1], "kc_upper"] += 6.0
+    res_c = check_entry_signal(horn_df, -1, side="LONG")
+    assert res_c["action"] == "PASS"
+    assert res_c["reason"] == "VETO_KC_BIG_MOUTH_EXPANSION"
+    assert res_c["details"]["kc_big_mouth_ratio"] >= 2.0
+
+    # Rule D: Donchian Range Box + Low ADX (< 20) & Low ATR -> ACTION: PASS
+    box_df = valid_df.copy()
+    box_df.loc[box_df.index[-2], "high"] = float(box_df.iloc[-1]["close"]) + 1.0
+    box_df.loc[box_df.index[-2], "low"] = float(box_df.iloc[-1]["close"]) - 1.0
+    box_df.loc[box_df.index[-1], "adx"] = 14.0
+    box_df.loc[box_df.index[-1], "atr"] = 0.10
+    res_d = check_entry_signal(box_df, -1, side="LONG")
+    assert res_d["action"] == "PASS"
+    assert res_d["reason"] == "VETO_DONCHIAN_RANGE_LOW_TREND"
+
+    # Rule E: Volume Contraction (< 0.8x 5-bar MA) -> ACTION: PASS
+    vol_df = valid_df.copy()
+    vol_df.loc[vol_df.index[-1], "volume"] = 600.0
+    res_e = check_entry_signal(vol_df, -1, side="LONG")
+    assert res_e["action"] == "PASS"
+    assert res_e["reason"] == "VETO_VOLUME_CONTRACTION"
+
+    # Rule F: Long Wick Spinning Top / Doji (total wick > 2.0x body) -> ACTION: PASS
+    wick_df = valid_df.copy()
+    last_idx = wick_df.index[-1]
+    c_val = float(wick_df.loc[last_idx, "close"])
+    wick_df.loc[last_idx, "open"] = c_val - 0.10
+    wick_df.loc[last_idx, "high"] = c_val + 0.25
+    wick_df.loc[last_idx, "low"] = c_val - 0.30
+    res_f = check_entry_signal(wick_df, -1, side="LONG")
+    assert res_f["action"] == "PASS"
+    assert res_f["reason"] == "VETO_LONG_WICK_DOJI"
+
+    # Rule G: Macro / HTF KC Trend Conflict -> ACTION: PASS
+    htf_df = valid_df.copy()
+    htf_df["macro_kc_middle_slope"] = -0.25
+    res_g = check_entry_signal(htf_df, -1, side="LONG")
+    assert res_g["action"] == "PASS"
+    assert res_g["reason"] == "VETO_MACRO_TREND_CONFLICT"
+
+    # Rule H: Trade Cooldown (< 3 bars since last exit) -> ACTION: PASS
+    res_h = check_entry_signal(valid_df, -1, side="LONG", bars_since_last_exit=1, cooldown_bars=3)
+    assert res_h["action"] == "PASS"
+    assert res_h["reason"] == "VETO_TRADE_COOLDOWN"
+    assert res_h["details"]["bars_since_exit"] == 1
+

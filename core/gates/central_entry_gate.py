@@ -417,7 +417,15 @@ class CentralEntryGate:
                     meme_structural_entry=meme_structural_entry,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
-                if raw_blocked and raw_reason in ("VETO_MA5_MA15_CHOP", "VETO_FLAT_MA5_OR_KC_MIDLINE", "VETO_NARROW_SQUEEZE_RANGE"):
+                if raw_blocked and raw_reason in (
+                    "VETO_MA5_MA15_CHOP",
+                    "VETO_FLAT_MA5_OR_KC_MIDLINE",
+                    "VETO_NARROW_SQUEEZE_RANGE",
+                    "VETO_KC_BIG_MOUTH_EXPANSION",
+                    "VETO_DONCHIAN_RANGE_LOW_TREND",
+                    "VETO_LONG_WICK_DOJI",
+                    "VETO_TRADE_COOLDOWN",
+                ):
                     blacklist = raw_bl
                 else:
                     blacklist = (False, "PASS_AGILE_OVERRIDE", {

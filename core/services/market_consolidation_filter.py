@@ -41,6 +41,7 @@ def evaluate_market_blacklist(
     side: Optional[str] = None,
     last_closed_trade: Optional[dict[str, Any]] = None,
     current_bar_index: Optional[int] = None,
+    bars_since_last_exit: Optional[int] = None,
     cooldown_bars: int = COOLDOWN_BARS,
     macro_trend: Optional[str] = None,
     is_breakout: bool = False,
@@ -94,6 +95,11 @@ def evaluate_market_blacklist(
         values["atr"] = values["atr"].clip(lower=1e-8)
 
         ma5 = values["ma5"]
+        ma3 = (
+            pd.to_numeric(recent["ma3"], errors="coerce")
+            if "ma3" in recent.columns and pd.to_numeric(recent["ma3"], errors="coerce").notna().all()
+            else ma5
+        )
         ma15 = values["ma15"]
         mid = values["kc_middle"]
         atr = values["atr"]
@@ -110,20 +116,32 @@ def evaluate_market_blacklist(
         if not meme_policy and not is_breakout and checks["ma5_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
             return True, "VETO_MA5_KC_MIDLINE_CHOP", checks
 
-        # Flat short-term mean or channel basis.
+        # Rule A: Flat short-term mean (MA3 / MA5) or channel basis (KC middle).
+        ma3_delta_pct = abs(float(ma3.iloc[-1] - ma3.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma3.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         ma5_delta_pct = abs(float(ma5.iloc[-1] - ma5.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma5.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         mid_delta_pct = abs(float(mid.iloc[-1] - mid.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(mid.iloc[-MIDLINE_LOOKBACK])), 1e-12)
-        checks.update(ma5_net_slope_pct=ma5_delta_pct, kc_middle_net_slope_pct=mid_delta_pct)
+        checks.update(
+            ma3_net_slope_pct=ma3_delta_pct,
+            ma5_net_slope_pct=ma5_delta_pct,
+            kc_middle_net_slope_pct=mid_delta_pct,
+        )
         if not is_breakout and not expansion and (
-            ma5_delta_pct < SLOPE_FLAT_PCT
+            ma3_delta_pct < SLOPE_FLAT_PCT
+            or ma5_delta_pct < SLOPE_FLAT_PCT
             or (not independent_kc_direction and mid_delta_pct < SLOPE_FLAT_PCT)
         ):
             return True, "VETO_FLAT_MA5_OR_KC_MIDLINE", checks
 
-        # MA5/MA15 whipsaw count over recent window (Chop in last 8 bars >= 2, or over 20 bars >= 4)
-        spread = ma5 - ma15
-        recent_crossings = int((spread * spread.shift(1) < 0).tail(8).sum())
-        total_crossings = int((spread * spread.shift(1) < 0).tail(LOOKBACK).sum())
+        # Rule B: Wave Entanglement — MA3/MA5 vs MA15 whipsaw count over recent window (Chop in last 8 bars >= 2, or over 20 bars >= 4)
+        spread_ma5 = ma5 - ma15
+        spread_ma3 = ma3 - ma15
+        recent_crossings_ma5 = int((spread_ma5 * spread_ma5.shift(1) < 0).tail(8).sum())
+        recent_crossings_ma3 = int((spread_ma3 * spread_ma3.shift(1) < 0).tail(8).sum())
+        total_crossings_ma5 = int((spread_ma5 * spread_ma5.shift(1) < 0).tail(LOOKBACK).sum())
+        total_crossings_ma3 = int((spread_ma3 * spread_ma3.shift(1) < 0).tail(LOOKBACK).sum())
+        recent_crossings = max(recent_crossings_ma5, recent_crossings_ma3)
+        total_crossings = max(total_crossings_ma5, total_crossings_ma3)
+        checks["ma3_ma15_recent_crossings"] = recent_crossings_ma3
         checks["ma5_ma15_crossings"] = total_crossings
         checks["ma5_ma15_recent_crossings"] = recent_crossings
         if (meme_policy and recent_crossings >= 3) or (
@@ -186,14 +204,45 @@ def evaluate_market_blacklist(
         if wick_total > MAX_WICK_BODY_RATIO * body:
             return True, "VETO_LONG_WICK_DOJI", checks
 
-        # Caller-supplied regime labels cannot override completed KC direction.
+        # Rule G: Caller-supplied HTF KC slope or completed KC direction.
         if side and not independent_kc_direction:
             direction = str(side).upper()
             kc_slope = float(mid.iloc[-1] - mid.iloc[-2])
-            if (direction == "LONG" and (kc_slope < 0 or kc_slope == 0 and not expansion)
-                    or direction == "SHORT" and (kc_slope > 0 or kc_slope == 0 and not expansion)):
-                return True, "VETO_MACRO_TREND_CONFLICT", {**checks, "kc_middle_slope": kc_slope}
-        # Cooldown supports both bar-index based trade records and timestamps.
+            htf_slope = _num(current, "macro_kc_middle_slope")
+            if htf_slope is None and isinstance(df.attrs, dict) and df.attrs.get("macro_kc_middle_slope") is not None:
+                try:
+                    val = float(df.attrs["macro_kc_middle_slope"])
+                    if math.isfinite(val):
+                        htf_slope = val
+                except (TypeError, ValueError, OverflowError):
+                    htf_slope = None
+            htf_conflict = bool(
+                htf_slope is not None
+                and ((direction == "LONG" and htf_slope < 0) or (direction == "SHORT" and htf_slope > 0))
+            )
+            if (
+                htf_conflict
+                or (direction == "LONG" and (kc_slope < 0 or kc_slope == 0 and not expansion))
+                or (direction == "SHORT" and (kc_slope > 0 or kc_slope == 0 and not expansion))
+            ):
+                return True, "VETO_MACRO_TREND_CONFLICT", {
+                    **checks,
+                    "kc_middle_slope": kc_slope,
+                    "macro_kc_middle_slope": htf_slope,
+                }
+        # Rule H: Cooldown supports direct bars_since_last_exit, bar-index based trade records, and timestamps.
+        if bars_since_last_exit is None and isinstance(df.attrs, dict) and df.attrs.get("bars_since_last_exit") is not None:
+            try:
+                bars_since_last_exit = int(df.attrs["bars_since_last_exit"])
+            except (TypeError, ValueError, OverflowError):
+                return True, "VETO_INVALID_COOLDOWN_STATE", checks
+        if bars_since_last_exit is not None:
+            try:
+                elapsed_direct = int(bars_since_last_exit)
+                if elapsed_direct < int(cooldown_bars):
+                    return True, "VETO_TRADE_COOLDOWN", {**checks, "bars_since_exit": elapsed_direct}
+            except (TypeError, ValueError, OverflowError):
+                return True, "VETO_INVALID_COOLDOWN_STATE", checks
         if last_closed_trade:
             exit_index = last_closed_trade.get("bar_index")
             if current_bar_index is None and ts is not None:
@@ -225,6 +274,171 @@ def is_market_in_consolidation(
     i: int = -1,
     **kwargs: Any,
 ) -> bool:
-    """Compatibility predicate: True means entry must be blocked."""
+    """Zero-Trust Entry Gate Blacklist (Rules A-H): True means entry must be blocked (ACTION: PASS)."""
     blocked, _, _ = evaluate_market_blacklist(df, i, **kwargs)
     return blocked
+
+
+def check_entry_signal(
+    df: pd.DataFrame,
+    i: int = -1,
+    *,
+    side: Optional[str] = None,
+    last_closed_trade: Optional[dict[str, Any]] = None,
+    bars_since_last_exit: Optional[int] = None,
+    cooldown_bars: int = COOLDOWN_BARS,
+    macro_trend: Optional[str] = None,
+) -> dict[str, Any]:
+    """Zero-Trust Entry Gate Funnel:
+    1. Enforce Closed-Bar Finality (is_kline_closed == True / is_closed == True).
+    2. Run Blacklist Rules A-H via is_market_in_consolidation(df, i, ...).
+       If ANY blacklist condition triggers -> immediately return ACTION: PASS.
+    3. Only after passing all 8 blacklist defenses, evaluate MA3/MA5 x MA15 cross or KC breakout.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return {
+            "action": "PASS",
+            "can_execute": False,
+            "side": None,
+            "reason": "VETO_CONSOLIDATION_INVALID_OR_OPEN_BAR",
+            "details": {},
+        }
+    try:
+        row = df.iloc[i]
+    except (IndexError, KeyError, TypeError, ValueError):
+        return {
+            "action": "PASS",
+            "can_execute": False,
+            "side": None,
+            "reason": "VETO_CONSOLIDATION_INVALID_OR_OPEN_BAR",
+            "details": {},
+        }
+
+    is_closed = row.get("is_kline_closed", row.get("is_closed", False))
+    if not (is_closed is True or (type(is_closed).__name__ == "bool_" and bool(is_closed))):
+        return {
+            "action": "PASS",
+            "can_execute": False,
+            "side": None,
+            "reason": "VETO_BAR_NOT_CLOSED",
+            "details": {"is_kline_closed": False},
+        }
+
+    candidate_sides = (str(side).upper(),) if side in ("LONG", "SHORT", "long", "short") else ("LONG", "SHORT")
+
+    # Determine if the current closed bar has a directional cross or breakout candidate
+    source = df
+    if "is_closed" not in df.columns and "is_kline_closed" in df.columns:
+        source = df.copy()
+        source["is_closed"] = source["is_kline_closed"]
+    closed = closed_entry_candles(source)
+    positions = np.flatnonzero(closed.index.to_numpy() == row.name) if not closed.empty else np.array([])
+    if positions.size == 0 or int(positions[0]) < 1:
+        return {
+            "action": "PASS",
+            "can_execute": False,
+            "side": None,
+            "reason": "VETO_CONSOLIDATION_INSUFFICIENT_CLOSED_HISTORY",
+            "details": {},
+        }
+    end = int(positions[0]) + 1
+    bars = closed.iloc[:end]
+    curr = bars.iloc[-1]
+    prev = bars.iloc[-2]
+
+    # Step 1: Filter consolidation FIRST (Zero-Trust Blacklist Rules A-H)
+    eval_side = candidate_sides[0] if len(candidate_sides) == 1 else (
+        "LONG" if float(curr.get("close", 0.0)) >= float(curr.get("open", 0.0)) else "SHORT"
+    )
+    in_consolidation = is_market_in_consolidation(
+        df,
+        i,
+        side=eval_side,
+        last_closed_trade=last_closed_trade,
+        bars_since_last_exit=bars_since_last_exit,
+        cooldown_bars=cooldown_bars,
+        macro_trend=macro_trend,
+    )
+    blocked, reason, checks = evaluate_market_blacklist(
+        df,
+        i,
+        side=eval_side,
+        last_closed_trade=last_closed_trade,
+        bars_since_last_exit=bars_since_last_exit,
+        cooldown_bars=cooldown_bars,
+        macro_trend=macro_trend,
+    )
+    if in_consolidation or blocked:
+        return {
+            "action": "PASS",
+            "can_execute": False,
+            "side": None,
+            "reason": reason,
+            "details": checks,
+        }
+
+    # Step 2: Check Cross or Breakout only after passing Blacklist Rules A-H
+    c_open = float(curr["open"])
+    c_close = float(curr["close"])
+    atr = max(float(curr["atr"]), 1e-8)
+    kc_upper = float(curr["kc_upper"])
+    kc_middle = float(curr["kc_middle"])
+    kc_lower = float(curr["kc_lower"])
+    prev_kc_middle = float(prev["kc_middle"])
+    fast_curr = float(curr["ma3"]) if "ma3" in curr and pd.notna(curr["ma3"]) else float(curr["ma5"])
+    fast_prev = float(prev["ma3"]) if "ma3" in prev and pd.notna(prev["ma3"]) else float(prev["ma5"])
+    ma5_curr = float(curr["ma5"])
+    ma5_prev = float(prev["ma5"])
+    ma15_curr = float(curr["ma15"])
+    ma15_prev = float(prev["ma15"])
+    body = abs(c_close - c_open)
+
+    for cand in candidate_sides:
+        if cand == "LONG":
+            is_green = c_close > c_open and body >= 0.35 * atr
+            kc_up = kc_middle > prev_kc_middle
+            ma_aligned = fast_curr > ma15_curr and ma5_curr > ma15_curr and fast_curr > fast_prev and ma5_curr > ma5_prev
+            cross_long = (fast_prev <= ma15_prev and fast_curr > ma15_curr) or (ma5_prev <= ma15_prev and ma5_curr > ma15_curr)
+            breakout_long = c_close > kc_upper and c_close > fast_curr and c_close > ma5_curr
+            trend_impulse_long = c_close > kc_middle and c_close > ma5_curr and ma_aligned and body >= 0.35 * atr
+            if is_green and kc_up and ma_aligned and (cross_long or breakout_long or trend_impulse_long):
+                trigger = (
+                    "KC_UPPER_BREAKOUT_LONG"
+                    if breakout_long
+                    else ("MA_GOLDEN_CROSS_LONG" if cross_long else "TREND_IMPULSE_LONG")
+                )
+                return {
+                    "action": "OPEN_LONG",
+                    "can_execute": True,
+                    "side": "LONG",
+                    "reason": f"AUTHORIZED_ZERO_TRUST_LONG:{trigger}",
+                    "details": {**checks, "trigger": trigger},
+                }
+        elif cand == "SHORT":
+            is_red = c_close < c_open and body >= 0.35 * atr
+            kc_down = kc_middle < prev_kc_middle
+            ma_aligned = fast_curr < ma15_curr and ma5_curr < ma15_curr and fast_curr < fast_prev and ma5_curr < ma5_prev
+            cross_short = (fast_prev >= ma15_prev and fast_curr < ma15_curr) or (ma5_prev >= ma15_prev and ma5_curr < ma15_curr)
+            breakout_short = c_close < kc_lower and c_close < fast_curr and c_close < ma5_curr
+            trend_impulse_short = c_close < kc_middle and c_close < ma5_curr and ma_aligned and body >= 0.35 * atr
+            if is_red and kc_down and ma_aligned and (cross_short or breakout_short or trend_impulse_short):
+                trigger = (
+                    "KC_LOWER_BREAKDOWN_SHORT"
+                    if breakout_short
+                    else ("MA_DEATH_CROSS_SHORT" if cross_short else "TREND_IMPULSE_SHORT")
+                )
+                return {
+                    "action": "OPEN_SHORT",
+                    "can_execute": True,
+                    "side": "SHORT",
+                    "reason": f"AUTHORIZED_ZERO_TRUST_SHORT:{trigger}",
+                    "details": {**checks, "trigger": trigger},
+                }
+
+    return {
+        "action": "PASS",
+        "can_execute": False,
+        "side": None,
+        "reason": "WAIT_NO_VALID_CROSS_OR_BREAKOUT",
+        "details": checks,
+    }

@@ -11,6 +11,11 @@ from typing import Dict, Any, Optional, Tuple, NamedTuple
 import pandas as pd
 
 from core.services.candle_data import closed_entry_candles
+from core.services.market_consolidation_filter import (
+    check_entry_signal,
+    evaluate_market_blacklist,
+    is_market_in_consolidation,
+)
 
 logger = logging.getLogger("MasterGateFunnel")
 
