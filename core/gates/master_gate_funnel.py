@@ -965,6 +965,11 @@ class MasterGateFunnel:
     # ─────────────────────────────────────────────────────────────
     @classmethod
     def evaluate_open_long(cls, m: MarketSnapshot, is_in_cooldown: bool = False) -> GateDecision:
+        # 🚨 第一道最高權限硬鎖：必須交由 MasterOpenGatekeeper 執行一票否決驗證
+        top_decision = MasterOpenGatekeeper.validate_open_signal(m, "LONG", is_in_cooldown=is_in_cooldown)
+        if not top_decision.can_execute:
+            return top_decision
+
         filtered = cls.evaluate_entry_filters(m, "LONG", is_in_cooldown)
         if not filtered.can_execute:
             return filtered
@@ -1006,6 +1011,11 @@ class MasterGateFunnel:
     # ─────────────────────────────────────────────────────────────
     @classmethod
     def evaluate_open_short(cls, m: MarketSnapshot, is_in_cooldown: bool = False) -> GateDecision:
+        # 🚨 第一道最高權限硬鎖：必須交由 MasterOpenGatekeeper 執行一票否決驗證
+        top_decision = MasterOpenGatekeeper.validate_open_signal(m, "SHORT", is_in_cooldown=is_in_cooldown)
+        if not top_decision.can_execute:
+            return top_decision
+
         filtered = cls.evaluate_entry_filters(m, "SHORT", is_in_cooldown)
         if not filtered.can_execute:
             return filtered
@@ -1431,11 +1441,23 @@ class MasterOpenGatekeeper(MasterGateFunnel):
         # 🛡️ 一、 做空開倉 (OPEN_SHORT) 100% 一票否決鐵律 (Anti-Upward-Middle Block)
         # =========================================================================
         if normalized in ("SHORT", "OPEN_SHORT"):
-            # 1. 100% 必須等待 1m K 棒收盤
+            # 1. 【100% 必須等待 1m K 棒收盤 (is_bar_closed == True)】
             if not m.is_closed:
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_BAR_NOT_CLOSED", details)
 
-            # 2. 【KC 中軌向上 100% 絕對禁止開空（最高鐵律）】：
+            # 2. 【100% 必須為實體紅 K (陰線, close_price < open_price 且 quote < open_price)】
+            #    🚨【綠 K 陽線一票否決】：若當根 K 棒為陽線 (close_price >= open_price 或 quote >= open_price)，
+            #    【100% 傳回 False 一票否決】！絕對封鎖在綠 K 暴衝或 V 轉反彈途中逆勢摸頂開空！
+            if m.close_price >= m.open_price or m.quote >= m.open_price:
+                return GateDecision(False, "HOLD", "BLOCKED_SHORT_DIRECTIONAL_CANDLE", details)
+
+            # 3. 【MA5 必須向下發散且收盤價嚴格低於 MA5】
+            if m.ma5_curr >= m.ma5_prev:
+                return GateDecision(False, "HOLD", "BLOCKED_SHORT_MA5_SLOPE_TOO_FLAT", details)
+            if m.close_price >= m.ma5_curr:
+                return GateDecision(False, "HOLD", "BLOCKED_SHORT_CLOSE_NOT_BELOW_MA5", details)
+
+            # 4. 【KC 中軌向上 100% 絕對禁止開空（最高鐵律）】：
             #    只要 KC 中軌向上 (kc_middle >= kc_middle_prev) 或 棕色 MA15 斜率向上 (ma15_curr > ma15_prev)，
             #    【100% 傳回 False 阻斷開空】！絕不允許在中軌向上升浪中逆勢伸手接刀！
             if m.kc_middle >= m.kc_middle_prev:
@@ -1443,19 +1465,19 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             if m.ma15_curr > m.ma15_prev:
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_BY_MA15_UPWARD_SLOPE", details)
 
-            # 3. 【標頭為『KC 向上 (只評估多單)』100% 封鎖開空】：
+            # 5. 【標頭為『KC 向上 (只評估多單)』100% 封鎖開空】：
             header_mode = cls.resolve_kc_header_mode(m)
             if header_mode == "LONG_ONLY" or str(m.macro_trend).upper() == "BULLISH":
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_ON_BULLISH_TREND", details)
 
-            # 4. 結構審查 (頂頂低 LH) 與長下影線過濾
+            # 6. 結構審查 (頂頂低 LH) 與長下影線過濾
             if curr_sh is not None and prev_sh is not None and curr_sh >= prev_sh:
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_MULTI_BAR_STRUCTURE_NOT_LH", details)
             lower_wick = min(m.open_price, m.close_price) - m.low_price
             if lower_wick >= 0.4 * m.atr or math.isclose(lower_wick, 0.4 * m.atr, rel_tol=1e-9):
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_LONG_LOWER_WICK_V_TRAP", details)
 
-            # 5. 破軌真偽檢驗 (通道張口、均線斜率等)
+            # 7. 破軌真偽檢驗 (通道張口、均線斜率等)
             breakout_ok, breakout_reason = cls.verify_breakout_authenticity(
                 m,
                 "SHORT",
@@ -1468,26 +1490,14 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             if not breakout_ok:
                 return GateDecision(False, "HOLD", breakout_reason, details)
 
-            # 6. 【KC 下軌超賣區 100% 封鎖開空】：
+            # 8. 【KC 下軌超賣區 100% 封鎖開空】：
             #    當價格低於 KC 中軌且貼近或低於 KC 下軌 (close <= kc_lower + 0.3 * atr 或 quote <= kc_lower + 0.3 * atr) 時，
             #    【100% 嚴禁地板追空】！
             oversold_band = m.kc_lower + 0.3 * m.atr
             if m.close_price <= oversold_band or m.quote <= oversold_band:
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_OVERSOLD_FLOOR_FOMO", details)
 
-            # 7. 陰線檢查：非紅 K 陰線一票否決
-            if m.close_price >= m.open_price or m.quote >= m.open_price:
-                return GateDecision(False, "HOLD", "BLOCKED_SHORT_DIRECTIONAL_CANDLE", details)
-
-            # 8. MA5 必須向下發散且收盤價低於 MA5
-            if m.ma5_curr >= m.ma5_prev:
-                return GateDecision(False, "HOLD", "BLOCKED_SHORT_MA5_SLOPE_TOO_FLAT", details)
-            if m.close_price >= m.ma5_curr:
-                return GateDecision(False, "HOLD", "BLOCKED_SHORT_CLOSE_NOT_BELOW_MA5", details)
-
-            dec = cls.evaluate_open_short(m, is_in_cooldown=is_in_cooldown)
-            if dec.can_execute:
-                return dec
+            # 舊開空漏斗（若通過一票否決驗證，則進一步驗證細節觸發點）
             if (
                 m.is_closed
                 and not is_in_cooldown
@@ -1507,7 +1517,50 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                     "AUTHORIZED_SHORT:TRIGGER_KC_DOWN_MA5_TURN_SHORT",
                     {**details, "trigger": "TRIGGER_KC_DOWN_MA5_TURN_SHORT"},
                 )
-            return dec
+
+            # 呼叫底層詳細漏斗驗證觸發點 (免除重複 validate_open_signal 迴圈)
+            filtered = cls.evaluate_entry_filters(m, "SHORT", is_in_cooldown)
+            if not filtered.can_execute:
+                return filtered
+            kc_slope = m.kc_middle - m.kc_middle_prev
+            trigger_hit = None
+            is_top_reversal = (
+                ((m.ma5_prev >= m.kc_middle_prev and m.ma5_curr < m.kc_middle)
+                 or (m.ma5_prev >= m.ma15_prev and m.ma5_curr < m.ma15_curr))
+                and (m.close_price < m.open_price)
+                and (kc_slope < 0)
+            )
+            if cls.is_top_pivot_short(m):
+                trigger_hit = "TRIGGER_TOP_PIVOT_CROSS"
+            elif cls.is_big_body_breakout(m, "SHORT"):
+                trigger_hit = "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+            elif cls.is_expansion(m, "SHORT"):
+                trigger_hit = "TRIGGER_A_EARLY_BODY_BREAKDOWN"
+            elif is_top_reversal:
+                trigger_hit = "TRIGGER_B_TOP_REVERSAL_CROSS"
+            elif (
+                m.close_price < m.kc_lower
+                and m.quote < m.kc_lower
+                and m.close_price < m.open_price
+                and (m.kc_middle - m.kc_middle_prev) < 0
+                and m.ma15_curr < m.ma15_prev
+                and m.ma5_curr < m.ma5_prev
+            ):
+                trigger_hit = "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
+            elif cls.is_slope_aligned_trend_entry(m, "SHORT"):
+                trigger_hit = "TRIGGER_ALIGNED_TREND_SLOPES"
+            elif cls.is_outer_rail_continuation(m, "SHORT"):
+                trigger_hit = "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT"
+
+            if not trigger_hit:
+                trigger_hit = cls.priority_channel(m, "SHORT")
+
+            if not trigger_hit:
+                return GateDecision(False, "HOLD", "WAIT_VALID_SHORT_TRIGGER", details)
+
+            logger.info(f"🚀 [GATE_SHORT_PASS] {m.symbol} 全條件審查通過！授權開空 ({trigger_hit})")
+            logger.info("[UI_DISPLAY: 賣空] symbol=%s trigger=%s stage=CANDIDATE_NOT_FILL", m.symbol, trigger_hit)
+            return GateDecision(True, "OPEN_SHORT", f"AUTHORIZED_SHORT:{trigger_hit}", {**details, "trigger": trigger_hit})
 
         # =========================================================================
         # 🛡️ 二、 做多開倉 (OPEN_LONG) 100% 一票否決鐵律 (Green Candle Lock)
@@ -1556,9 +1609,7 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             ):
                 return GateDecision(False, "HOLD", "BLOCKED_LONG_OVERBOUGHT_CEILING_FOMO", details)
 
-            dec = cls.evaluate_open_long(m, is_in_cooldown=is_in_cooldown)
-            if dec.can_execute:
-                return dec
+            # 舊開多漏斗（若通過一票否決驗證，則進一步驗證細節觸發點）
             if (
                 m.is_closed
                 and not is_in_cooldown
@@ -1576,7 +1627,41 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                     "AUTHORIZED_LONG:TRIGGER_KC_UP_MA5_TURN_LONG",
                     {**details, "trigger": "TRIGGER_KC_UP_MA5_TURN_LONG"},
                 )
-            return dec
+
+            filtered = cls.evaluate_entry_filters(m, "LONG", is_in_cooldown)
+            if not filtered.can_execute:
+                return filtered
+            trigger_hit = None
+            if cls.is_bottom_pivot_long(m):
+                trigger_hit = "TRIGGER_BOTTOM_PIVOT_CROSS"
+            elif cls.is_early_breakout_long(m):
+                trigger_hit = "TRIGGER_1145_EARLY_BREAKOUT"
+            elif cls.is_squeeze_breakout_long(m):
+                trigger_hit = "TRIGGER_1148_SQUEEZE_BREAKOUT"
+            elif cls.is_expansion(m, "LONG"):
+                trigger_hit = "TRIGGER_A_SQUEEZE_EXPANSION"
+            elif cls.is_early_long(m):
+                trigger_hit = "TRIGGER_EARLY_0748_BREAKOUT"
+            elif cls.is_outer_rail_continuation(m, "LONG"):
+                trigger_hit = "TRIGGER_OUTER_RAIL_CONTINUATION_LONG"
+            elif (
+                m.kc_middle <= m.low_price <= m.kc_middle + 0.35 * m.atr
+                and m.ma5_prev > m.ma15_prev and m.ma5_curr > m.ma15_curr
+            ):
+                trigger_hit = "TRIGGER_B_PULLBACK_KC_MIDDLE_BOUNCE"
+            elif m.open_price <= m.ma15_curr < m.close_price:
+                trigger_hit = "TRIGGER_C_EARLY_MA15_BREAKOUT"
+            elif cls.is_slope_aligned_trend_entry(m, "LONG"):
+                trigger_hit = "TRIGGER_ALIGNED_TREND_SLOPES"
+            if not trigger_hit:
+                trigger_hit = cls.priority_channel(m, "LONG")
+
+            if not trigger_hit:
+                return GateDecision(False, "HOLD", "WAIT_VALID_LONG_TRIGGER", details)
+
+            logger.info(f"🚀 [GATE_LONG_PASS] {m.symbol} 全條件審查通過！授權開多 ({trigger_hit})")
+            logger.info("[UI_DISPLAY: 買多] symbol=%s trigger=%s stage=CANDIDATE_NOT_FILL", m.symbol, trigger_hit)
+            return GateDecision(True, "OPEN_LONG", f"AUTHORIZED_LONG:{trigger_hit}", {**details, "trigger": trigger_hit})
 
         return GateDecision(
             False,
