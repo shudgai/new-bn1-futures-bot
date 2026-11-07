@@ -884,11 +884,23 @@ class MasterGateFunnel:
                 return "TRIGGER_TOP_PIVOT_CROSS"
             if cls.is_big_body_breakout(m, "SHORT"):
                 return "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+            if cls.is_outer_rail_continuation(m, "SHORT"):
+                return "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT"
+            if cls.is_continuation_entry(m, "SHORT"):
+                return "TRIGGER_CONTINUATION_ENTRY_SHORT"
+            if cls.is_express_trend_entry(m, "SHORT"):
+                return "TRIGGER_EXPRESS_TREND_ENTRY_SHORT"
         elif side == "LONG":
             if cls.is_bottom_pivot_long(m):
                 return "TRIGGER_BOTTOM_PIVOT_CROSS"
             if cls.is_big_body_breakout(m, "LONG"):
                 return "TRIGGER_EARLY_BREAKOUT_CHANNEL"
+            if cls.is_outer_rail_continuation(m, "LONG"):
+                return "TRIGGER_OUTER_RAIL_CONTINUATION_LONG"
+            if cls.is_continuation_entry(m, "LONG"):
+                return "TRIGGER_CONTINUATION_ENTRY_LONG"
+            if cls.is_express_trend_entry(m, "LONG"):
+                return "TRIGGER_EXPRESS_TREND_ENTRY_LONG"
         if cls.is_ma_cross_slope_entry(m, side):
             return MA_CROSS_SLOPE_TRIGGER
         return None
@@ -914,6 +926,12 @@ class MasterGateFunnel:
             "TRIGGER_A_SQUEEZE_EXPANSION",
             "TRIGGER_EXPRESS_TREND_LONG",
             "TRIGGER_EXPRESS_TREND_SHORT",
+            "TRIGGER_OUTER_RAIL_CONTINUATION_LONG",
+            "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT",
+            "TRIGGER_CONTINUATION_ENTRY_LONG",
+            "TRIGGER_CONTINUATION_ENTRY_SHORT",
+            "TRIGGER_EXPRESS_TREND_ENTRY_LONG",
+            "TRIGGER_EXPRESS_TREND_ENTRY_SHORT",
         }
         pivot_turn = priority in {
             "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
@@ -960,9 +978,45 @@ class MasterGateFunnel:
             priority = None
         if priority:
             details["priority_channel"] = priority
+        CONTINUATION_PRIORITY_TRIGGERS = {
+            REVERSE_TRIGGER,
+            "TRIGGER_OUTER_RAIL_CONTINUATION_LONG",
+            "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT",
+            "TRIGGER_CONTINUATION_ENTRY_LONG",
+            "TRIGGER_CONTINUATION_ENTRY_SHORT",
+            "TRIGGER_EXPRESS_TREND_ENTRY_LONG",
+            "TRIGGER_EXPRESS_TREND_ENTRY_SHORT",
+            "TRIGGER_EARLY_BREAKDOWN_CHANNEL",
+            "TRIGGER_EARLY_BREAKOUT_CHANNEL",
+            "TRIGGER_ALIGNED_TREND_SLOPES",
+            "TRIGGER_A_EARLY_BODY_BREAKDOWN",
+            "TRIGGER_1145_EARLY_BREAKOUT",
+            "TRIGGER_1148_SQUEEZE_BREAKOUT",
+        }
         if is_in_cooldown:
-            # 杜絕頻繁開平磨損手續費：在平倉後的冷卻期內，嚴禁同方向立即二次進場！唯有反轉開反向（Reverse Trigger）方可授權！
-            if priority != REVERSE_TRIGGER and not cls.is_reverse_after_structure_exit(m, side):
+            # 結束了後面有走勢要延續開倉（強制上車）：
+            # 若為反轉觸發或滿足強勢延續開倉（外軌延續/大實體破軌/順勢斜率發散），豁免平倉冷卻期，立即授權上車！
+            is_continuation_pass = (
+                priority in CONTINUATION_PRIORITY_TRIGGERS
+                or cls.is_reverse_after_structure_exit(m, side)
+                or (
+                    side == "SHORT"
+                    and (
+                        cls.is_outer_rail_continuation(m, "SHORT")
+                        or cls.is_continuation_entry(m, "SHORT")
+                        or cls.is_big_body_breakout(m, "SHORT")
+                    )
+                )
+                or (
+                    side == "LONG"
+                    and (
+                        cls.is_outer_rail_continuation(m, "LONG")
+                        or cls.is_continuation_entry(m, "LONG")
+                        or cls.is_big_body_breakout(m, "LONG")
+                    )
+                )
+            )
+            if not is_continuation_pass:
                 return block("BLOCKED_BY_POST_EXIT_COOLDOWN")
         blocked, reason = cls.evaluate_market_blacklist(m)
         if blocked:

@@ -126,3 +126,4 @@ def test_surge_emergency_exit_vetoed_in_bearish_trend():
     )
     assert hit is False
     assert reason == "VETO_HOLD_SURGE_IN_BEARISH_TREND"
+

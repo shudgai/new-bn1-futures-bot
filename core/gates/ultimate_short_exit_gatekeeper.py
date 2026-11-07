@@ -540,12 +540,22 @@ class UltimateShortExitGatekeeper:
                 and (close > fields["ma15"] or fields["ma5"] > fields["ma15"])
                 and fields["ma5"] > fields["ma5_prev"]
             )
+            # 🛑 空頭順勢防秒平：若大趨勢仍為空頭且價格仍在 KC 中軌下方，微幅陽線不可視為真谷底！
+            # 唯有 KC 中軌走平/向上、價格實質突破中軌、或已具備高利潤波段真谷底，方可平倉！
+            is_kc_down_now = fields["kc_middle"] <= fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BEARISH"
+            is_not_premature_in_bear = (
+                not is_kc_down_now
+                or close >= fields["kc_middle"]
+                or gain_atr_short >= 1.5
+                or gain_roe_short >= 0.15
+            )
             is_bottom_green_candle = (
                 profit_expanded_short
                 and in_profit_short
                 and has_bottom_extremum
                 and close > fields["open"]
                 and is_ma15_and_ma5_broken
+                and is_not_premature_in_bear
             )
             if is_bottom_green_candle and (
                 normalized in OWN_STRUCTURE_REASONS
@@ -577,12 +587,22 @@ class UltimateShortExitGatekeeper:
                 and (close < fields["ma15"] or fields["ma5"] < fields["ma15"])
                 and fields["ma5"] < fields["ma5_prev"]
             )
+            # 🛑 多頭順勢防秒平：若大趨勢仍為多頭且價格仍在 KC 中軌上方，微幅陰線不可視為真峰頂！
+            # 唯有 KC 中軌走平/向下、價格實質跌破中軌、或已具備高利潤波段真峰頂，方可平倉！
+            is_kc_up_now = fields["kc_middle"] >= fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BULLISH"
+            is_not_premature_in_bull = (
+                not is_kc_up_now
+                or close <= fields["kc_middle"]
+                or gain_atr_long >= 1.5
+                or gain_roe_long >= 0.15
+            )
             is_top_red_candle = (
                 profit_expanded_long
                 and in_profit_long
                 and has_top_extremum
                 and close < fields["open"]
                 and is_ma15_and_ma5_broken
+                and is_not_premature_in_bull
             )
             if is_top_red_candle and (
                 normalized in OWN_STRUCTURE_REASONS

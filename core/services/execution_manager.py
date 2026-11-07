@@ -2804,6 +2804,17 @@ class ExecutionManager:
                 is_anti_chase_long_veto = bool(is_ma15_divergence_too_high or is_kc_upper_exhausted or is_chasing_high)
                 is_long_vetoed = bool(m5_c <= m15_c or is_entry_ma5_slope_not_up or is_kc_slope_not_up or is_anti_chase_long_veto or is_entry_ma5_midline_adhered)
 
+                # 結束了後面有走勢要延續開倉（強制上車）：
+                # 若價格在 KC 上軌外或大實體突破且均線發散向上，豁免冷卻期強制上車！
+                is_long_continuation_momentum = bool(
+                    (curr_quote > kc_u or c_c > kc_u or (c_c > m5_c and m5_c > m15_c and (c_c - c_o) >= 0.35 * atr_v))
+                    and m5_c > m5_p
+                    and (kc_mid_slope > 0 or macro_trend == "BULLISH")
+                )
+                if is_in_long_cooldown and is_long_continuation_momentum:
+                    logger.info(f"⚡ [CONTINUATION_ENTRY_EXEMPT_COOLDOWN] {symbol} 命中多頭強勢延續走勢，豁免冷卻期立即強制上車！")
+                    is_in_long_cooldown = False
+
                 if is_in_long_cooldown:
                     logger.info(
                         f"⏳ [LONG_EXIT_COOLDOWN] {symbol} 平多後 {time.time() - last_closed_time:.1f}s 處於 2 根 K 棒冷卻期 (< 120s)，"
@@ -2864,6 +2875,17 @@ class ExecutionManager:
                 )
                 is_anti_chase_short_veto = bool(is_ma15_divergence_too_low or is_kc_lower_exhausted or is_chasing_low)
                 is_short_vetoed = bool(m5_c >= m15_c or is_entry_ma5_slope_not_down or is_kc_slope_not_down or is_anti_chase_short_veto or is_entry_ma5_midline_adhered)
+
+                # 結束了後面有走勢要延續開倉（強制上車）：
+                # 若價格在 KC 下軌外或大實體跌破且均線發散向下，豁免冷卻期強制上車！
+                is_short_continuation_momentum = bool(
+                    (curr_quote < kc_lo or c_c < kc_lo or (c_c < m5_c and m5_c < m15_c and (c_o - c_c) >= 0.35 * atr_v))
+                    and m5_c < m5_p
+                    and (kc_mid_slope < 0 or macro_trend == "BEARISH")
+                )
+                if is_in_short_cooldown and is_short_continuation_momentum:
+                    logger.info(f"⚡ [CONTINUATION_ENTRY_EXEMPT_COOLDOWN] {symbol} 命中空頭強勢延續走勢，豁免冷卻期立即強制上車！")
+                    is_in_short_cooldown = False
 
                 if is_in_short_cooldown:
                     logger.info(

@@ -110,3 +110,4 @@ def test_exit_gate_trend_reversal_safety_reason():
     assert "EXIT_SHORT_TREND_REVERSAL" in ExitGate.ABSOLUTE_SAFETY_REASONS
     assert "EXIT_LONG_TREND_REVERSAL" in HoldingProtectionExitGate.WHITELIST_CODES
     assert "EXIT_SHORT_TREND_REVERSAL" in HoldingProtectionExitGate.WHITELIST_CODES
+
