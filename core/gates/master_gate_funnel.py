@@ -292,6 +292,177 @@ class MasterGateFunnel:
     """交易系統開平倉審查與防誤觸總閘門"""
 
     # ─────────────────────────────────────────────────────────────
+    # 🧭 Layer A: 市場狀態與震盪過濾引擎 (Market Regime Engine)
+    # ─────────────────────────────────────────────────────────────
+    @classmethod
+    def evaluate_market_regime(cls, m: MarketSnapshot) -> Tuple[str, Dict[str, Any]]:
+        """
+        四維度獨立市場狀態分類引擎（Phase S1 架構核心）：
+        結合 KC 通道寬度與變化率、KC 中軌斜率、MA5/MA15 糾纏度 (ma_cross_count_8)、ADX 與波段高低點結構 (HL/LH)：
+        1. "CHOP_CONSOLIDATION"（真正無方向死水震盪）：禁止新開倉
+        2. "SQUEEZE_PREPARATION"（窄幅壓縮蓄勢待發）：等待有效突破進場
+        3. "REVERSAL_ZONE"（極值反轉區）：允許 Mode A 谷底/峰頂極值反轉進場
+        4. "TREND_BULLISH" / "TREND_BEARISH"（明確多頭/空頭趨勢或回踩）：允許 Mode B 順勢延續進場
+        """
+        kc_width = m.kc_upper - m.kc_lower
+        atr = m.atr if (math.isfinite(m.atr) and m.atr > 0) else 0.0
+        kc_slope = m.kc_middle - m.kc_middle_prev
+        ma15_slope = m.ma15_curr - m.ma15_prev
+        slope_floor = MEME_MIN_KC_MIDDLE_SLOPE_ATR * atr if atr > 0 else 0.0
+        kc_position = (m.close_price - m.kc_lower) / kc_width if kc_width > 0 else 0.5
+
+        if math.isfinite(m.kc_width_max_20) and m.kc_width_max_20 > 0:
+            limit = MEME_SQUEEZE_RELATIVE_RATIO * m.kc_width_max_20
+            squeezed = kc_width < limit or math.isclose(kc_width, limit, rel_tol=1e-9)
+        else:
+            squeezed = (kc_width / m.quote < 0.010) if m.quote > 0 else False
+
+        is_flat_mid = (
+            atr > 0
+            and not _slope_reaches_threshold(abs(kc_slope), slope_floor)
+            and not _slope_reaches_threshold(abs(ma15_slope), slope_floor)
+        )
+        is_chop_crosses = m.ma_cross_count_8 >= 3
+        in_outer_reversal_zone = (
+            kc_position <= 0.35
+            or kc_position >= 0.65
+            or cls.is_bottom_pivot_long(m)
+            or cls.is_top_pivot_short(m)
+        )
+
+        meta = {
+            "kc_width": kc_width,
+            "kc_slope": kc_slope,
+            "ma15_slope": ma15_slope,
+            "ma_cross_count_8": m.ma_cross_count_8,
+            "squeezed": squeezed,
+            "is_flat_mid": is_flat_mid,
+            "kc_position": kc_position,
+            "adx": m.adx,
+        }
+
+        if is_chop_crosses:
+            return "CHOP_CONSOLIDATION", meta
+        if squeezed:
+            return "SQUEEZE_PREPARATION", meta
+        if is_flat_mid and not in_outer_reversal_zone:
+            return "CHOP_CONSOLIDATION", meta
+        if in_outer_reversal_zone and (cls.is_bottom_pivot_long(m) or cls.is_top_pivot_short(m)):
+            return "REVERSAL_ZONE", meta
+        if kc_slope > 0 or str(m.macro_trend).upper() == "BULLISH":
+            return "TREND_BULLISH", meta
+        if kc_slope < 0 or str(m.macro_trend).upper() == "BEARISH":
+            return "TREND_BEARISH", meta
+        return "CHOP_CONSOLIDATION", meta
+
+    # ─────────────────────────────────────────────────────────────
+    # 🎯 Layer B: 雙模態進場引擎 (Mode A 極值反轉 vs Mode B 趨勢延續)
+    # ─────────────────────────────────────────────────────────────
+    @classmethod
+    def evaluate_mode_a_reversal_entry(cls, m: MarketSnapshot, side: str) -> Tuple[bool, Optional[str]]:
+        """
+        Mode A（極值反轉進場 — Exhaustion & Pivot Reversal Entry）：
+        在真正谷底附近提早做多、真正峰頂附近提早做空，不必等待滯後 EMA40/EMA60 交叉，
+        但必須同時具備：極值區位置 + 動能衰竭反轉 K 棒 + 收盤越過 MA5 且 MA5 拐頭 + 結構保護。
+        """
+        if not m.is_closed or not math.isfinite(m.atr) or m.atr <= 0:
+            return False, None
+        kc_width = m.kc_upper - m.kc_lower
+        if kc_width <= 0:
+            return False, None
+        kc_pos = (m.close_price - m.kc_lower) / kc_width
+        open_pos = (m.open_price - m.kc_lower) / kc_width
+        low_pos = (m.low_price - m.kc_lower) / kc_width
+        high_pos = (m.high_price - m.kc_lower) / kc_width
+
+        if side == "LONG":
+            if m.close_price <= m.open_price or m.quote <= m.open_price:
+                return False, None
+            if m.close_price <= m.ma5_curr or m.ma5_curr <= m.ma5_prev or m.ma5_curr <= m.ma15_curr:
+                return False, None
+            if m.current_swing_low is not None and m.prev_swing_low is not None and m.current_swing_low <= m.prev_swing_low:
+                return False, None
+            if cls.is_bottom_pivot_long(m):
+                return True, "TRIGGER_BOTTOM_PIVOT_CROSS"
+            in_valley_zone = (low_pos <= 0.35 or open_pos <= 0.50) and kc_pos <= 0.75
+            body = m.close_price - m.open_price
+            if in_valley_zone and body >= 0.35 * m.atr and m.close_price > m.kc_middle and m.close_price > m.ma15_curr:
+                return True, "TRIGGER_MODE_A_VALLEY_REVERSAL_LONG"
+
+        elif side == "SHORT":
+            if m.close_price >= m.open_price or m.quote >= m.open_price:
+                return False, None
+            if m.close_price >= m.ma5_curr or m.ma5_curr >= m.ma5_prev or m.ma5_curr >= m.ma15_curr:
+                return False, None
+            if m.current_swing_high is not None and m.prev_swing_high is not None and m.current_swing_high >= m.prev_swing_high:
+                return False, None
+            if cls.is_top_pivot_short(m):
+                return True, "TRIGGER_TOP_PIVOT_CROSS"
+            in_peak_zone = (high_pos >= 0.65 or open_pos >= 0.50) and kc_pos >= 0.25
+            body = m.open_price - m.close_price
+            if in_peak_zone and body >= 0.35 * m.atr and m.close_price < m.kc_middle and m.close_price < m.ma15_curr:
+                return True, "TRIGGER_MODE_A_PEAK_REVERSAL_SHORT"
+
+        return False, None
+
+    @classmethod
+    def evaluate_mode_b_continuation_entry(cls, m: MarketSnapshot, side: str) -> Tuple[bool, Optional[str]]:
+        """
+        Mode B（趨勢延續與有效突破進場 — Trend Continuation Entry）：
+        僅在趨勢方向明確（KC 中軌與均線同向排列）且有有效突破或回踩中軌轉強時進場，
+        嚴格執行防追高追低（Anti-Chase）限制。
+        """
+        if not m.is_closed or not math.isfinite(m.atr) or m.atr <= 0:
+            return False, None
+        if side == "LONG":
+            if m.close_price <= m.open_price or m.ma5_curr <= m.ma15_curr or m.ma5_curr <= m.ma5_prev:
+                return False, None
+            if m.kc_middle <= m.kc_middle_prev:
+                return False, None
+            if cls.is_early_breakout_long(m):
+                return True, "TRIGGER_1145_EARLY_BREAKOUT"
+            if cls.is_squeeze_breakout_long(m):
+                return True, "TRIGGER_1148_SQUEEZE_BREAKOUT"
+            if cls.is_expansion(m, "LONG"):
+                return True, "TRIGGER_A_SQUEEZE_EXPANSION"
+            if cls.is_early_long(m):
+                return True, "TRIGGER_EARLY_0748_BREAKOUT"
+            if cls.is_outer_rail_continuation(m, "LONG"):
+                return True, "TRIGGER_OUTER_RAIL_CONTINUATION_LONG"
+            if (
+                m.kc_middle <= m.low_price <= m.kc_middle + 0.35 * m.atr
+                and m.ma5_prev > m.ma15_prev and m.ma5_curr > m.ma15_curr
+            ):
+                return True, "TRIGGER_B_PULLBACK_KC_MIDDLE_BOUNCE"
+            if cls.is_slope_aligned_trend_entry(m, "LONG"):
+                return True, "TRIGGER_ALIGNED_TREND_SLOPES"
+
+        elif side == "SHORT":
+            if m.close_price >= m.open_price or m.ma5_curr >= m.ma15_curr or m.ma5_curr >= m.ma5_prev:
+                return False, None
+            if m.kc_middle >= m.kc_middle_prev:
+                return False, None
+            if cls.is_big_body_breakout(m, "SHORT"):
+                return True, "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+            if cls.is_expansion(m, "SHORT"):
+                return True, "TRIGGER_A_EARLY_BODY_BREAKDOWN"
+            if (
+                m.close_price < m.kc_lower
+                and m.quote < m.kc_lower
+                and m.close_price < m.open_price
+                and (m.kc_middle - m.kc_middle_prev) < 0
+                and m.ma15_curr < m.ma15_prev
+                and m.ma5_curr < m.ma5_prev
+            ):
+                return True, "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
+            if cls.is_slope_aligned_trend_entry(m, "SHORT"):
+                return True, "TRIGGER_ALIGNED_TREND_SLOPES"
+            if cls.is_outer_rail_continuation(m, "SHORT"):
+                return True, "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT"
+
+        return False, None
+
+    # ─────────────────────────────────────────────────────────────
     # 🚫 黑名單與無效訊號過濾 (符合任一即強制 HOLD)
     # ─────────────────────────────────────────────────────────────
     @classmethod
@@ -1117,11 +1288,12 @@ class MasterGateFunnel:
             or (p.side == "SHORT" and m.quote > m.kc_upper)
         ):
             return GateDecision(True, "CLOSE_POSITION", candidate_exit_reason, details)
-        if (not math.isfinite(current_time_ms) or p.open_timestamp_ms <= 0
+        if (not math.isfinite(current_time_ms) or p.open_timestamp_ms < 0
                 or current_time_ms < p.open_timestamp_ms
-                or int(current_time_ms // 60_000) == int(p.open_timestamp_ms // 60_000)
+                or (p.open_timestamp_ms > 0 and int(current_time_ms // 60_000) == int(p.open_timestamp_ms // 60_000))
                 or p.bars_held < 5 or not m.is_closed):
             return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
+        from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
         sign = 1 if p.side == "LONG" else -1
         extreme = p.highest_price_since_entry if p.side == "LONG" else p.lowest_price_since_entry
         if math.isfinite(extreme) and extreme > 0:
@@ -1132,6 +1304,18 @@ class MasterGateFunnel:
                 trailing_active=gain > 2.5 * m.atr,
                 trailing_qualified=gain > 2.5 * m.atr and retreat > 1.5 * m.atr,
             )
+        # 🎯 Phase S2 鐵律：當已收線確認真峰谷 (has_confirmed_pivot) 且觸發真峰谷出場時，
+        # 不得被 KC 中軌緩衝區 (050_ATR_BUFFER) 或同向 K 棒否決，必須在峰谷及時平倉！
+        is_early_confirmed_pivot = (
+            p.has_confirmed_pivot
+            and candidate_exit_reason in ("EARLY_PIVOT_PEAK_EXIT", "EARLY_PIVOT_VALLEY_EXIT")
+            and (
+                (p.estimated_net_pnl is not None and math.isfinite(p.estimated_net_pnl) and p.estimated_net_pnl > 0)
+                or (p.estimated_net_pnl is None and p.peak_roe_pct > 0 and sign * (m.quote - p.entry_price) > 0)
+            )
+        )
+        if is_early_confirmed_pivot:
+            return GateDecision(True, "CLOSE_POSITION", candidate_exit_reason, details)
         if sign * (m.close_price - m.kc_middle) >= -0.50 * m.atr:
             return hold(f"VETO_HOLD_{p.side}_050_ATR_BUFFER")
         if sign * (m.close_price - m.open_price) >= 0:
@@ -1141,7 +1325,6 @@ class MasterGateFunnel:
         if (not p.has_confirmed_pivot or p.estimated_net_pnl is None
                 or not math.isfinite(p.estimated_net_pnl) or p.estimated_net_pnl <= 0):
             return hold("VETO_HOLD_TRUE_PIVOT_AND_POSITIVE_NET_REQUIRED")
-        from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
         if candidate_exit_reason not in PROFIT_PIVOT_REASONS:
             return hold("VETO_HOLD_EXIT_AUTHORITY_REQUIRED")
         return GateDecision(True, "CLOSE_POSITION", candidate_exit_reason, details)
@@ -1285,8 +1468,17 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                         return False, "BLOCKED_SHORT_BREAKDOWN_CHANNEL_FLAT_OR_NARROW"
                 if l_prev is not None and m.kc_lower >= l_prev:
                     return False, "BLOCKED_SHORT_BREAKDOWN_CHANNEL_FLAT_OR_NARROW"
+                from core.symbol_aliases import is_meme_breakout_symbol
+                is_fresh_non_meme_breakdown = (
+                    not is_meme_breakout_symbol(m.symbol)
+                    and w_ma5 is None and w_prev is None and l_prev is None
+                    and m.open_price > m.kc_lower > m.close_price
+                    and m.ma5_curr < m.ma5_prev
+                    and m.ma15_curr < m.ma15_prev
+                    and m.kc_middle < m.kc_middle_prev
+                )
                 ma5_down_slope = m.ma5_prev - m.ma5_curr
-                if ma5_down_slope < 0.15 * m.atr and not math.isclose(ma5_down_slope, 0.15 * m.atr, rel_tol=1e-9):
+                if not is_fresh_non_meme_breakdown and ma5_down_slope < 0.15 * m.atr and not math.isclose(ma5_down_slope, 0.15 * m.atr, rel_tol=1e-9):
                     return False, "BLOCKED_SHORT_BREAKDOWN_MA5_SLOPE_WEAK"
             return True, "PASS_TRUE_BEARISH_BREAKDOWN"
 
@@ -1495,9 +1687,17 @@ class MasterOpenGatekeeper(MasterGateFunnel):
 
             # 8. 【KC 下軌超賣區 100% 封鎖開空】：
             #    當價格低於 KC 中軌且貼近或低於 KC 下軌 (close <= kc_lower + 0.3 * atr 或 quote <= kc_lower + 0.3 * atr) 時，
-            #    【100% 嚴禁地板追空】！
+            #    【100% 嚴禁地板追空】！（一般標的新鮮下軌突破將交由 evaluate_entry_filters 進行 <= 0.5 ATR 追空距離審查）
+            from core.symbol_aliases import is_meme_breakout_symbol
+            is_fresh_non_meme_breakdown = (
+                not is_meme_breakout_symbol(m.symbol)
+                and m.open_price > m.kc_lower > m.close_price
+                and m.ma5_curr < m.ma5_prev
+                and m.ma15_curr < m.ma15_prev
+                and m.kc_middle < m.kc_middle_prev
+            )
             oversold_band = m.kc_lower + 0.3 * m.atr
-            if m.close_price <= oversold_band or m.quote <= oversold_band:
+            if not is_fresh_non_meme_breakdown and (m.close_price <= oversold_band or m.quote <= oversold_band):
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_OVERSOLD_FLOOR_FOMO", details)
 
             # 舊開空漏斗（若通過一票否決驗證，則進一步驗證細節觸發點）

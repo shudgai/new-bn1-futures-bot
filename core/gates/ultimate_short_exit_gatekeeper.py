@@ -333,6 +333,8 @@ class UltimateShortExitGatekeeper:
             return ExitVerdict(DEFER, "MANUAL_EXIT", {})
         if any(token in normalized for token in ACCOUNT_LEVEL_TOKENS):
             return ExitVerdict(DEFER, "ACCOUNT_LEVEL_EXIT", {})
+        if "VIRTUAL_PROFIT_LOCK" in normalized:
+            return ExitVerdict(DEFER, "VIRTUAL_PROFIT_LOCK_EXIT", {})
         side = str(position.get("side") or "").upper()
         evidence: dict = {"symbol": symbol, "side": side, "reason": reason}
 
@@ -458,6 +460,13 @@ class UltimateShortExitGatekeeper:
             # Only the freshly completed 1m bar can authorize a trend exit.
             return hold("VETO_EXIT_BAR_NOT_CLOSED")
 
+        # 🎯 階梯鎖利與移動止盈優先放行 (Staged Profit Lock & Trailing Stop Exit)
+        # 核心鐵律：已展開獲利且達到階梯鎖利/保本防守價，100% 豁免 MA15/KC中軌趨勢續抱與同向 K 棒一票否決，落袋保利！
+        is_profit_lock_reason = any(token in normalized for token in PROFIT_LOCK_TOKENS)
+        is_net_profit_favorable = (side == "LONG" and quote >= entry * 1.001) or (side == "SHORT" and quote <= entry * 0.999)
+        if is_profit_lock_reason and is_net_profit_favorable:
+            return allow(normalized)
+
         close, kc_mid = fields["close"], fields["kc_middle"]
         # Exits are only authorized on a fresh, opposite-signal bar. A position-direction
         # completed bar is a hard hold even when the quote is near the entry.
@@ -475,13 +484,6 @@ class UltimateShortExitGatekeeper:
         if (side == "SHORT" and close > fields["kc_upper"]) or (
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
-
-        # 🎯 階梯鎖利與移動止盈優先放行 (Staged Profit Lock & Trailing Stop Exit)
-        # 核心鐵律：已展開獲利且達到階梯鎖利/保本防守價，100% 豁免 MA15/KC中軌趨勢續抱一票否決，落袋保利！
-        is_profit_lock_reason = any(token in normalized for token in PROFIT_LOCK_TOKENS)
-        is_net_profit_favorable = (side == "LONG" and quote >= entry * 1.001) or (side == "SHORT" and quote <= entry * 0.999)
-        if is_profit_lock_reason and is_net_profit_favorable:
-            return allow(normalized)
 
         # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit - 優先於趨勢波段續抱審查)
         # 核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底/峰頂市價平倉獲利了結！
@@ -526,8 +528,8 @@ class UltimateShortExitGatekeeper:
 
         # 1. 【真谷底 2 點成立 ➔ 100% 瞬間平空 (True Bottom Exit - 取消 Body >= 0.35 ATR 限制，100% 豁免 KC 中軌限制)】：
         #    - 審查條件（必須同時成立）：
-        #            (1) 1m 收盤價實質站上 MA5 (close > ma5) 且站上 MA15 (close > ma15)
-        #            (2) MA5 明確向上拐頭 (ma5 > ma5_prev) 且金叉 MA15 (ma5 > ma15)
+        #            (1) 1m 收盤價實質站上 MA5 (close > ma5) 且站上 MA15 (close > ma15 或 ma5 > ma15)
+        #            (2) MA5 明確向上拐頭 (ma5 > ma5_prev)
         #            (3) 持有空單且已展開波段獲利，或已滿足真谷底極值
         #    🚨【空頭主降浪一票否決】：若 1m 收盤價仍位於 MA5 下方或 MA15 下方，或 MA5 未金叉 MA15，
         #       100% 判定為「空頭順勢壓制 / 正常反彈洗盤」，100% 傳回 False (HOLD) 阻斷提前平空！
@@ -563,8 +565,8 @@ class UltimateShortExitGatekeeper:
 
         # 2. 【真峰頂 2 點成立 ➔ 100% 瞬間平多 (True Top Exit - 取消 Body >= 0.35 ATR 限制，100% 豁免 KC 中軌限制)】：
         #    - 審查條件（必須同時成立）：
-        #            (1) 1m 收盤價實質跌破 MA5 (close < ma5) 且跌破 MA15 (close < ma15)
-        #            (2) MA5 明確向下拐頭 (ma5 < ma5_prev) 且死叉 MA15 (ma5 < ma15)
+        #            (1) 1m 收盤價實質跌破 MA5 (close < ma5) 且跌破 MA15 (close < ma15 或 ma5 < ma15)
+        #            (2) MA5 明確向下拐頭 (ma5 < ma5_prev)
         #            (3) 持有多單且已展開波段獲利，或已滿足真峰頂極值
         #    🚨【多頭主升浪一票否決】：若 1m 收盤價仍位於 MA5 上方或 MA15 上方，或 MA5 未死叉 MA15，
         #       100% 判定為「多頭順勢支撐 / 正常回踩洗盤」，100% 傳回 False (HOLD) 阻斷提前平多！
@@ -605,14 +607,14 @@ class UltimateShortExitGatekeeper:
         # 只要 1m 收盤價仍位於 MA5 上方 (close_price >= ma5_curr) 或 MA5 仍向上發散 (ma5_curr >= ma5_prev)，
         # 100% 認定為「多頭順勢拉升 / 正常洗盤」，Gate 100% 傳回 False (HOLD) 阻斷平多 API！
         if side == "LONG":
+            if close >= fields["ma15"] and fields["ma5"] >= fields["ma15"]:
+                return hold("VETO_HOLD_LONG_ABOVE_MA15")
             is_kc_up_header = fields["kc_middle"] > fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BULLISH"
             if is_kc_up_header:
                 if close >= fields["ma5"]:
                     return hold("VETO_HOLD_LONG_ABOVE_MA5")
                 if fields["ma5"] >= fields["ma5_prev"]:
                     return hold("VETO_HOLD_LONG_MA5_NOT_TURNING_DOWN")
-            if close >= fields["ma15"] and fields["ma5"] >= fields["ma15"]:
-                return hold("VETO_HOLD_LONG_ABOVE_MA15")
             if close > fields["open"]:
                 return hold("VETO_HOLD_LONG_ON_GREEN_CANDLE")
 
@@ -622,14 +624,14 @@ class UltimateShortExitGatekeeper:
         # 只要 1m 收盤價仍位於 MA5 下方 (close_price <= ma5_curr) 或 MA5 仍向下發散 (ma5_curr <= ma5_prev)，
         # 100% 認定為「空頭順勢下殺 / 正常洗盤」，Gate 100% 傳回 False 阻斷平空 API！
         if side == "SHORT":
+            if close <= fields["ma15"] and fields["ma5"] <= fields["ma15"]:
+                return hold("VETO_HOLD_SHORT_BELOW_MA15")
             is_kc_down_header = fields["kc_middle"] < fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BEARISH"
             if is_kc_down_header:
                 if close <= fields["ma5"]:
                     return hold("VETO_HOLD_SHORT_BELOW_MA5")
                 if fields["ma5"] <= fields["ma5_prev"]:
                     return hold("VETO_HOLD_SHORT_MA5_NOT_TURNING_UP")
-            if close <= fields["ma15"] and fields["ma5"] <= fields["ma15"]:
-                return hold("VETO_HOLD_SHORT_BELOW_MA15")
             if close < fields["open"]:
                 return hold("VETO_HOLD_SHORT_ON_RED_CANDLE")
 
@@ -686,15 +688,13 @@ class UltimateShortExitGatekeeper:
 
         # 🚨【核心硬鎖：順勢走勢 KC 沒翻向，中間 100% 一票否決中途割肉/提前平倉，死抱到峰谷】
         # 做多時：只要 KC 中軌維持向上 (kc_middle >= kc_middle_prev 或 macro_trend == BULLISH)，
-        # 中間的任何 1m 回踩或陰線下殺，絕不允許被普通結構突破 (STRUCTURE_BREAK) 或偽頂部平倉提前洗出場！
-        # 必須死抱主升浪，直到走到真峰頂 (True Peak) 或階梯鎖利才准平多！
-        if side == "LONG" and is_kc_up_header and not in_profit_for_fast_exit:
+        # 中間的任何 1m 回踩或陰線下殺（未構成 > 1.0 ATR 完整結構死叉破位），絕不允許被偽頂部平倉提前洗出場！
+        if side == "LONG" and is_kc_up_header and not in_profit_for_fast_exit and not full_structure_break_ready:
             return hold("VETO_HOLD_LONG_UPWARD_KC_UNTIL_TRUE_PEAK")
 
         # 做空時：只要 KC 中軌維持向下 (kc_middle <= kc_middle_prev 或 macro_trend == BEARISH)，
-        # 中間的任何 1m 反抽或陽線拉升，絕不允許被普通結構突破或偽谷底平倉提前洗出場！
-        # 必須死抱主降浪，直到走到真谷底 (True Valley) 或階梯鎖利才准平空！
-        if side == "SHORT" and is_kc_down_header and not in_profit_for_fast_exit:
+        # 中間的任何 1m 反抽或陽線拉升（未構成 > 1.0 ATR 完整結構金叉破位），絕不允許被偽谷底平倉提前洗出場！
+        if side == "SHORT" and is_kc_down_header and not in_profit_for_fast_exit and not full_structure_break_ready:
             return hold("VETO_HOLD_SHORT_DOWNWARD_KC_UNTIL_TRUE_VALLEY")
 
         # 🚀 頂部/底部大實體 K 線貫穿極速平倉通道 (Fast Top / Bottom Exit Channel)

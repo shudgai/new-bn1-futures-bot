@@ -979,14 +979,23 @@ class ExecutionManager:
             # ExitGate 內部使用比例制 (0.05 = 5% ROE)，因此傳遞給 ExitGate 的 peak_roe 統一儲存為比例制
             current_position["peak_roe"] = peak_roe_pct / 100.0
 
-            # 🎯 方案 1: 10% 門檻 + 20% 回吐鎖利 結合 MA3/MA15 趨勢濾網
-            from core.services.exits.staged_profit_lock import check_exit_conditions
+            # 🎯 Phase S2 階梯動態鎖利：Stage 1 (Peak Net ROE >= 10% -> 鎖 70%)、Stage 2 (Peak Net ROE >= 20% -> 鎖 85%)
+            from core.services.exits.staged_profit_lock import (
+                check_exit_conditions,
+                evaluate_staged_profit_lock,
+            )
             curr_profit_margin = ((curr_quote - pos_entry) / pos_entry) if pos_side == "LONG" else ((pos_entry - curr_quote) / pos_entry) if pos_entry > 0 else 0.0
             stored_highest_margin = float(current_position.get("highest_profit_margin", 0.0) or 0.0)
             highest_profit_margin = max(stored_highest_margin, curr_profit_margin)
             current_position["highest_profit_margin"] = round(highest_profit_margin, 6)
 
-            _is_pepe = "1000PEPE" in symbol or "PEPE" in str(symbol).upper()
+            staged_lock_hit, staged_lock_reason, staged_lock_meta = evaluate_staged_profit_lock(
+                position=current_position,
+                current_price=curr_quote,
+                side=pos_side,
+                current_ma3=m3_c,
+                current_ma15=m15_c,
+            )
             scheme1_action = check_exit_conditions(
                 position=pos_side,
                 entry_price=pos_entry,
@@ -996,11 +1005,11 @@ class ExecutionManager:
                 current_ma15=m15_c,
                 highest_roe_pct=peak_roe_pct,
                 current_roe_pct=cur_roe_pct,
-                tier1_start_roe_pct=20.0 if _is_pepe else 10.0,
-                tier1_drawback_pct=0.05 if _is_pepe else 0.20,
+                tier1_start_roe_pct=10.0,
+                tier1_drawback_pct=0.20,
             )
 
-            # 🛡️ 妖幣平倉唯一結構出口：收線 + 持倉滿 5 根 + 0.50 ATR/MA5 金死叉/反向實體 AND 鎖
+            # 🛡️ 妖幣平倉唯一結構出口：收線 + 持倉滿 5 根 + 0.50 ATR/MA5 金死叉/反向實體 AND 鎖（加上階梯鎖利 Lock Floor 強制保護）
             from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
             if _is_meme_exit_symbol(symbol):
                 from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
@@ -1009,6 +1018,20 @@ class ExecutionManager:
                     getattr(account, "position_meta", {}).get(symbol, {}),
                     curr_quote, raw_df,
                 )
+                if not structure_reason and staged_lock_hit and staged_lock_reason in (
+                    "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
+                    "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
+                ):
+                    lock_verdict = UltimateShortExitGatekeeper.evaluate(
+                        symbol,
+                        current_position,
+                        getattr(account, "position_meta", {}).get(symbol, {}),
+                        staged_lock_reason,
+                        curr_quote,
+                        frame=raw_df,
+                    )
+                    if lock_verdict.allowed:
+                        structure_reason = lock_verdict.code
                 is_emerg_bar_open = bool(
                     raw_df is not None
                     and isinstance(raw_df, pd.DataFrame)
@@ -4698,6 +4721,20 @@ class ExecutionManager:
     ) -> bool:
         """全系統唯一平倉執行管道"""
         try:
+            if getattr(account, "system_emergency_halt", False) or getattr(account, "is_halted", False):
+                logger.critical(f"🛑 [EXECUTION_BLOCKED_HALT] {symbol} 系統處於 HALT 緊急停機狀態，阻斷平倉派發！")
+                return False
+            positions_dict = getattr(account, "positions", {})
+            pos_obj = positions_dict.get(symbol) if isinstance(positions_dict, dict) else None
+            pos_meta_obj = getattr(account, "position_meta", {}).get(symbol, {}) if isinstance(getattr(account, "position_meta", None), dict) else {}
+            pos_state = str((pos_obj or {}).get("state") or (pos_meta_obj or {}).get("state") or "").upper()
+            if pos_state in ("MANUAL_REVIEW", "RECONCILIATION_REQUIRED", "HALT") or (pos_obj or {}).get("manual_review") or (pos_meta_obj or {}).get("manual_review"):
+                logger.critical(f"🛑 [EXECUTION_BLOCKED_{pos_state or 'MANUAL_REVIEW'}] {symbol} 處於人工審核/對帳鎖定狀態，嚴禁自動平倉副作用！")
+                return False
+            if (pos_obj or {}).get("exit_in_progress") or (pos_meta_obj or {}).get("exit_in_progress") or symbol in getattr(account, "closing_lock", set()):
+                logger.warning(f"⏳ [EXECUTION_BLOCKED_DUPLICATE_EXIT] {symbol} 已有在途平倉委託 (exit_in_progress/closing_lock)，阻斷重複平倉！")
+                return False
+
             if hasattr(account, "close_position"):
                 closed_side = None
                 positions_dict = getattr(account, "positions", {})
@@ -4807,6 +4844,17 @@ class ExecutionManager:
                 account = engine_or_account
             else:
                 account = getattr(engine_or_account, "account", engine_or_account)
+
+            if getattr(account, "system_emergency_halt", False) or getattr(account, "is_halted", False):
+                cls._last_open_error[symbol] = "BLOCKED_SYSTEM_EMERGENCY_HALT"
+                logger.critical(f"🛑 [EXECUTION_BLOCKED_HALT] {symbol} 系統處於 HALT 緊急停機狀態，阻斷開倉派發！")
+                return False
+            pos_meta_check = getattr(account, "position_meta", {}).get(symbol, {}) if isinstance(getattr(account, "position_meta", None), dict) else {}
+            pos_state_check = str((pos_meta_check or {}).get("state") or "").upper()
+            if pos_state_check in ("MANUAL_REVIEW", "RECONCILIATION_REQUIRED", "HALT") or (pos_meta_check or {}).get("manual_review"):
+                cls._last_open_error[symbol] = f"BLOCKED_{pos_state_check or 'MANUAL_REVIEW'}"
+                logger.critical(f"🛑 [EXECUTION_BLOCKED_{pos_state_check or 'MANUAL_REVIEW'}] {symbol} 處於人工審核/對帳鎖定狀態，嚴禁自動開倉副作用！")
+                return False
             entry_method_authority = (meta or {}).get("entry_method_authority")
             if entry_method_authority:
                 from core.services.entry_methods import revalidate_entry_method
