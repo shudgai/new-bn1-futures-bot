@@ -960,8 +960,10 @@ class MasterGateFunnel:
             priority = None
         if priority:
             details["priority_channel"] = priority
-        if is_in_cooldown and not priority:
-            return block("BLOCKED_BY_POST_EXIT_COOLDOWN")
+        if is_in_cooldown:
+            # 杜絕頻繁開平磨損手續費：在平倉後的冷卻期內，嚴禁同方向立即二次進場！唯有反轉開反向（Reverse Trigger）方可授權！
+            if priority != REVERSE_TRIGGER and not cls.is_reverse_after_structure_exit(m, side):
+                return block("BLOCKED_BY_POST_EXIT_COOLDOWN")
         blocked, reason = cls.evaluate_market_blacklist(m)
         if blocked:
             return block(reason)

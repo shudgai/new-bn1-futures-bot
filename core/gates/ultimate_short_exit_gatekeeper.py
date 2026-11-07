@@ -613,34 +613,28 @@ class UltimateShortExitGatekeeper:
                 if is_kc_up and is_ma_bullish and is_above_mid and is_momentum_bullish:
                     return allow(TREND_REVERSAL_EXIT_REASONS[side])
 
-        # 🛡️ 通道 B：一般波段「未過 MA15 100% 死抱防過敏」(Trend-Holding Immunity)
-        # 多頭主升浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
-        # 🚨【核心硬鎖：持多單時未達「真峰頂」100% 一票否決平多 (Anti-Premature Long Exit)】：
+        # 🛡️ 通道 B：多頭/空頭順勢走勢死抱鐵律 (Trend-Holding Immunity & Anti-Churn Lock)
+        # 🚨【核心硬鎖：順勢走勢後續也是同向走勢，100% 一票否決中途平倉割肉，死抱主升/主跌浪】
+        # 使用者核心授權（2026-11-07）：多頭開倉後，若後面也是多頭走勢就不要平倉，不要一直開多平倉又開多平倉，浪費手續費且沒利潤；空單亦同！
         if side == "LONG":
-            if close >= fields["ma15"] and fields["ma5"] >= fields["ma15"]:
-                return hold("VETO_HOLD_LONG_ABOVE_MA15")
-            is_kc_up_header = fields["kc_middle"] > fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BULLISH"
+            is_kc_up_header = fields["kc_middle"] >= fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BULLISH"
             if is_kc_up_header:
-                if close >= fields["ma5"]:
-                    return hold("VETO_HOLD_LONG_ABOVE_MA5")
-                if fields["ma5"] >= fields["ma5_prev"]:
-                    return hold("VETO_HOLD_LONG_MA5_NOT_TURNING_DOWN")
-            if close > fields["open"]:
-                return hold("VETO_HOLD_LONG_ON_GREEN_CANDLE")
+                is_true_peak_exit = (normalized in TRUE_OUTER_PIVOT_EXIT_REASONS.values()) or (
+                    normalized in BOTTOM_REVERSAL_EXIT_REASONS.values() and quote > entry
+                )
+                is_account_safety = any(token in normalized for token in ACCOUNT_LEVEL_TOKENS)
+                if not (is_true_peak_exit or is_account_safety):
+                    return hold("VETO_HOLD_LONG_UPWARD_TREND_NO_CHURN")
 
-        # 空頭主降浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
-        # 🚨【核心硬鎖：持空單時未達「真谷底」100% 一票否決平空 (Anti-Premature Short Exit)】：
         if side == "SHORT":
-            if close <= fields["ma15"] and fields["ma5"] <= fields["ma15"]:
-                return hold("VETO_HOLD_SHORT_BELOW_MA15")
-            is_kc_down_header = fields["kc_middle"] < fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BEARISH"
+            is_kc_down_header = fields["kc_middle"] <= fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BEARISH"
             if is_kc_down_header:
-                if close <= fields["ma5"]:
-                    return hold("VETO_HOLD_SHORT_BELOW_MA5")
-                if fields["ma5"] <= fields["ma5_prev"]:
-                    return hold("VETO_HOLD_SHORT_MA5_NOT_TURNING_UP")
-            if close < fields["open"]:
-                return hold("VETO_HOLD_SHORT_ON_RED_CANDLE")
+                is_true_valley_exit = (normalized in TRUE_OUTER_PIVOT_EXIT_REASONS.values()) or (
+                    normalized in BOTTOM_REVERSAL_EXIT_REASONS.values() and quote < entry
+                )
+                is_account_safety = any(token in normalized for token in ACCOUNT_LEVEL_TOKENS)
+                if not (is_true_valley_exit or is_account_safety):
+                    return hold("VETO_HOLD_SHORT_DOWNWARD_TREND_NO_CHURN")
 
         # 🎯 階梯鎖利與移動止盈放行（僅在已跌破/突破 MA15 且脫離多頭/空頭主升浪保護後才允許執行）
         is_profit_lock_reason = any(token in normalized for token in PROFIT_LOCK_TOKENS)
@@ -794,18 +788,26 @@ class UltimateShortExitGatekeeper:
                 "ma15": ma15,
             })
 
-            if side == "LONG" and price < live_open:
-                # 僅認單根盤中 K 棒極速大瀑布下殺幅度超過 1.2 ATR 且跌破 KC 中軌（廢除 0.5 ATR 偽硬止損）
-                single_bar_dump = ((live_open - price) >= 1.2 * dist_atr) and (price < kc_mid)
+            # 順勢死抱鐵律（2026-11-07 核心授權）：多頭走勢絕不平多，空頭走勢絕不平空！
+            is_macro_bull = (kc_mid >= _float(prev_candle.get("kc_middle") or kc_mid)) or (str(getattr(frame, "attrs", {}).get("macro_trend", "")).upper() == "BULLISH")
+            is_macro_bear = (kc_mid <= _float(prev_candle.get("kc_middle") or kc_mid)) or (str(getattr(frame, "attrs", {}).get("macro_trend", "")).upper() == "BEARISH")
+
+            if side == "LONG":
+                if is_macro_bull:
+                    return False, "VETO_HOLD_WATERFALL_IN_BULLISH_TREND", evidence
+                # 僅在非多頭趨勢且單根盤中 K 棒極速大瀑布下殺幅度超過 1.5 ATR 且跌破 KC 中軌時避險
+                single_bar_dump = (price < live_open) and ((live_open - price) >= 1.5 * dist_atr) and (price < kc_mid)
 
                 if single_bar_dump:
                     reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["LONG"]
                     evidence["trigger"] = "SINGLE_BAR_DUMP"
                     return True, reason, evidence
 
-            elif side == "SHORT" and price > live_open:
-                # 僅認單根盤中 K 棒極速大瀑布拉升幅度超過 1.2 ATR 且突破 KC 中軌（廢除 0.5 ATR 偽硬止損）
-                single_bar_pump = ((price - live_open) >= 1.2 * dist_atr) and (price > kc_mid)
+            elif side == "SHORT":
+                if is_macro_bear:
+                    return False, "VETO_HOLD_SURGE_IN_BEARISH_TREND", evidence
+                # 僅在非空頭趨勢且單根盤中 K 棒極速暴漲幅度超過 1.5 ATR 且突破 KC 中軌時避險
+                single_bar_pump = (price > live_open) and ((price - live_open) >= 1.5 * dist_atr) and (price > kc_mid)
 
                 if single_bar_pump:
                     reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["SHORT"]

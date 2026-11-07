@@ -1025,15 +1025,20 @@ class ExecutionManager:
                     and not bool(raw_df.iloc[-1].get("is_closed", True))
                 )
                 if not structure_reason and is_emerg_bar_open:
-                    wf_hit, wf_reason, _ = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
-                        symbol,
-                        current_position,
-                        getattr(account, "position_meta", {}).get(symbol, {}),
-                        curr_quote,
-                        frame=raw_df,
+                    pos_macro_aligned = (
+                        (pos_side == "LONG" and (macro_trend == "BULLISH" or kc_mid >= float(p_k.get("kc_middle", kc_mid))))
+                        or (pos_side == "SHORT" and (macro_trend == "BEARISH" or kc_mid <= float(p_k.get("kc_middle", kc_mid))))
                     )
-                    if wf_hit:
-                        structure_reason = wf_reason
+                    if not pos_macro_aligned:
+                        wf_hit, wf_reason, _ = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
+                            symbol,
+                            current_position,
+                            getattr(account, "position_meta", {}).get(symbol, {}),
+                            curr_quote,
+                            frame=raw_df,
+                        )
+                        if wf_hit:
+                            structure_reason = wf_reason
                 if structure_reason:
                     is_closed_flag = not (
                         structure_reason in ("EXIT_LONG_EMERGENCY_WATERFALL", "EXIT_SHORT_EMERGENCY_SURGE")
