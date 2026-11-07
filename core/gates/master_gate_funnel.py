@@ -582,6 +582,7 @@ class MasterGateFunnel:
             and body > 0
             and math.isfinite(kc_position)
             and kc_position >= short_min
+            and m.kc_middle < m.kc_middle_prev
             and m.close_price < m.kc_middle
             and m.close_price < m.ma15_curr
             and m.ma5_curr < m.ma5_prev
@@ -615,6 +616,7 @@ class MasterGateFunnel:
             m.is_closed
             and body > 0
             and in_bottom_zone
+            and m.kc_middle > m.kc_middle_prev
             and m.close_price > m.kc_middle
             and m.close_price > m.ma15_curr
             and m.ma5_curr > m.ma5_prev
@@ -636,51 +638,61 @@ class MasterGateFunnel:
         """
         ⚡ 一、 核心極速通道：斷頭級「真峰頂 / 真谷底」瞬間平倉＋反手開倉 (Zero-Delay Position Flip)
         當 1m K 棒確定收線 (is_bar_closed == True) 當下，一旦識別出斷頭級轉向，
-        100% 繞過平倉緩衝區、100% 秒解 Cooldown 與豁免大週期滯後限制：
+        100% 繞過平倉緩衝區、100% 秒解 Cooldown，但嚴格遵守 KC 中軌方向順勢鐵律：
 
         1. 真峰頂 / 斷頭轉向 (平多+開空 / 無倉開空)：
            (1) 1m K 棒為「實體紅 K (陰線下殺，close < open, Body >= 0.35 ATR)」
-           (2) 1m 收盤價實質跌破 MA15 且跌破 KC 中軌
-           (3) MA5 實質向下死叉 MA15 (ma5_curr < ma15_curr) 或 MA5 陡峭向下跌破 MA15
+           (2) KC 中軌必須向下 (kc_middle < kc_middle_prev)，中軌向上嚴禁開空
+           (3) 1m 收盤價實質跌破 MA15 且跌破 KC 中軌
+           (4) MA5 實質向下死叉 MA15 (ma5_curr < ma15_curr) 或 MA5 陡峭向下跌破 MA15
 
         2. 真谷底 / V轉反彈 (平空+開多 / 無倉開多)：
            (1) 1m K 棒為「實體綠 K (陽線反彈，close > open, Body >= 0.35 ATR)」
-           (2) 1m 收盤價強勢站回 MA15 且站上 KC 中軌
-           (3) MA5 實質向上金叉 MA15 (ma5_curr > ma15_curr) 或 MA5 陡峭向上突破 MA15
+           (2) KC 中軌必須向上 (kc_middle > kc_middle_prev)，中軌向下嚴禁開多
+           (3) 1m 收盤價強勢站回 MA15 且站上 KC 中軌
+           (4) MA5 實質向上金叉 MA15 (ma5_curr > ma15_curr) 或 MA5 陡峭向上突破 MA15
         """
         if not m.is_closed or m.timeframe_ms != 60_000.0 or not math.isfinite(m.atr) or m.atr <= 0:
             return None
 
         side = str(position_side or "").upper() if position_side else None
 
-        # 頂部斷頭轉向 -> 開空
+        # 頂部斷頭轉向 -> 開空 (必須 KC 中軌向下且非多頭大勢)
         is_top_flip = (
-            cls.is_top_pivot_short(m)
-            or (
-                m.close_price < m.open_price
-                and (m.open_price - m.close_price) >= 0.35 * m.atr
-                and m.close_price < m.ma15_curr
-                and m.close_price < m.kc_middle
-                and m.ma5_curr < m.ma15_curr
-                and m.ma5_curr < m.ma5_prev
-                and m.ma5_prev >= m.ma15_prev
+            m.kc_middle < m.kc_middle_prev
+            and str(m.macro_trend).upper() != "BULLISH"
+            and (
+                cls.is_top_pivot_short(m)
+                or (
+                    m.close_price < m.open_price
+                    and (m.open_price - m.close_price) >= 0.35 * m.atr
+                    and m.close_price < m.ma15_curr
+                    and m.close_price < m.kc_middle
+                    and m.ma5_curr < m.ma15_curr
+                    and m.ma5_curr < m.ma5_prev
+                    and m.ma5_prev >= m.ma15_prev
+                )
             )
         )
         if is_top_flip:
             if side is None or side in ("LONG", "FLAT", ""):
                 return "SHORT", "TRIGGER_TOP_PIVOT_CROSS"
 
-        # 底部V轉反彈 -> 開多
+        # 底部V轉反彈 -> 開多 (必須 KC 中軌向上且非空頭大勢)
         is_bottom_flip = (
-            cls.is_bottom_pivot_long(m)
-            or (
-                m.close_price > m.open_price
-                and (m.close_price - m.open_price) >= 0.35 * m.atr
-                and m.close_price > m.ma15_curr
-                and m.close_price > m.kc_middle
-                and m.ma5_curr > m.ma15_curr
-                and m.ma5_curr > m.ma5_prev
-                and m.ma5_prev <= m.ma15_prev
+            m.kc_middle > m.kc_middle_prev
+            and str(m.macro_trend).upper() != "BEARISH"
+            and (
+                cls.is_bottom_pivot_long(m)
+                or (
+                    m.close_price > m.open_price
+                    and (m.close_price - m.open_price) >= 0.35 * m.atr
+                    and m.close_price > m.ma15_curr
+                    and m.close_price > m.kc_middle
+                    and m.ma5_curr > m.ma15_curr
+                    and m.ma5_curr > m.ma5_prev
+                    and m.ma5_prev <= m.ma15_prev
+                )
             )
         )
         if is_bottom_flip:
@@ -906,7 +918,7 @@ class MasterGateFunnel:
         pivot_turn = priority in {
             "TRIGGER_TOP_PIVOT_CROSS", "TRIGGER_BOTTOM_PIVOT_CROSS",
         }
-        if (not pivot_turn and not breakout_priority and sign * (m.kc_middle - m.kc_middle_prev) <= 0):
+        if sign * (m.kc_middle - m.kc_middle_prev) <= 0:
             return f"BLOCKED_{side}_KC_DIRECTION"
         if not pivot_turn and not breakout_priority:
             slope_limit = MEME_MIN_KC_MIDDLE_SLOPE_ATR * m.atr
@@ -1029,10 +1041,7 @@ class MasterGateFunnel:
                 or side == "SHORT" and lower_wick > body
             ):
                 return block(f"VETO_{side}_PIVOT_EXHAUSTION_WICK")
-        if (
-            macro == ("BEARISH" if side == "LONG" else "BULLISH")
-            and not reverse_entry and not pivot_reversal
-        ):
+        if macro == ("BEARISH" if side == "LONG" else "BULLISH"):
             return block(f"BLOCKED_{side}_MACRO_TREND_CONFLICT")
         squeeze_breakout_long = side == "LONG" and cls.is_squeeze_breakout_long(m)
         # A fresh top/bottom turn bypasses only the lagging KC slope filter.
@@ -1475,7 +1484,7 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                     return False, "BLOCKED_SHORT_BREAKDOWN_CHANNEL_FLAT_OR_NARROW"
                 from core.symbol_aliases import is_meme_breakout_symbol
                 is_fresh_non_meme_breakdown = (
-                    not is_meme_breakout_symbol(m.symbol)
+                    (not is_meme_breakout_symbol(m.symbol) or cls.is_big_body_breakout(m, "SHORT"))
                     and w_ma5 is None and w_prev is None and l_prev is None
                     and m.open_price > m.kc_lower > m.close_price
                     and m.ma5_curr < m.ma5_prev
@@ -1695,7 +1704,7 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             #    【100% 嚴禁地板追空】！（一般標的新鮮下軌突破將交由 evaluate_entry_filters 進行 <= 0.5 ATR 追空距離審查）
             from core.symbol_aliases import is_meme_breakout_symbol
             is_fresh_non_meme_breakdown = (
-                not is_meme_breakout_symbol(m.symbol)
+                (not is_meme_breakout_symbol(m.symbol) or cls.is_big_body_breakout(m, "SHORT"))
                 and m.open_price > m.kc_lower > m.close_price
                 and m.ma5_curr < m.ma5_prev
                 and m.ma15_curr < m.ma15_prev
@@ -1924,6 +1933,8 @@ class MasterOpenGatekeeper(MasterGateFunnel):
         check_short = normalized in ("", "SHORT", "OPEN_SHORT")
 
         if check_long and m.close_price > m.ma5_curr and m.ma5_curr > m.ma5_prev:
+            if m.kc_middle <= m.kc_middle_prev or str(m.macro_trend).upper() == "BEARISH":
+                return GateDecision(False, "HOLD", "BLOCKED_LONG_ON_BEARISH_TREND", details)
             if already_holding and pos_side in ("LONG", "OPEN_LONG"):
                 return GateDecision(False, "HOLD", "BLOCKED_DUPLICATE_LONG_POSITION_ALREADY_HELD", details)
             is_flip = bool(already_holding and pos_side in ("SHORT", "OPEN_SHORT"))
@@ -1938,11 +1949,13 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                     "close_action": "CLOSE_SHORT" if is_flip else None,
                     "open_action": "OPEN_LONG",
                     "is_flip": is_flip,
-                    "header_exempt": True,
+                    "header_exempt": False,
                 },
             )
 
         if check_short and m.close_price < m.ma5_curr and m.ma5_curr < m.ma5_prev:
+            if m.kc_middle >= m.kc_middle_prev or str(m.macro_trend).upper() == "BULLISH":
+                return GateDecision(False, "HOLD", "BLOCKED_SHORT_ON_BULLISH_TREND", details)
             if already_holding and pos_side in ("SHORT", "OPEN_SHORT"):
                 return GateDecision(False, "HOLD", "BLOCKED_DUPLICATE_SHORT_POSITION_ALREADY_HELD", details)
             is_flip = bool(already_holding and pos_side in ("LONG", "OPEN_LONG"))
@@ -1957,7 +1970,7 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                     "close_action": "CLOSE_LONG" if is_flip else None,
                     "open_action": "OPEN_SHORT",
                     "is_flip": is_flip,
-                    "header_exempt": True,
+                    "header_exempt": False,
                     "oversold_exempt": True,
                 },
             )

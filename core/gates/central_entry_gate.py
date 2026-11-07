@@ -197,9 +197,7 @@ class CentralEntryGate:
             ) or (
                 side == "SHORT" and MasterGateFunnel.is_top_pivot_short(meme_snapshot)
             ) or meme_priority
-            meme_lagging_kc_override = meme_priority or (
-                side == "LONG" and MasterGateFunnel.is_early_breakout_long(meme_snapshot)
-            )
+            meme_lagging_kc_override = False
 
         # ══════════════════════════════════════════════════════════════════
         # 微觀動能突破 (Momentum Override / V-Shape Recovery & Breakdown)
@@ -293,9 +291,62 @@ class CentralEntryGate:
         ma5_c = float(parsed.get("ma5_curr", parsed.get("close", curr_price)))
         ma5_p = float(parsed.get("ma5_prev", ma5_c))
         kc_mid_val = float(parsed["kc_middle"])
+        kc_mid_slope_val = float(parsed.get("kc_middle_slope", 0.0))
+        kc_mid_prev_val = float(parsed.get("kc_middle_prev", kc_mid_val - kc_mid_slope_val))
         ma15_c = float(parsed.get("ma15_curr", parsed.get("ma15", kc_mid_val)))
         c_close = float(parsed.get("close", curr_price))
         c_open = float(parsed.get("open", curr_price))
+
+        # 🚨 2026-11-07 順勢鐵律：KC 中軌往下走空頭嚴禁開多單、KC 中軌往上走多頭嚴禁開空單！
+        # 對龍蝦 (龙虾/USDT)、1000PEPE/USDT 等妖幣必須中軌明確同向 (> 0 開多 / < 0 開空)，且全域任何標的絕不允許逆中軌方向開倉！
+        if is_meme_breakout_symbol(symbol):
+            if side == "LONG" and (kc_mid_slope_val <= 0.0 or kc_mid_val <= kc_mid_prev_val):
+                checks["kc_middle_direction"] = {
+                    "status": "FAIL",
+                    "kc_middle": kc_mid_val,
+                    "kc_middle_prev": kc_mid_prev_val,
+                    "kc_middle_slope": kc_mid_slope_val,
+                    "side": side,
+                }
+                return GateCheckResult(
+                    passed=False,
+                    reason="BLOCKED_LONG_ON_BEARISH_TREND",
+                    signal_id=sig_id,
+                    details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
+                    checks=checks,
+                )
+            if side == "SHORT" and (kc_mid_slope_val >= 0.0 or kc_mid_val >= kc_mid_prev_val):
+                checks["kc_middle_direction"] = {
+                    "status": "FAIL",
+                    "kc_middle": kc_mid_val,
+                    "kc_middle_prev": kc_mid_prev_val,
+                    "kc_middle_slope": kc_mid_slope_val,
+                    "side": side,
+                }
+                return GateCheckResult(
+                    passed=False,
+                    reason="BLOCKED_SHORT_ON_BULLISH_TREND",
+                    signal_id=sig_id,
+                    details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
+                    checks=checks,
+                )
+        else:
+            if side == "LONG" and (kc_mid_slope_val < 0.0 or kc_mid_val < kc_mid_prev_val):
+                return GateCheckResult(
+                    passed=False,
+                    reason="BLOCKED_LONG_ON_BEARISH_TREND",
+                    signal_id=sig_id,
+                    details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
+                    checks=checks,
+                )
+            if side == "SHORT" and (kc_mid_slope_val > 0.0 or kc_mid_val > kc_mid_prev_val):
+                return GateCheckResult(
+                    passed=False,
+                    reason="BLOCKED_SHORT_ON_BULLISH_TREND",
+                    signal_id=sig_id,
+                    details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
+                    checks=checks,
+                )
 
         from core.gates.direction_master_lock import evaluate_direction_master_lock
         dir_ok, dir_reason, dir_details = evaluate_direction_master_lock(
@@ -303,6 +354,7 @@ class CentralEntryGate:
             ma5_curr=ma5_c,
             ma5_prev=ma5_p,
             kc_middle=kc_mid_val,
+            kc_middle_prev=kc_mid_prev_val if is_meme_breakout_symbol(symbol) else None,
             is_swing_pivot=is_swing_pivot,
             direction_override=direction_override,
             ma15_curr=ma15_c,

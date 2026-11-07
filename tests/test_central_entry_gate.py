@@ -387,3 +387,56 @@ def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
         source="ENTRY_LONG_EMA_CROSS_MID",
     )
     assert res.passed is True
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])
+def test_meme_symbols_strictly_block_long_when_kc_middle_down_and_short_when_kc_middle_up(symbol):
+    """龍蝦與 1000PEPE：KC 中軌往下時嚴禁開多單、KC 中軌往上時嚴禁開空單（即便有 direction_override 或 V 轉也不得豁免）"""
+    df_down = _build_valid_long_frame()
+    df_down.loc[df_down.index[-1], "kc_middle"] = 99.4
+    df_down.loc[df_down.index[-2], "kc_middle"] = 99.8
+    df_down.loc[df_down.index[-1], "kc_middle_slope"] = -0.4
+    df_down.attrs["direction_override"] = True
+
+    res_long_on_down = CentralEntryGate.verify_and_authorize(
+        symbol=symbol,
+        side="LONG",
+        price=101.5,
+        klines_or_snapshot=df_down,
+        source="UNIFIED_PIPELINE|SWING_PIVOT",
+    )
+    assert res_long_on_down.passed is False
+    assert res_long_on_down.reason in (
+        "BLOCKED_LONG_ON_BEARISH_TREND",
+        "BLOCKED_LONG_KC_DIRECTION",
+        "BLOCKED_LONG_MACRO_TREND_CONFLICT",
+        "MEME_GATE_DATA_BLOCK",
+    )
+
+    df_up = _build_valid_long_frame()
+    df_up.loc[df_up.index[-1], "open"] = 101.5
+    df_up.loc[df_up.index[-1], "close"] = 99.0
+    df_up.loc[df_up.index[-1], "high"] = 101.6
+    df_up.loc[df_up.index[-1], "low"] = 98.8
+    df_up.loc[df_up.index[-1], "ma5"] = 99.2
+    df_up.loc[df_up.index[-2], "ma5"] = 100.5
+    df_up.loc[df_up.index[-1], "kc_middle"] = 100.2
+    df_up.loc[df_up.index[-2], "kc_middle"] = 99.8
+    df_up.loc[df_up.index[-1], "kc_middle_slope"] = 0.4
+    df_up.attrs["direction_override"] = True
+
+    res_short_on_up = CentralEntryGate.verify_and_authorize(
+        symbol=symbol,
+        side="SHORT",
+        price=99.0,
+        klines_or_snapshot=df_up,
+        source="UNIFIED_PIPELINE|SWING_PIVOT",
+    )
+    assert res_short_on_up.passed is False
+    assert res_short_on_up.reason in (
+        "BLOCKED_SHORT_ON_BULLISH_TREND",
+        "BLOCKED_SHORT_KC_DIRECTION",
+        "BLOCKED_SHORT_MACRO_TREND_CONFLICT",
+        "MEME_GATE_DATA_BLOCK",
+    )
+

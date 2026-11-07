@@ -2145,8 +2145,14 @@ class ExecutionManager:
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
                 # 🟢 斷頭與谷底轉折反手授權（Position Flip）：
-                # 當收線出現確定性真峰谷或結構貫穿反轉時，授權秒級反手，絕不放跑主升浪/主跌浪！
+                # 當收線出現確定性真峰谷或結構貫穿反轉時，授權秒級反手，但必須嚴格遵守 KC 中軌順勢鐵律！
                 from core.symbol_aliases import is_meme_breakout_symbol
+                if is_flip_to_long and kc_slope <= 0:
+                    logger.info(f"🚫 [BLOCKED_FLIP_LONG_ON_BEARISH_TREND] {symbol} KC 中軌下行或走平 (kc_slope={kc_slope:.6f})，嚴禁平空後逆勢反手開多！")
+                    is_flip_to_long = False
+                if is_flip_to_short and kc_slope >= 0:
+                    logger.info(f"🚫 [BLOCKED_FLIP_SHORT_ON_BULLISH_TREND] {symbol} KC 中軌上行或走平 (kc_slope={kc_slope:.6f})，嚴禁平多後逆勢反手開空！")
+                    is_flip_to_short = False
                 can_flip = is_meme_breakout_symbol(symbol) and (is_flip_to_long or is_flip_to_short)
 
                 if can_flip and (is_flip_to_long or is_flip_to_short):
@@ -4131,9 +4137,20 @@ class ExecutionManager:
                         "details": "觸及前波壓力位、KC上軌/MA5超買乖離過大或上影線大於實體，嚴禁在頂部壓力區追多！",
                     }
 
-                # 1. 空頭趨勢嚴禁開多：拉遠看是空頭 (is_zoomed_out_bearish) 或 3棒/5棒 KC 中軌下行 (kc_slope_3_ref <= 0 or kc_slope_5_ref < 0) 或 MA15 下行 (m15_c < m15_p or m15_slope_3_ref < 0 or m15_slope_5_ref < 0) 或 KC 單棒中軌下行 (kc_slope <= 0) 或收盤位於中軌/MA15之下 或 MA5 低於中軌 或 MA5 未向上 或 非陽線，100% 一票否決開多！
-                # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 3棒/5棒 KC 中軌上行 (kc_slope_3_ref >= 0 or kc_slope_5_ref > 0) 或 MA15 上行 (m15_c > m15_p or m15_slope_3_ref > 0 or m15_slope_5_ref > 0) 或 KC 單棒中軌上行 (kc_slope >= 0) 或收盤位於中軌/MA15之上 或 MA5 高於中軌 或 MA5 未向下 或 非陰線，100% 一票否決開空！
-                # 轉折特例 (is_swing_pivot) 豁免常規趨勢限制，但仍受嚴格拉遠大勢防護 (not is_zoomed_out_bearish/bullish)
+                # 1. 空頭趨勢嚴禁開多：拉遠看是空頭 (is_zoomed_out_bearish) 或 KC 單棒中軌下行 (kc_slope <= 0)，100% 無條件一票否決開多（含轉折特例）！
+                # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 KC 單棒中軌上行 (kc_slope >= 0)，100% 無條件一票否決開空（含轉折特例）！
+                if candidate_side == "LONG" and (is_zoomed_out_bearish or macro_trend == "BEARISH" or kc_slope <= 0):
+                    logger.info(
+                        f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} KC 中軌下行或空頭趨勢 "
+                        f"(zoomed_bear={is_zoomed_out_bearish}, macro={macro_trend}, kc_slope={kc_slope:.8f})，100% 絕對禁止在空頭下降通道中開多！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "KC 中軌向下走空頭趨勢，強制阻斷買多！"}
+                if candidate_side == "SHORT" and (is_zoomed_out_bullish or macro_trend == "BULLISH" or kc_slope >= 0):
+                    logger.info(
+                        f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} KC 中軌上行或多頭趨勢 "
+                        f"(zoomed_bull={is_zoomed_out_bullish}, macro={macro_trend}, kc_slope={kc_slope:.8f})，100% 絕對禁止在多頭上升通道中開空！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": "KC 中軌向上走多頭趨勢，強制阻斷賣空！"}
                 if not is_swing_pivot:
                     if candidate_side == "LONG" and (
                         is_zoomed_out_bearish
@@ -4585,6 +4602,8 @@ class ExecutionManager:
         if (
             held == "SHORT"
             and snapshot.is_closed
+            and snapshot.kc_middle > snapshot.kc_middle_prev
+            and str(snapshot.macro_trend).upper() != "BEARISH"
             and snapshot.close_price > snapshot.open_price
             and snapshot.close_price > snapshot.ma5_curr
             and snapshot.ma5_curr > snapshot.ma5_prev
@@ -4595,6 +4614,8 @@ class ExecutionManager:
         elif (
             held == "LONG"
             and snapshot.is_closed
+            and snapshot.kc_middle < snapshot.kc_middle_prev
+            and str(snapshot.macro_trend).upper() != "BULLISH"
             and snapshot.close_price < snapshot.open_price
             and snapshot.close_price < snapshot.ma5_curr
             and snapshot.ma5_curr < snapshot.ma5_prev
@@ -4605,6 +4626,14 @@ class ExecutionManager:
         if candidate is None:
             return None
         target_side, trigger = candidate
+        if (target_side == "LONG" and snapshot.kc_middle <= snapshot.kc_middle_prev) or (
+            target_side == "SHORT" and snapshot.kc_middle >= snapshot.kc_middle_prev
+        ):
+            return {
+                "success": False,
+                "side": target_side,
+                "reason": "BLOCKED_LONG_ON_BEARISH_TREND" if target_side == "LONG" else "BLOCKED_SHORT_ON_BULLISH_TREND",
+            }
         if symbol in getattr(account, "positions", {}):
             return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
         if not is_true_3pt_flip:
@@ -5069,8 +5098,27 @@ class ExecutionManager:
                 prev_f_row = frame.iloc[-2] if len(frame) >= 2 else last_f_row
                 f_is_closed = bool(last_f_row.get("is_closed", True))
                 eval_f_row = last_f_row if f_is_closed else prev_f_row
+                prev_eval_f_row = prev_f_row if f_is_closed else (frame.iloc[-3] if len(frame) >= 3 else prev_f_row)
                 eval_f_c = float(eval_f_row.get("close", price))
                 eval_f_o = float(eval_f_row.get("open", price))
+                from core.symbol_aliases import is_meme_breakout_symbol
+                if is_meme_breakout_symbol(symbol) and "kc_middle" in frame.columns and len(frame) >= 2:
+                    eval_kc_mid = float(eval_f_row.get("kc_middle", 0.0))
+                    prev_kc_mid = float(prev_eval_f_row.get("kc_middle", eval_kc_mid))
+                    if side.upper() == "LONG" and eval_kc_mid <= prev_kc_mid:
+                        cls._last_open_error[symbol] = "BLOCKED_LONG_ON_BEARISH_TREND"
+                        logger.critical(
+                            f"🛑 [EXECUTION_FAILSAFE_VETO_LONG_KC_DOWN] {symbol} 開多硬攔截：KC 中軌向下或走平 "
+                            f"(kc_mid={eval_kc_mid:.6f} <= prev={prev_kc_mid:.6f})，走空頭嚴禁開多單！"
+                        )
+                        return False
+                    if side.upper() == "SHORT" and eval_kc_mid >= prev_kc_mid:
+                        cls._last_open_error[symbol] = "BLOCKED_SHORT_ON_BULLISH_TREND"
+                        logger.critical(
+                            f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_KC_UP] {symbol} 開空硬攔截：KC 中軌向上或走平 "
+                            f"(kc_mid={eval_kc_mid:.6f} >= prev={prev_kc_mid:.6f})，走多頭嚴禁開空單！"
+                        )
+                        return False
                 is_entry_ma5_ma15_entry = entry_method_authority == "MA5_MA15_CROSS"
                 if side.upper() == "SHORT":
                     if eval_f_c >= eval_f_o and not is_entry_ma5_ma15_entry:

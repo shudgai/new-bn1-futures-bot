@@ -291,7 +291,7 @@ def evaluate_entry_method(
                 if (
                     (body >= 0.7 * reference_atr or math.isclose(body, 0.7 * reference_atr, rel_tol=1e-12))
                     and sign * (float(current["close"]) - middle) > 0
-                    and sign * (middle - float(previous["kc_middle"])) >= 0
+                    and sign * (middle - float(previous["kc_middle"])) > 0
                     and sign * (float(current["ma5"]) - float(previous["ma5"])) > 0
                     and sign * (current_quote - middle) > 0
                     and sign * (current_quote - float(current["ma5"])) > 0
@@ -328,14 +328,21 @@ def evaluate_entry_method(
         if fresh:
             midpoint = (float(pivot["open"]) + float(pivot["close"])) / 2
             for side in ("LONG", "SHORT"):
+                kc_direction_aligned = (
+                    float(current["kc_middle"]) > float(pivot["kc_middle"])
+                    if side == "LONG"
+                    else float(current["kc_middle"]) < float(pivot["kc_middle"])
+                )
                 confirmed = (
-                    float(pivot["low"]) < min(float(left["low"]), float(current["low"]))
+                    kc_direction_aligned
+                    and float(pivot["low"]) < min(float(left["low"]), float(current["low"]))
                     and float(pivot["low"]) < float(pivot["kc_lower"])
                     and float(current["close"]) > max(float(current["open"]), midpoint, float(current["ma5"]))
                     and float(current["ma5"]) > float(pivot["ma5"])
                     and current_quote > max(midpoint, float(current["ma5"]), float(pivot["low"]))
                     if side == "LONG" else
-                    float(pivot["high"]) > max(float(left["high"]), float(current["high"]))
+                    kc_direction_aligned
+                    and float(pivot["high"]) > max(float(left["high"]), float(current["high"]))
                     and float(pivot["high"]) > float(pivot["kc_upper"])
                     and float(current["close"]) < min(float(current["open"]), midpoint, float(current["ma5"]))
                     and float(current["ma5"]) < float(pivot["ma5"])
@@ -373,6 +380,10 @@ def evaluate_entry_method(
                 float(second["ma5"]) > float(first["ma5"])
                 if side == "LONG" else float(second["ma5"]) < float(first["ma5"])
             )
+            kc_direction = (
+                float(second["kc_middle"]) > float(first["kc_middle"])
+                if side == "LONG" else float(second["kc_middle"]) < float(first["kc_middle"])
+            )
             second_beyond_ma5 = (
                 second_close > float(second["ma5"])
                 if side == "LONG" else second_close < float(second["ma5"])
@@ -386,7 +397,7 @@ def evaluate_entry_method(
             )
             if (
                 first_inside and first_body_break and same_color and second_outside
-                and ma5_direction and second_beyond_ma5 and quote_beyond
+                and ma5_direction and kc_direction and second_beyond_ma5 and quote_beyond
             ):
                 bias = (
                     max(second_close, current_quote) - float(second["ma15"])
@@ -428,7 +439,12 @@ def evaluate_entry_method(
                         if side == "LONG"
                         else float(current["ma5"]) < float(previous["ma5"])
                     )
-                    if outside and ma5_direction:
+                    kc_direction = (
+                        float(current["kc_middle"]) > float(previous["kc_middle"])
+                        if side == "LONG"
+                        else float(current["kc_middle"]) < float(previous["kc_middle"])
+                    )
+                    if outside and ma5_direction and kc_direction:
                         candidates.append(_new_signal(
                             POST_CLOSE_KC_REENTRY, side, bars,
                             last_exit_timestamp=last_exit_timestamp,
@@ -456,11 +472,16 @@ def evaluate_entry_method(
                 else float(pivot["ma5"]) >= float(left["ma5"])
                 and float(current["ma5"]) < float(pivot["ma5"])
             )
+            kc_direction = (
+                float(current["kc_middle"]) > float(pivot["kc_middle"])
+                if side == "LONG"
+                else float(current["kc_middle"]) < float(pivot["kc_middle"])
+            )
             pivot_intact = (
                 current_quote > float(pivot["low"])
                 if side == "LONG" else current_quote < float(pivot["high"])
             )
-            if is_valley_or_peak and confirmation_color and ma5_turned and pivot_intact:
+            if is_valley_or_peak and confirmation_color and ma5_turned and kc_direction and pivot_intact:
                 candidates.append(_new_signal(THREE_BAR_PIVOT_REVERSAL, side, bars))
 
     if len(bars) >= 2 and expected_method in (None, MA5_MA15_CROSS):
@@ -468,11 +489,13 @@ def evaluate_entry_method(
         if (
             float(previous["ma5"]) <= float(previous["ma15"])
             and float(current["ma5"]) > float(current["ma15"])
+            and float(current["kc_middle"]) > float(previous["kc_middle"])
         ):
             candidates.append(_new_signal(MA5_MA15_CROSS, "LONG", bars))
         if (
             float(previous["ma5"]) >= float(previous["ma15"])
             and float(current["ma5"]) < float(current["ma15"])
+            and float(current["kc_middle"]) < float(previous["kc_middle"])
         ):
             candidates.append(_new_signal(MA5_MA15_CROSS, "SHORT", bars))
 
