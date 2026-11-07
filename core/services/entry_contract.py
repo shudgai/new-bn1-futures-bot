@@ -3130,14 +3130,17 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
             if side == "LONG"
             else min(opening, close) - low
         )
-        if wick >= body and wick >= 0.25 * atr:
-            veto(
-                "BLOCKED_LONG_WICK_SAME_BAR",
-                body=body,
-                wick=wick,
-                atr=atr,
-                bar_id=bar_id,
-            )
+        # 妖幣突破/起點開倉豁免同根細微上影線過濾 (Meme Breakout & Origin Exemption)
+        from core.symbol_aliases import is_meme_breakout_symbol
+        if not is_meme_breakout_symbol(symbol):
+            if wick >= body and wick >= 0.25 * atr:
+                veto(
+                    "BLOCKED_LONG_WICK_SAME_BAR",
+                    body=body,
+                    wick=wick,
+                    atr=atr,
+                    bar_id=bar_id,
+                )
     except ValueError:
         raise
     except (AttributeError, KeyError, TypeError, OverflowError) as exc:

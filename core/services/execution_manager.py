@@ -4572,41 +4572,27 @@ class ExecutionManager:
             return None
         candidate = MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
         is_true_3pt_flip = False
-        if exit_reason in {
-            "EXIT_SHORT_BOTTOM_GREEN_CANDLE_MA5",
-            "EXIT_LONG_TOP_RED_CANDLE_MA5",
-            "EXIT_SHORT_TRUE_VALLEY_BOTTOM",
-            "EXIT_LONG_TRUE_PEAK_TOP",
-            "EXIT_SHORT_FAST_BOTTOM_BREAK_MA15_MID",
-            "EXIT_LONG_FAST_TOP_BREAK_MA15_MID",
-            "EXIT_SHORT_STRUCTURE_BREAK_050ATR",
-            "EXIT_LONG_STRUCTURE_BREAK_050ATR",
-            "EXIT_LONG_EMERGENCY_WATERFALL",
-            "EXIT_SHORT_EMERGENCY_SURGE",
-            "EXIT_LONG_KC_THREE_BAR_FLIP",
-            "EXIT_SHORT_KC_THREE_BAR_FLIP",
-        }:
-            held = str(position_side or "").upper()
-            if (
-                held == "SHORT"
-                and snapshot.is_closed
-                and snapshot.close_price > snapshot.open_price
-                and snapshot.close_price > snapshot.ma5_curr
-                and snapshot.ma5_curr > snapshot.ma5_prev
-            ):
-                if candidate is None:
-                    candidate = ("LONG", "TRIGGER_TRUE_BOTTOM_3PT_FLIP")
-                is_true_3pt_flip = True
-            elif (
-                held == "LONG"
-                and snapshot.is_closed
-                and snapshot.close_price < snapshot.open_price
-                and snapshot.close_price < snapshot.ma5_curr
-                and snapshot.ma5_curr < snapshot.ma5_prev
-            ):
-                if candidate is None:
-                    candidate = ("SHORT", "TRIGGER_TRUE_TOP_3PT_FLIP")
-                is_true_3pt_flip = True
+        held = str(position_side or "").upper()
+        if (
+            held == "SHORT"
+            and snapshot.is_closed
+            and snapshot.close_price > snapshot.open_price
+            and snapshot.close_price > snapshot.ma5_curr
+            and snapshot.ma5_curr > snapshot.ma5_prev
+        ):
+            if candidate is None:
+                candidate = ("LONG", "TRIGGER_BULLISH_ORIGIN_MA5_TURN")
+            is_true_3pt_flip = True
+        elif (
+            held == "LONG"
+            and snapshot.is_closed
+            and snapshot.close_price < snapshot.open_price
+            and snapshot.close_price < snapshot.ma5_curr
+            and snapshot.ma5_curr < snapshot.ma5_prev
+        ):
+            if candidate is None:
+                candidate = ("SHORT", "TRIGGER_BEARISH_ORIGIN_MA5_TURN")
+            is_true_3pt_flip = True
         if candidate is None:
             return None
         target_side, trigger = candidate
