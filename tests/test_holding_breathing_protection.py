@@ -119,3 +119,57 @@ def test_holding_allows_exit_after_profit_expansion():
     )
     # 實質展開後真峰頂放行平多
     assert exit_decision is True
+
+
+def test_no_per_position_hard_stop_only_account_waterfall_and_circuit_breaker():
+    """
+    驗證「不要硬止損，只留帳戶硬止損，大瀑布及市場熔斷！」：
+    1. 單筆部位虧損超過 3 ATR (DISASTER_LOSS_3ATR) 或反側外軌 (DISASTER_RAIL) 且未構成結構反轉時，不觸發單筆硬止損。
+    2. check_waterfall_emergency_exit 廢除 0.5 ATR 偽硬止損 (penetrates_mid_ma15)，僅在單根 K 棒極速崩跌/暴拉 >= 1.2 ATR 且貫穿 KC 中軌的大瀑布時才觸發。
+    """
+    import time
+    import pandas as pd
+    from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+    from core.gates.unified_pipeline_gates import ExitGate
+
+    assert "CIRCUIT_BREAKER_HARD_SL" not in ExitGate.ABSOLUTE_SAFETY_REASONS
+    assert "HARD_STOP_LOSS" not in ExitGate.ABSOLUTE_SAFETY_REASONS
+    assert "OPPOSITE_KC_BAND_BREACH" not in ExitGate.ABSOLUTE_SAFETY_REASONS
+    assert "ACCOUNT_HARD_STOP" in ExitGate.ABSOLUTE_SAFETY_REASONS
+    assert "EXIT_BY_EXTREME_WATERFALL" in ExitGate.ABSOLUTE_SAFETY_REASONS
+    assert "CIRCUIT_BREAKER" in ExitGate.ABSOLUTE_SAFETY_REASONS
+
+    now_min = int(time.time() // 60)
+    # 模擬盤中小紅 K 僅低於中軌與 MA15 0.6 ATR，但當根開盤至現價跌幅僅 0.2 ATR（非大瀑布）
+    df_minor_dip = pd.DataFrame([
+        {
+            "timestamp": (now_min - 1) * 60_000,
+            "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0,
+            "kc_upper": 103.0, "kc_middle": 100.0, "kc_lower": 97.0,
+            "ma5": 100.0, "ma15": 100.0, "atr": 1.0, "is_closed": True,
+        },
+        {
+            "timestamp": now_min * 60_000,
+            "open": 99.5, "high": 99.6, "low": 99.2, "close": 99.3,
+            "kc_upper": 103.0, "kc_middle": 100.0, "kc_lower": 97.0,
+            "ma5": 99.6, "ma15": 100.0, "atr": 1.0, "is_closed": False,
+        },
+    ])
+    pos_long = {
+        "symbol": "龙虾/USDT",
+        "side": "LONG",
+        "entry_price": 100.2,
+        "open_timestamp": (now_min - 5) * 60,
+    }
+    wf_hit, wf_reason, _ = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
+        "龙虾/USDT", pos_long, {}, 99.3, frame=df_minor_dip,
+    )
+    assert wf_hit is False, f"非大瀑布不得因跌破中軌 0.5 ATR 觸發偽硬止損: {wf_reason}"
+
+    # 真正大瀑布：單根盤中下殺 >= 1.2 ATR (99.5 -> 98.1 = 1.4 ATR) 且跌破 KC 中軌 -> 允許大瀑布避險平倉
+    wf_hit_true, wf_reason_true, _ = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
+        "龙虾/USDT", pos_long, {}, 98.1, frame=df_minor_dip,
+    )
+    assert wf_hit_true is True
+    assert wf_reason_true == "EXIT_LONG_EMERGENCY_WATERFALL"
+

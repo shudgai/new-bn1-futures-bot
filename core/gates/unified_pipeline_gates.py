@@ -100,22 +100,24 @@ class ExitGate:
                 )
         return False, ""
 
-    # 第一級絕對安全避險出口：帳戶硬止損、大瀑布、熔斷及反側破位優先於一般持倉鎖定。
+    # 第一級絕對安全避險出口：僅保留帳戶硬止損、大瀑布及市場熔斷（取消單筆硬止損與反側外軌止損）
     ABSOLUTE_SAFETY_REASONS = frozenset({
-        "CIRCUIT_BREAKER_HARD_SL",
-        "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
-        "HARD_STOP_LOSS",
+        "ACCOUNT_HARD_STOP",
+        "ACCOUNT_CIRCUIT_BREAKER",
+        "帳戶硬止損",
+        "MARGIN_LOSS",
+        "LIQUIDATION",
+        "CIRCUIT_BREAKER",
         "CIRCUIT_BREAKER_EMERGENCY_DATA_OUTAGE",
+        "DATA_OUTAGE_HARD_STOP",
         "EXIT_BY_EXTREME_WATERFALL",
+        "EXIT_LONG_EMERGENCY_WATERFALL",
+        "EXIT_SHORT_EMERGENCY_SURGE",
         "EMERGENCY_DUMP_EXIT",
         "EMERGENCY_EXTREME_ADVERSE_BAR",
         "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
         "EXIT_LONG_ON_TOP_WATERFALL_DUMP",
         "FAIL_SAFE_EMERGENCY_EXIT",
-        "OPPOSITE_KC_BAND_BREACH",
-        "EXIT_LONG_ON_KC_LOWER_BREACH",
-        "EXIT_SHORT_ON_KC_UPPER_BREACH",
-        "STRUCTURAL_FAILURE_EXIT",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",
@@ -730,28 +732,12 @@ class ExitGate:
         c_prev = raw_df.iloc[-2] if has_candle_history else None
 
         # ══════════════════════════════════════════════════════════════════
-        # 第一級：絕對風險保護出口（最高優先級，任何持倉防洗條件不得攔截）
-        # 價格／ATR 止損依持倉政策關閉；後續獨立災難出口維持生效。
+        # 第一級：絕對風險保護出口（僅保留帳戶硬止損、大瀑布及市場熔斷；單筆價格／ATR 硬止損與反側外軌止損全面停用）
         # ══════════════════════════════════════════════════════════════════
         adverse_distance = (
             entry_p - quote if side == "LONG" else quote - entry_p
         )
         adverse_pct = adverse_distance / entry_p
-        valid_atr = math.isfinite(atr_val) and atr_val > 0
-        hard_stop_by_atr = valid_atr and adverse_distance >= 3.0 * atr_val
-        hard_stop_by_pct = adverse_pct >= 0.02
-        from core.services.exits.hard_stop_service import price_atr_stop_disabled
-
-        if (not price_atr_stop_disabled(pos) and side in ("LONG", "SHORT")
-                and adverse_distance > 0 and (hard_stop_by_atr or hard_stop_by_pct)):
-            return True, "CIRCUIT_BREAKER_HARD_SL", {
-                **meta,
-                "adverse_distance": adverse_distance,
-                "adverse_loss_pct": adverse_pct,
-                "hard_stop_atr_triggered": hard_stop_by_atr,
-                "hard_stop_pct_triggered": hard_stop_by_pct,
-                "hard_stop_policy": "3_ATR_OR_2_PERCENT",
-            }
 
         # 極端反向瀑布依 1.5 ATR 且貫穿 KC 中軌判定，優先於一般持倉防洗條件。
         from core.gates.holding_protection_gate import is_same_bar_as_entry
@@ -788,34 +774,6 @@ class ExitGate:
                         **meta,
                         "cause": f"低位大買盤垂直軋空避險: 單根大陽棒實體={c_close_v-c_open_v:.6f}，達 1.5 ATR 並貫穿 KC 中軌，立即市價平空！",
                     }
-
-        # 1.3 反側外軌破位異常緊急平倉 (OPPOSITE_KC_BAND_BREACH，最高安全防護)
-        breached = (side == "LONG" and quote < kc_low) or (side == "SHORT" and quote > kc_up)
-        if breached and not meme_strategy_disaster_disabled(symbol, "OPPOSITE_KC_BAND_BREACH"):
-            macro_aligned = (
-                (side == "LONG" and macro_trend == "BULLISH")
-                or (side == "SHORT" and macro_trend == "BEARISH")
-            )
-            confirm = ExitGate._closed_bar_opposite_breach(raw_df, side)
-            band = kc_low if side == "LONG" else kc_up
-            if not macro_aligned or confirm["confirmed"] or not confirm["valid"]:
-                return True, "OPPOSITE_KC_BAND_BREACH", {
-                    **meta,
-                    "macro_trend": macro_trend,
-                    "closed_bar_breach": confirm,
-                    "cause": (
-                        f"{'多單跌破反側KC下軌' if side == 'LONG' else '空單突破反側KC上軌'}異常逃命: "
-                        f"quote={quote:.6f} band={band:.6f} macro={macro_trend} "
-                        f"closed_depth_atr={confirm.get('depth_atr')}"
-                    ),
-                }
-            meta["opposite_breach_veto"] = {
-                "reason": "VETO_OPPOSITE_BREACH_MACRO_ALIGNED_UNCONFIRMED",
-                "macro_trend": macro_trend,
-                "closed_bar_breach": confirm,
-                "quote": quote,
-                "band": band,
-            }
 
         # ══════════════════════════════════════════════════════════════════
         # 第二級：淨 ROE 階梯鎖利（獲利了結出口，不受一般趨勢續抱 VETO 阻擋）

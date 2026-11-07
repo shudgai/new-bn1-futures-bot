@@ -158,10 +158,10 @@ def test_cost_shield_releases_beyond_one_atr(side, offset):
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
-def test_cost_shield_never_blocks_three_atr_disaster_loss(side):
+def test_per_position_three_atr_disaster_loss_is_disabled_in_favor_of_structure(side):
     result = shield_verdict(side, "STRUCTURE_EXIT_PROBE", -3.01)
     assert result.verdict == "ALLOW"
-    assert result.code == f"EXIT_{side}_DISASTER_LOSS_3ATR"
+    assert result.code == f"EXIT_{side}_STRUCTURE_BREAK_050ATR"
 
 
 # Owner 2026-11-03 "回踩不平倉，開倉後就死抱到轉向": inside the cost shield only a confirmed
@@ -228,7 +228,7 @@ def test_kc_flip_waits_for_closed_bar(side):
 
 
 @pytest.mark.parametrize("side", ["SHORT", "LONG"])
-def test_final_exit_boundary_allows_only_a_fresh_closed_opposite_rail_disaster(side):
+def test_final_exit_boundary_blocks_per_position_opposite_rail_stop(side):
     from core.services.exits.authorized_position_exit import automated_position_exit_allowed
 
     close = 0.004699
@@ -240,7 +240,7 @@ def test_final_exit_boundary_allows_only_a_fresh_closed_opposite_rail_disaster(s
         "open_timestamp": time.time() - 40 * 60,
     }
     data = frame(side, 0.004698, close, FRESH_PREV_MA5)
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         "1000PEPE/USDT", position, {}, "OPPOSITE_KC_BAND_BREACH",
         price, frame=data,
     )

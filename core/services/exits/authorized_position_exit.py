@@ -86,20 +86,9 @@ class UltimateExitGatekeeper:
             return False
 
         from core.gates.ultimate_short_exit_gatekeeper import (
-            DEFER, DISASTER_RAIL_REASONS, UltimateShortExitGatekeeper,
+            DEFER, UltimateShortExitGatekeeper,
         )
-        from core.symbol_aliases import is_meme_breakout_symbol
 
-        if is_meme_breakout_symbol(symbol):
-            side = str(position.get("side") or "").upper()
-            rail_reason = DISASTER_RAIL_REASONS.get(side)
-            if rail_reason:
-                rail_verdict = UltimateShortExitGatekeeper.evaluate(
-                    symbol, position, metadata, rail_reason, exit_price,
-                    frame=frame, is_bar_closed=is_bar_closed,
-                )
-                if rail_verdict.allowed and rail_verdict.code == rail_reason:
-                    return True
         meme_verdict = UltimateShortExitGatekeeper.evaluate(
             symbol, position, metadata, reason, exit_price,
             frame=frame, is_bar_closed=is_bar_closed,

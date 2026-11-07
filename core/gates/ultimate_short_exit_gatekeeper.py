@@ -413,16 +413,13 @@ class UltimateShortExitGatekeeper:
             return hold(entry_bar or "VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
         from core.gates.master_gate_funnel import meme_distance_atr
 
-        # Disaster 1: adverse distance from entry beyond 3.0 ATR (live quote allowed).
-        # ATR is the last completed bar before the live candle, so it works on the entry candle.
+        # 單筆部位固定 3.0 ATR 硬止損與反側外軌硬止損已依「不要硬止損，只留帳戶硬止損，大瀑布及市場熔斷！」全面停用
         live_atr = _float(closed.iloc[-1].get("atr"))
         loss_atr = 0.0
         if live_atr is not None and live_atr > 0:
             disaster_atr = meme_distance_atr(symbol, live_atr)
             loss_atr = -sign * (quote - entry) / disaster_atr
             evidence["loss_atr"] = round(loss_atr, 4)
-            if loss_atr > DISASTER_LOSS_ATR:
-                return allow(DISASTER_LOSS_REASONS[side])
 
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
@@ -473,10 +470,7 @@ class UltimateShortExitGatekeeper:
             if live_atr is not None and live_atr > 0 and abs(loss_atr) <= COST_SHIELD_ATR and turn_candidate:
                 return hold(f"VETO_HOLD_{side}_COST_SHIELD")
             return hold(f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED")
-        # Disaster 2: completed close beyond the opposite KC rail.
-        if (side == "SHORT" and close > fields["kc_upper"]) or (
-                side == "LONG" and close < fields["kc_lower"]):
-            return allow(DISASTER_RAIL_REASONS[side])
+        # 單筆部位反側外軌硬止損 (DISASTER_RAIL_REASONS) 已停用：只留帳戶硬止損、大瀑布及市場熔斷！
 
         # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit - 優先於趨勢波段續抱審查)
         # 核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底/峰頂市價平倉獲利了結！
@@ -775,25 +769,21 @@ class UltimateShortExitGatekeeper:
             })
 
             if side == "LONG" and price < live_open:
-                # 條件 1：即時價貫穿跌破 KC 中軌與 MA15 深度 >= 0.5 ATR
-                penetrates_mid_ma15 = (price <= (kc_mid - 0.5 * dist_atr)) and (price <= (ma15 - 0.5 * dist_atr))
-                # 條件 2：單根盤中 K 棒下殺幅度超過 1.2 ATR 且跌破中軌
+                # 僅認單根盤中 K 棒極速大瀑布下殺幅度超過 1.2 ATR 且跌破 KC 中軌（廢除 0.5 ATR 偽硬止損）
                 single_bar_dump = ((live_open - price) >= 1.2 * dist_atr) and (price < kc_mid)
 
-                if penetrates_mid_ma15 or single_bar_dump:
+                if single_bar_dump:
                     reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["LONG"]
-                    evidence["trigger"] = "PENETRATES_MID_MA15" if penetrates_mid_ma15 else "SINGLE_BAR_DUMP"
+                    evidence["trigger"] = "SINGLE_BAR_DUMP"
                     return True, reason, evidence
 
             elif side == "SHORT" and price > live_open:
-                # 條件 1：即時價貫穿突破 KC 中軌與 MA15 深度 >= 0.5 ATR
-                penetrates_mid_ma15 = (price >= (kc_mid + 0.5 * dist_atr)) and (price >= (ma15 + 0.5 * dist_atr))
-                # 條件 2：單根盤中 K 棒拉升幅度超過 1.2 ATR 且突破中軌
+                # 僅認單根盤中 K 棒極速大瀑布拉升幅度超過 1.2 ATR 且突破 KC 中軌（廢除 0.5 ATR 偽硬止損）
                 single_bar_pump = ((price - live_open) >= 1.2 * dist_atr) and (price > kc_mid)
 
-                if penetrates_mid_ma15 or single_bar_pump:
+                if single_bar_pump:
                     reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["SHORT"]
-                    evidence["trigger"] = "PENETRATES_MID_MA15" if penetrates_mid_ma15 else "SINGLE_BAR_PUMP"
+                    evidence["trigger"] = "SINGLE_BAR_PUMP"
                     return True, reason, evidence
 
             return False, "NO_WATERFALL_CRITERIA_MET", evidence
