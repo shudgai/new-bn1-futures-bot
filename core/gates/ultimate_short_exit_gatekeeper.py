@@ -644,7 +644,8 @@ class UltimateShortExitGatekeeper:
             (entry - trough_val) / entry * 5.0 if (side == "SHORT" and entry > 0)
             else ((peak_val - entry) / entry * 5.0 if (side == "LONG" and entry > 0) else 0.0)
         )
-        wave_expanded_for_fast_exit = wave_favorable_atr >= 1.5 or wave_favorable_roe >= 0.05 or loss_atr >= 1.0
+        in_profit_for_fast_exit = (side == "LONG" and close > entry) or (side == "SHORT" and close < entry)
+        wave_expanded_for_fast_exit = (wave_favorable_atr >= 1.5 or wave_favorable_roe >= 0.05) and in_profit_for_fast_exit
         fast_reversal = (
             -sign * (close - fields["open"]) > 0
             and candle_body >= 0.35 * raw_atr
@@ -682,6 +683,19 @@ class UltimateShortExitGatekeeper:
         buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
         evidence["structure_line"] = buffer_line
         beyond_buffer = -sign * (close - buffer_line) > 0
+
+        # 🚨【核心硬鎖：順勢走勢 KC 沒翻向，中間 100% 一票否決中途割肉/提前平倉，死抱到峰谷】
+        # 做多時：只要 KC 中軌維持向上 (kc_middle >= kc_middle_prev 或 macro_trend == BULLISH)，
+        # 中間的任何 1m 回踩或陰線下殺，絕不允許被普通結構突破 (STRUCTURE_BREAK) 或偽頂部平倉提前洗出場！
+        # 必須死抱主升浪，直到走到真峰頂 (True Peak) 或階梯鎖利才准平多！
+        if side == "LONG" and is_kc_up_header and not in_profit_for_fast_exit:
+            return hold("VETO_HOLD_LONG_UPWARD_KC_UNTIL_TRUE_PEAK")
+
+        # 做空時：只要 KC 中軌維持向下 (kc_middle <= kc_middle_prev 或 macro_trend == BEARISH)，
+        # 中間的任何 1m 反抽或陽線拉升，絕不允許被普通結構突破或偽谷底平倉提前洗出場！
+        # 必須死抱主降浪，直到走到真谷底 (True Valley) 或階梯鎖利才准平空！
+        if side == "SHORT" and is_kc_down_header and not in_profit_for_fast_exit:
+            return hold("VETO_HOLD_SHORT_DOWNWARD_KC_UNTIL_TRUE_VALLEY")
 
         # 🚀 頂部/底部大實體 K 線貫穿極速平倉通道 (Fast Top / Bottom Exit Channel)
         # 解決龍蝦/PEPE峰頂滯後平多：脫離成本保護盾(Cost Shield)後，當收線時出現大實體逆向K線(陰線下殺 Body >= 0.35 ATR 貫穿 KC 中軌與 MA15 且 MA5 死叉 MA15)，
