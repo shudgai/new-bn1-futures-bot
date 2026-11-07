@@ -240,12 +240,22 @@ def _outer_rail_true_pivot_release(
         # 空單真谷底平倉鐵律（True Valley Exit）：
         # 1. 必須收出具有明確向上動能的陽線 (c3 - o3 >= 0.35 * atr2)
         # 2. 必須強勢收盤站上 MA5 (c3 > ma5_3) 且站上中間棒高點或實體中點
-        # 3. 若依然壓制在 MA15 之下且僅為微幅小反彈，100% 判定為下跌途中的健康反抽，絕非真谷底！
+        # 3. 谷底探底顯著性（Prominence）與防回踩過敏：
+        #    - 中間棒 Low 必須明確探底：(l1 - l2 >= 0.45 * atr2) 或實體下殺 (o2 - c2 >= 0.45 * atr2) 或衝出下軌深度 (kc_l2 - l2 >= 0.45 * atr2)。
+        #    - 若中間棒僅為扁平十字線 (Doji) 或探底幅度微弱 (< 0.45 * atr2)，確認棒 c3 必須實質突破左棒起跌高點 (c3 > h1)，
+        #      否則 100% 判定為「下跌途中的箱體震盪或回踩確認 (PULLBACK)」，絕非真谷底！
+        is_prominent_valley = (
+            (l1 - l2) >= 0.45 * atr2
+            or (o2 - c2) >= 0.45 * atr2
+            or (kc_l2 - l2) >= 0.45 * atr2
+            or c3 > h1
+        )
         is_strong_rebound_candle = (c3 - o3) >= 0.35 * atr2
         is_true_valley = (
             at_outer_rail
             and l2 < l1
             and l2 < l3
+            and is_prominent_valley
             and c3 > o3
             and is_strong_rebound_candle
             and c3 > mid2
@@ -270,11 +280,22 @@ def _outer_rail_true_pivot_release(
         # 多單真峰頂平倉鐵律（True Peak Exit）：
         # 1. 若 1m 收盤價仍位於 MA15 上方、MA5 未死叉 MA15 且仍在 1.0 ATR 成本保護區內，100% 認定為主升浪回踩洗盤 (如 10:48 之 0.0050025)，嚴禁平多！
         # 2. 必須收出具有明確向下下殺動能的陰線 (o3 - c3 >= 0.35 * atr2) 且跌破 MA5、MA5 明確下彎
+        # 3. 峰頂衝頂顯著性（Prominence）與防回踩過敏：
+        #    - 中間棒 High 必須明確衝頂：(h2 - h1 >= 0.45 * atr2) 或實體拉升 (c2 - o2 >= 0.45 * atr2) 或衝出上軌深度 (h2 - kc_u2 >= 0.45 * atr2)。
+        #    - 若中間棒僅為扁平十字線 (Doji) 或衝頂幅度微弱 (< 0.45 * atr2)，確認棒 c3 必須實質跌破左棒起漲低點 (c3 < l1)，
+        #      否則 100% 判定為「上漲途中的箱體震盪或回踩確認 (PULLBACK)」，絕非真峰頂！
+        is_prominent_peak = (
+            (h2 - h1) >= 0.45 * atr2
+            or (c2 - o2) >= 0.45 * atr2
+            or (h2 - kc_u2) >= 0.45 * atr2
+            or c3 < l1
+        )
         is_strong_drop_candle = (o3 - c3) >= 0.35 * atr2
         is_true_peak = (
             at_outer_rail
             and h2 > h1
             and h2 > h3
+            and is_prominent_peak
             and c3 < o3
             and is_strong_drop_candle
             and c3 < mid2
