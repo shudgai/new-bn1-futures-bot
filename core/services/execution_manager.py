@@ -1009,7 +1009,7 @@ class ExecutionManager:
                 tier1_drawback_pct=0.20,
             )
 
-            # 🛡️ 妖幣平倉唯一結構出口：收線 + 持倉滿 5 根 + 0.50 ATR/MA5 金死叉/反向實體 AND 鎖（加上階梯鎖利 Lock Floor 強制保護）
+            # 🛡️ 妖幣平倉唯一結構出口：收線 + 真峰谷確認 / 完整結構破壞 / 緊急斷路器（未達真峰谷或結構未破前嚴禁因 Stage 1 鎖利提前平倉！）
             from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
             if _is_meme_exit_symbol(symbol):
                 from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
@@ -1018,20 +1018,6 @@ class ExecutionManager:
                     getattr(account, "position_meta", {}).get(symbol, {}),
                     curr_quote, raw_df,
                 )
-                if not structure_reason and staged_lock_hit and staged_lock_reason in (
-                    "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
-                    "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
-                ):
-                    lock_verdict = UltimateShortExitGatekeeper.evaluate(
-                        symbol,
-                        current_position,
-                        getattr(account, "position_meta", {}).get(symbol, {}),
-                        staged_lock_reason,
-                        curr_quote,
-                        frame=raw_df,
-                    )
-                    if lock_verdict.allowed:
-                        structure_reason = lock_verdict.code
                 is_emerg_bar_open = bool(
                     raw_df is not None
                     and isinstance(raw_df, pd.DataFrame)

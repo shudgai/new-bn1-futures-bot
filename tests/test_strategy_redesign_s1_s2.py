@@ -322,4 +322,70 @@ def test_execution_safety_manual_review_halt_and_duplicate_exit_blocked():
     asyncio.run(_run())
 
 
+def test_lobster_1842_premature_exit_before_peak_blocked():
+    """
+    回歸測試 龙虾/USDT 18:22 開多 @ 0.01763176 -> 18:42 回踩 @ 0.01783822：
+    當尚未確認真峰頂（且價格仍穩守 MA15 上方或 KC 向上未破結構）時，
+    嚴禁因 EXIT_BY_STAGED_PROFIT_LOCK_TIER1 或假頂部提前平倉！
+    """
+    now_min = int(time.time() // 60)
+    rows = []
+    for i in range(5):
+        rows.append({
+            "timestamp": (now_min - 6 + i) * 60_000,
+            "open": 0.01765 + i * 0.00008,
+            "close": 0.01772 + i * 0.00008,
+            "high": 0.01775 + i * 0.00008,
+            "low": 0.01764 + i * 0.00008,
+            "ma5": 0.01770 + i * 0.00007,
+            "ma15": 0.01765 + i * 0.00004,
+            "kc_middle": 0.01766 + i * 0.00004,
+            "kc_upper": 0.01778 + i * 0.00004,
+            "kc_lower": 0.01754 + i * 0.00004,
+            "atr": 0.00003,
+            "is_closed": True,
+        })
+    # 18:41 bar: 小陰線回踩至 0.017852，但仍位於 MA5 (0.017855 附近) 與 MA15 (0.01781) 之上，且未觸及 KC 上軌 (0.01798)
+    rows.append({
+        "timestamp": (now_min - 1) * 60_000,
+        "open": 0.017860,
+        "close": 0.017852,
+        "high": 0.017865,
+        "low": 0.017848,
+        "ma5": 0.017855,
+        "ma15": 0.017810,
+        "kc_middle": 0.017820,
+        "kc_upper": 0.017980,
+        "kc_lower": 0.017660,
+        "atr": 0.000030,
+        "is_closed": True,
+    })
+    df_1842 = pd.DataFrame(rows)
+    df_1842.attrs.update(timeframe_ms=60_000, snapshot_ms=time.time() * 1000)
+
+    pos = {
+        "symbol": "龙虾/USDT",
+        "side": "LONG",
+        "entry_price": 0.01763176,
+        "qty": 20843.0,
+        "open_timestamp": (now_min - 20) * 60,
+        "highest_price": 0.01800,
+        "peak_price": 0.01800,
+    }
+    # 1. 結構探針不得平倉
+    cand = UltimateShortExitGatekeeper.structure_exit_candidate(
+        "龙虾/USDT", pos, {}, 0.01783822, df_1842,
+    )
+    assert cand is None
+
+    # 2. 即便傳入 EXIT_BY_STAGED_PROFIT_LOCK_TIER1，只要未跌破 MA15 / 未到真峰頂，一律 VETO_HOLD 續抱！
+    verdict_lock = UltimateShortExitGatekeeper.evaluate(
+        "龙虾/USDT", pos, {}, "EXIT_BY_STAGED_PROFIT_LOCK_TIER1", 0.01783822,
+        frame=df_1842, is_bar_closed=True,
+    )
+    assert verdict_lock.verdict == "HOLD"
+    assert verdict_lock.code == "VETO_HOLD_LONG_ABOVE_MA15"
+
+
+
 

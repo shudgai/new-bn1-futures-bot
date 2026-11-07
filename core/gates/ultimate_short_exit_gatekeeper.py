@@ -460,13 +460,6 @@ class UltimateShortExitGatekeeper:
             # Only the freshly completed 1m bar can authorize a trend exit.
             return hold("VETO_EXIT_BAR_NOT_CLOSED")
 
-        # 🎯 階梯鎖利與移動止盈優先放行 (Staged Profit Lock & Trailing Stop Exit)
-        # 核心鐵律：已展開獲利且達到階梯鎖利/保本防守價，100% 豁免 MA15/KC中軌趨勢續抱與同向 K 棒一票否決，落袋保利！
-        is_profit_lock_reason = any(token in normalized for token in PROFIT_LOCK_TOKENS)
-        is_net_profit_favorable = (side == "LONG" and quote >= entry * 1.001) or (side == "SHORT" and quote <= entry * 0.999)
-        if is_profit_lock_reason and is_net_profit_favorable:
-            return allow(normalized)
-
         close, kc_mid = fields["close"], fields["kc_middle"]
         # Exits are only authorized on a fresh, opposite-signal bar. A position-direction
         # completed bar is a hard hold even when the quote is near the entry.
@@ -602,10 +595,7 @@ class UltimateShortExitGatekeeper:
 
         # 🛡️ 通道 B：一般波段「未過 MA15 100% 死抱防過敏」(Trend-Holding Immunity)
         # 多頭主升浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
-        # 🚨【核心硬鎖：持多單時未達「真峰頂 2 點」100% 一票否決平多 (Anti-Premature Long Exit)】：
-        # 當持有一單多單且大趨勢標頭為「KC 向上 (只評估多單)」時：
-        # 只要 1m 收盤價仍位於 MA5 上方 (close_price >= ma5_curr) 或 MA5 仍向上發散 (ma5_curr >= ma5_prev)，
-        # 100% 認定為「多頭順勢拉升 / 正常洗盤」，Gate 100% 傳回 False (HOLD) 阻斷平多 API！
+        # 🚨【核心硬鎖：持多單時未達「真峰頂」100% 一票否決平多 (Anti-Premature Long Exit)】：
         if side == "LONG":
             if close >= fields["ma15"] and fields["ma5"] >= fields["ma15"]:
                 return hold("VETO_HOLD_LONG_ABOVE_MA15")
@@ -619,10 +609,7 @@ class UltimateShortExitGatekeeper:
                 return hold("VETO_HOLD_LONG_ON_GREEN_CANDLE")
 
         # 空頭主降浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
-        # 🚨【核心硬鎖：持空單時未達「真谷底 2 點」100% 一票否決平空 (Anti-Premature Short Exit)】：
-        # 當持有一單空單且大趨勢標頭為「KC 向下 (只評估空單)」時：
-        # 只要 1m 收盤價仍位於 MA5 下方 (close_price <= ma5_curr) 或 MA5 仍向下發散 (ma5_curr <= ma5_prev)，
-        # 100% 認定為「空頭順勢下殺 / 正常洗盤」，Gate 100% 傳回 False 阻斷平空 API！
+        # 🚨【核心硬鎖：持空單時未達「真谷底」100% 一票否決平空 (Anti-Premature Short Exit)】：
         if side == "SHORT":
             if close <= fields["ma15"] and fields["ma5"] <= fields["ma15"]:
                 return hold("VETO_HOLD_SHORT_BELOW_MA15")
@@ -634,6 +621,12 @@ class UltimateShortExitGatekeeper:
                     return hold("VETO_HOLD_SHORT_MA5_NOT_TURNING_UP")
             if close < fields["open"]:
                 return hold("VETO_HOLD_SHORT_ON_RED_CANDLE")
+
+        # 🎯 階梯鎖利與移動止盈放行（僅在已跌破/突破 MA15 且脫離多頭/空頭主升浪保護後才允許執行）
+        is_profit_lock_reason = any(token in normalized for token in PROFIT_LOCK_TOKENS)
+        is_net_profit_favorable = (side == "LONG" and quote >= entry * 1.001) or (side == "SHORT" and quote <= entry * 0.999)
+        if is_profit_lock_reason and is_net_profit_favorable:
+            return allow(normalized)
 
         candle_body = abs(close - fields["open"])
         fresh_ma_cross = -sign * (fields["ma5_prev"] - fields["ma15_prev"]) <= 0 and -sign * (fields["ma5"] - fields["ma15"]) > 0
