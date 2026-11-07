@@ -100,7 +100,7 @@ class ExitGate:
                 )
         return False, ""
 
-    # 第一級絕對安全避險出口：僅保留帳戶硬止損、大瀑布及市場熔斷（取消單筆硬止損與反側外軌止損）
+    # 第一級絕對安全避險出口：僅保留帳戶硬止損、大瀑布及市場熔斷（取消單筆硬止損與反側外軌止損），並加入趨勢結構徹底反轉保護出口
     ABSOLUTE_SAFETY_REASONS = frozenset({
         "ACCOUNT_HARD_STOP",
         "ACCOUNT_CIRCUIT_BREAKER",
@@ -118,6 +118,9 @@ class ExitGate:
         "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
         "EXIT_LONG_ON_TOP_WATERFALL_DUMP",
         "FAIL_SAFE_EMERGENCY_EXIT",
+        "EXIT_LONG_TREND_REVERSAL",
+        "EXIT_SHORT_TREND_REVERSAL",
+        "EXIT_BY_TREND_REVERSAL",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
         "PROFIT_LOCK",

@@ -806,6 +806,17 @@ def validate_exit_math(
             details.update(exit_type="MIDLINE_REVERSAL", close=close, middle=middle, previous_middle=previous_middle)
             return True, "EXIT_MATH_LONG_MIDLINE_REVERSAL", details
 
+    is_trend_reversal = any(token in norm_reason for token in (
+        "TREND_REVERSAL", "EXIT_LONG_TREND_REVERSAL", "EXIT_SHORT_TREND_REVERSAL",
+    ))
+    if is_trend_reversal:
+        if side == "LONG" and (close <= middle or previous_close <= previous_middle or middle < previous_middle):
+            details.update(exit_type="TREND_REVERSAL", close=close, middle=middle, previous_middle=previous_middle)
+            return True, "EXIT_MATH_LONG_TREND_REVERSAL", details
+        elif side == "SHORT" and (close >= middle or previous_close >= previous_middle or middle > previous_middle):
+            details.update(exit_type="TREND_REVERSAL", close=close, middle=middle, previous_middle=previous_middle)
+            return True, "EXIT_MATH_SHORT_TREND_REVERSAL", details
+
     curr_ma15 = _number(current.get("ma15")) or _number(current.get("ema15"))
     prev_ma15 = _number(previous.get("ma15")) or _number(previous.get("ema15"))
     is_ema_reversal = any(token in norm_reason for token in (

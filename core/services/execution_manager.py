@@ -4557,6 +4557,14 @@ class ExecutionManager:
             if candidate is None:
                 candidate = ("SHORT", "TRIGGER_BEARISH_ORIGIN_MA5_TURN")
             is_true_3pt_flip = True
+
+        if exit_reason in ("EXIT_LONG_TREND_REVERSAL", "EXIT_SHORT_TREND_REVERSAL"):
+            if held == "LONG" and (snapshot.kc_middle < snapshot.kc_middle_prev or str(snapshot.macro_trend).upper() == "BEARISH"):
+                candidate = ("SHORT", "TRIGGER_TREND_REVERSAL_FLIP")
+                is_true_3pt_flip = True
+            elif held == "SHORT" and (snapshot.kc_middle > snapshot.kc_middle_prev or str(snapshot.macro_trend).upper() == "BULLISH"):
+                candidate = ("LONG", "TRIGGER_TREND_REVERSAL_FLIP")
+                is_true_3pt_flip = True
         if candidate is None:
             return None
         target_side, trigger = candidate

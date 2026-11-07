@@ -34,6 +34,10 @@ STRUCTURE_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_STRUCTURE_BREAK_050ATR",
     "LONG": "EXIT_LONG_STRUCTURE_BREAK_050ATR",
 }
+TREND_REVERSAL_EXIT_REASONS = {
+    "SHORT": "EXIT_SHORT_TREND_REVERSAL",
+    "LONG": "EXIT_LONG_TREND_REVERSAL",
+}
 KC_MIDDLE_MA15_BREAK_REASONS = {
     "SHORT": "EXIT_SHORT_KC_MIDDLE_MA15_BREAK",
     "LONG": "EXIT_LONG_KC_MIDDLE_MA15_BREAK",
@@ -114,6 +118,7 @@ OWN_STRUCTURE_REASONS = frozenset(
      *(r.upper() for r in TRUE_OUTER_PIVOT_EXIT_REASONS.values()),
      *(r.upper() for r in FAST_TOP_EXIT_REASONS.values()),
      *(r.upper() for r in BOTTOM_REVERSAL_EXIT_REASONS.values()),
+     *(r.upper() for r in TREND_REVERSAL_EXIT_REASONS.values()),
      "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
      "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
      "EXIT_BY_SCHEME1_PROFIT_LOCK_MA3_MA15",
@@ -586,6 +591,27 @@ class UltimateShortExitGatekeeper:
                 or "REVERSAL" in normalized
             ):
                 return allow(BOTTOM_REVERSAL_EXIT_REASONS[side])
+
+        # ──【通道 T：結構性趨勢反轉平倉與反手機制 (Trend Reversal Exit Gate)】──
+        # 依據最新授權：若持有多單時，行情出現「KC 中軌明確向下 + MA5/15 死叉跌破中軌」，
+        # 判定多頭結構已徹底破壞，允許及時認錯平多，並無縫切換為空頭審查！
+        # 空單同理：若持空單時，行情出現「KC 中軌明確向上 + MA5/15 金叉突破中軌」，及時認錯平空！
+        bars_held_reversal = bar_minute - _minute(opened)
+        if bars_held_reversal >= 1:
+            if side == "LONG":
+                is_kc_down = (fields["kc_middle"] < fields["kc_middle_prev"]) or (str(fields.get("macro_trend", "")).upper() == "BEARISH")
+                is_ma_bearish = (fields["ma5"] < fields["ma15"])
+                is_below_mid = (close < fields["kc_middle"])
+                is_momentum_bearish = (close < fields["ma5"]) or (fields["ma5"] < fields["ma5_prev"]) or (close < fields["open"])
+                if is_kc_down and is_ma_bearish and is_below_mid and is_momentum_bearish:
+                    return allow(TREND_REVERSAL_EXIT_REASONS[side])
+            elif side == "SHORT":
+                is_kc_up = (fields["kc_middle"] > fields["kc_middle_prev"]) or (str(fields.get("macro_trend", "")).upper() == "BULLISH")
+                is_ma_bullish = (fields["ma5"] > fields["ma15"])
+                is_above_mid = (close > fields["kc_middle"])
+                is_momentum_bullish = (close > fields["ma5"]) or (fields["ma5"] > fields["ma5_prev"]) or (close > fields["open"])
+                if is_kc_up and is_ma_bullish and is_above_mid and is_momentum_bullish:
+                    return allow(TREND_REVERSAL_EXIT_REASONS[side])
 
         # 🛡️ 通道 B：一般波段「未過 MA15 100% 死抱防過敏」(Trend-Holding Immunity)
         # 多頭主升浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
