@@ -101,7 +101,17 @@ def _timestamp_ms(value: Any) -> float | None:
 
 
 def _live_candle_veto(frame: Any, symbol: str, side: str, quote: float) -> str | None:
-    if not is_meme_breakout_symbol(symbol):
+    if side != "SHORT" or not is_meme_breakout_symbol(symbol):
+        if side == "LONG" and is_meme_breakout_symbol(symbol) and isinstance(frame, pd.DataFrame) and not frame.empty and "is_closed" in frame.columns:
+            try:
+                live_rows = frame.loc[frame["is_closed"].eq(False)]
+                if len(live_rows) == 1 and live_rows.index[-1] == frame.index[-1]:
+                    opened = _number(live_rows.iloc[-1], "open")
+                    current_quote = float(quote)
+                    if opened is not None and opened > 0 and math.isfinite(current_quote) and current_quote <= opened:
+                        return "BLOCKED_ENTRY_METHOD_LONG_LIVE_CANDLE_NOT_GREEN"
+            except Exception:
+                pass
         return None
     attrs = getattr(frame, "attrs", None)
     if not isinstance(attrs, dict) or attrs.get("entry_finality_verified") is not True:
@@ -113,14 +123,14 @@ def _live_candle_veto(frame: Any, symbol: str, side: str, quote: float) -> str |
         or "timestamp" not in frame.columns
         or "open" not in frame.columns
     ):
-        return "BLOCKED_ENTRY_METHOD_LIVE_CANDLE_UNAVAILABLE"
+        return "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE"
     try:
         interval = float(attrs.get("timeframe_ms") or 0)
         snapshot_ms = float(attrs.get("snapshot_ms") or 0)
         age_ms = time.time() * 1000 - snapshot_ms
         live_rows = frame.loc[frame["is_closed"].eq(False)]
     except (TypeError, ValueError, OverflowError):
-        return "BLOCKED_ENTRY_METHOD_LIVE_CANDLE_UNAVAILABLE"
+        return "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE"
     if (
         interval != 60_000
         or not math.isfinite(snapshot_ms)
@@ -129,7 +139,7 @@ def _live_candle_veto(frame: Any, symbol: str, side: str, quote: float) -> str |
         or len(live_rows) != 1
         or live_rows.index[-1] != frame.index[-1]
     ):
-        return "BLOCKED_ENTRY_METHOD_LIVE_CANDLE_UNAVAILABLE"
+        return "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE"
     row = live_rows.iloc[-1]
     timestamp = _timestamp_ms(row.get("timestamp"))
     opened = _number(row, "open")
@@ -139,7 +149,7 @@ def _live_candle_veto(frame: Any, symbol: str, side: str, quote: float) -> str |
     try:
         current_quote = float(quote)
     except (TypeError, ValueError, OverflowError):
-        return "BLOCKED_ENTRY_METHOD_LIVE_CANDLE_UNAVAILABLE"
+        return "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE"
     if (
         timestamp is None
         or not timestamp <= snapshot_ms < timestamp + interval
@@ -149,11 +159,9 @@ def _live_candle_veto(frame: Any, symbol: str, side: str, quote: float) -> str |
         or not math.isfinite(current_quote)
         or current_quote <= 0
     ):
-        return "BLOCKED_ENTRY_METHOD_LIVE_CANDLE_UNAVAILABLE"
-    if side == "SHORT" and current_quote >= opened:
+        return "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_UNAVAILABLE"
+    if current_quote >= opened:
         return "BLOCKED_ENTRY_METHOD_SHORT_LIVE_CANDLE_NOT_RED"
-    if side == "LONG" and current_quote <= opened:
-        return "BLOCKED_ENTRY_METHOD_LONG_LIVE_CANDLE_NOT_GREEN"
     return None
 
 

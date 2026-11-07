@@ -68,11 +68,17 @@ PROFIT_LOCK_GATE_REASONS = {
 PROFIT_LOCK_TOKENS = (
     "STAGED_PROFIT_LOCK", "PROFIT_LOCK", "RATCHET_PROFIT_LOCK",
     "TRAILING_PROFIT_LOCK", "EXIT_BY_SCHEME1_PROFIT_LOCK",
+    "STAGE1_LADDER_STOP", "STAGE2_LADDER_STOP", "STAGE3_LADDER_STOP", "STAGE4_LADDER_STOP",
+    "TRAILING_STOP", "BREAKEVEN_PROTECTION", "LADDER_STOP",
 )
 
 BOTTOM_REVERSAL_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_BOTTOM_GREEN_CANDLE_MA5",
     "LONG": "EXIT_LONG_TOP_RED_CANDLE_MA5",
+}
+EMERGENCY_CIRCUIT_BREAKER_REASONS = {
+    "SHORT": "EXIT_SHORT_EMERGENCY_SURGE",
+    "LONG": "EXIT_LONG_EMERGENCY_WATERFALL",
 }
 
 ALLOW, HOLD, DEFER = "ALLOW", "HOLD", "DEFER"
@@ -117,7 +123,11 @@ WATERFALL_EXIT_TOKENS = (
     "EXIT_BY_EXTREME_WATERFALL", "WATERFALL_DROP", "LIVE_ADVERSE_WATERFALL",
 )
 OWN_DISASTER_REASONS = frozenset(
-    r.upper() for r in (*DISASTER_LOSS_REASONS.values(), *DISASTER_RAIL_REASONS.values())
+    r.upper() for r in (
+        *DISASTER_LOSS_REASONS.values(),
+        *DISASTER_RAIL_REASONS.values(),
+        *EMERGENCY_CIRCUIT_BREAKER_REASONS.values(),
+    )
 )
 ORDINARY_PULLBACK_EXIT_TOKENS = ("PULLBACK", "RETRACE", "RETRACEMENT")
 
@@ -247,6 +257,9 @@ def _outer_rail_true_pivot_release(
         return is_true_valley
 
     if side == "LONG":
+        ma15_3 = _float(b3.get("ma15"))
+        if ma15_3 is not None and c3 >= ma15_3 and ma5_3 >= ma15_3 and (c3 - entry) < 1.0 * atr2:
+            return False
         peak_high = max(h1, h2)
         gain_atr = (peak_high - entry) / atr2
         gain_roe = (peak_high - entry) / entry * 5.0
@@ -255,8 +268,8 @@ def _outer_rail_true_pivot_release(
         in_profit = c3 > entry and quote > entry
 
         # 多單真峰頂平倉鐵律（True Peak Exit）：
-        # 1. 必須收出具有明確向下下殺動能的陰線 (o3 - c3 >= 0.35 * atr2)
-        # 2. 必須明確跌破 MA5 (c3 < ma5_3) 且跌破中間棒低點或實體中點
+        # 1. 若 1m 收盤價仍位於 MA15 上方、MA5 未死叉 MA15 且仍在 1.0 ATR 成本保護區內，100% 認定為主升浪回踩洗盤 (如 10:48 之 0.0050025)，嚴禁平多！
+        # 2. 必須收出具有明確向下下殺動能的陰線 (o3 - c3 >= 0.35 * atr2) 且跌破 MA5、MA5 明確下彎
         is_strong_drop_candle = (o3 - c3) >= 0.35 * atr2
         is_true_peak = (
             at_outer_rail
@@ -316,16 +329,6 @@ class UltimateShortExitGatekeeper:
                 position, frame, price,
             )
             if waterfall_evidence is None:
-                # 🚨 檢查盤中極速瀑布緊急出場通道 check_waterfall_emergency_exit (100% 豁免 is_bar_closed)
-                is_emerg, emerg_reason, emerg_ev = cls.check_waterfall_emergency_exit(
-                    symbol, position, metadata, price, frame=frame
-                )
-                if is_emerg:
-                    logger.warning(
-                        "[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s (via emergency waterfall) "
-                        "evidence=%s", symbol, side, emerg_reason, emerg_ev,
-                    )
-                    return ExitVerdict(ALLOW, emerg_reason, emerg_ev)
                 return hold("VETO_WATERFALL_LIVE_BODY_OR_STRUCTURE_NOT_CONFIRMED")
             waterfall_evidence.update({"symbol": symbol, "reason": reason})
             logger.warning(
@@ -335,6 +338,20 @@ class UltimateShortExitGatekeeper:
                 waterfall_evidence["quote"], waterfall_evidence["kc_middle"],
             )
             return ExitVerdict(ALLOW, "EXIT_BY_EXTREME_WATERFALL", waterfall_evidence)
+
+        if normalized in EMERGENCY_CIRCUIT_BREAKER_REASONS.values() or any(
+            token in normalized for token in ("EMERGENCY_WATERFALL", "EMERGENCY_SURGE", "WATERFALL_CIRCUIT_BREAKER")
+        ):
+            is_emerg_wf, emerg_wf_reason, emerg_wf_ev = cls.check_waterfall_emergency_exit(
+                symbol, position, metadata, price, frame=frame
+            )
+            if is_emerg_wf:
+                logger.warning(
+                    "[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s (intra-bar emergency circuit breaker) evidence=%s",
+                    symbol, side, emerg_wf_reason, emerg_wf_ev,
+                )
+                return ExitVerdict(ALLOW, emerg_wf_reason, emerg_wf_ev)
+            return hold("VETO_EMERGENCY_CIRCUIT_BREAKER_NOT_CONFIRMED")
 
         if any(token in normalized for token in ORDINARY_PULLBACK_EXIT_TOKENS):
             return hold("VETO_HOLD_ORDINARY_PULLBACK_UNTIL_STRUCTURE_BREAK")
@@ -376,6 +393,7 @@ class UltimateShortExitGatekeeper:
         # Disaster 1: adverse distance from entry beyond 3.0 ATR (live quote allowed).
         # ATR is the last completed bar before the live candle, so it works on the entry candle.
         live_atr = _float(closed.iloc[-1].get("atr"))
+        loss_atr = 0.0
         if live_atr is not None and live_atr > 0:
             disaster_atr = meme_distance_atr(symbol, live_atr)
             loss_atr = -sign * (quote - entry) / disaster_atr
@@ -383,20 +401,6 @@ class UltimateShortExitGatekeeper:
             if loss_atr > DISASTER_LOSS_ATR:
                 return allow(DISASTER_LOSS_REASONS[side])
 
-        # 🚨 盤中極速大瀑布緊急避險出口 (Waterfall Emergency Exit - 100% 豁免 is_bar_closed 收線限制)
-        # 當候選平倉原因為 WATERFALL 相關、或盤中報價觸發瀑布熔斷且不是普通探針結構探測時放行
-        if any(token in normalized for token in WATERFALL_EXIT_TOKENS) or (
-            normalized not in ("STRUCTURE_EXIT_PROBE",) and is_bar_closed is not False
-        ):
-            is_emerg_wf, emerg_wf_reason, emerg_wf_ev = cls.check_waterfall_emergency_exit(
-                symbol, position, metadata, quote, frame=frame
-            )
-            if is_emerg_wf:
-                logger.warning(
-                    "[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s (intra-bar emergency circuit breaker) evidence=%s",
-                    symbol, side, emerg_wf_reason, emerg_wf_ev,
-                )
-                return ExitVerdict(ALLOW, emerg_wf_reason, emerg_wf_ev)
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
         current, previous = closed.iloc[-1], closed.iloc[-2]
@@ -451,6 +455,13 @@ class UltimateShortExitGatekeeper:
                 side == "LONG" and close < fields["kc_lower"]):
             return allow(DISASTER_RAIL_REASONS[side])
 
+        # 🎯 階梯鎖利與移動止盈優先放行 (Staged Profit Lock & Trailing Stop Exit)
+        # 核心鐵律：已展開獲利且達到階梯鎖利/保本防守價，100% 豁免 MA15/KC中軌趨勢續抱一票否決，落袋保利！
+        is_profit_lock_reason = any(token in normalized for token in PROFIT_LOCK_TOKENS)
+        is_net_profit_favorable = (side == "LONG" and quote >= entry * 1.001) or (side == "SHORT" and quote <= entry * 0.999)
+        if is_profit_lock_reason and is_net_profit_favorable:
+            return allow(normalized)
+
         # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit - 優先於趨勢波段續抱審查)
         # 核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底/峰頂市價平倉獲利了結！
         # 絕不拖延、絕不坐過山車回到中軌或反側外軌，一票否決「健康回踩續抱 (VETO_HOLD)」，100% 豁免持倉滿 5 根限制！
@@ -459,19 +470,67 @@ class UltimateShortExitGatekeeper:
         ):
             return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
 
-        # ⚡ 谷底/頂部陽線/陰線極速平倉斷路器 (Bottom / Top Reversal Exit Gate - 2026-11-06 最新授權)
-        # 1. 空單谷底極速平倉：持有空單且價格處於超賣谷底區 (close < fields["ma15"])，
-        #    當 1m 收盤為實體綠 K (close > open, body >= 0.35 * atr) 且收盤站上 MA5 (close > ma5) 且 MA5 向上拐頭 (ma5 > ma5_prev)，
-        #    100% 豁免 MA15 / KC 中軌到達限制，立即秒級授權平空，第一時間落袋為安，並授權反手開多！
-        # 2. 多單頂部極速平倉：持有多單且價格處於頂部超買區 (close > fields["ma15"])，
-        #    當 1m 收盤為實體紅 K (close < open, body >= 0.35 * atr) 且收盤跌破 MA5 (close < ma5) 且 MA5 向下拐頭 (ma5 < ma5_prev)，
-        #    100% 豁免 MA15 / KC 中軌到達限制，立即秒級授權平多，第一時間落袋為安，並授權反手開空！
-        if side == "SHORT" and close < fields["ma15"]:
-            is_bottom_green_candle = (
-                close > fields["open"]
-                and (close - fields["open"]) >= 0.35 * atr
-                and close > fields["ma5"]
+        # ⚡ 通道 A：真峰谷/V轉「最高優先級極速平倉與反手」(True Peak/Valley Override)
+        # 核心鐵律：持倉防洗！開倉後不要隨便平倉，只有當波段實質展開獲利 (peak_gain >= 0.5 ATR 或 peak_roe >= 5%)，
+        # 且當前確實處於正淨利獲利區 (空單 quote < entry，多單 quote > entry)，才放行谷底陽線/頂部陰線極速平倉！
+        # 100% 豁免 MA15 / KC 中軌到達限制與持倉滿 5 根限制！
+        raw_atr = fields["atr"]
+        pos_trough = _float(position.get("trough_price") or position.get("lowest_price"))
+        pos_peak = _float(position.get("highest_price") or position.get("peak_price"))
+        try:
+            open_min = _minute(opened)
+            held_bars = closed[closed["timestamp"].apply(_minute) >= open_min]
+            bars_low = float(held_bars["low"].min()) if len(held_bars) > 0 else fields["low"]
+            bars_high = float(held_bars["high"].max()) if len(held_bars) > 0 else fields["high"]
+        except Exception:
+            bars_low = fields["low"]
+            bars_high = fields["high"]
+        trough_candidates = [v for v in (pos_trough, bars_low, fields["low"], close, quote) if v is not None and v > 0]
+        peak_candidates = [v for v in (pos_peak, bars_high, fields["high"], close, quote) if v is not None and v > 0]
+        trough_val = min(trough_candidates) if trough_candidates else entry
+        peak_val = max(peak_candidates) if peak_candidates else entry
+
+        buffer_line = kc_mid - sign * STRUCTURE_BUFFER_ATR * atr
+        evidence["structure_line"] = buffer_line
+        beyond_buffer = -sign * (close - buffer_line) > 0
+        fresh_ma_cross = -sign * (fields["ma5_prev"] - fields["ma15_prev"]) <= 0 and -sign * (fields["ma5"] - fields["ma15"]) > 0
+        full_structure_break_ready = (
+            beyond_buffer
+            and fresh_ma_cross
+            and -sign * (close - fields["ma15"]) > 0
+            and -sign * (quote - fields["ma15"]) > 0
+            and abs(loss_atr) > COST_SHIELD_ATR
+            and (bar_minute - _minute(opened)) >= MIN_BARS_HELD
+        )
+
+        # 1. 【真谷底 2 點成立 ➔ 100% 瞬間平空 (True Bottom Exit - 取消 Body >= 0.35 ATR 限制，100% 豁免 KC 中軌限制)】：
+        #    - 審查條件（必須同時成立）：
+        #            (1) 1m 收盤價實質站上 MA5 (close > ma5) 且站上 MA15 (close > ma15)
+        #            (2) MA5 明確向上拐頭 (ma5 > ma5_prev) 且金叉 MA15 (ma5 > ma15)
+        #            (3) 持有空單且已展開波段獲利，或已滿足真谷底極值
+        #    🚨【空頭主降浪一票否決】：若 1m 收盤價仍位於 MA5 下方或 MA15 下方，或 MA5 未金叉 MA15，
+        #       100% 判定為「空頭順勢壓制 / 正常反彈洗盤」，100% 傳回 False (HOLD) 阻斷提前平空！
+        if side == "SHORT" and not full_structure_break_ready:
+            gain_atr_short = (entry - trough_val) / raw_atr if raw_atr > 0 else 0.0
+            gain_roe_short = (entry - trough_val) / entry * 5.0 if entry > 0 else 0.0
+            profit_expanded_short = gain_atr_short >= 0.5 or gain_roe_short >= 0.05
+            in_profit_short = (quote < entry and close < entry) or (gain_atr_short >= 1.5 and close < entry)
+            has_bottom_extremum = (
+                pos_trough is not None
+                or trough_val < fields["kc_lower"]
+            )
+            # 必須實質站上 MA5 與 MA15，且 MA5 向上拐頭並金叉 MA15
+            is_ma15_and_ma5_broken = (
+                close > fields["ma5"]
+                and (close > fields["ma15"] or fields["ma5"] > fields["ma15"])
                 and fields["ma5"] > fields["ma5_prev"]
+            )
+            is_bottom_green_candle = (
+                profit_expanded_short
+                and in_profit_short
+                and has_bottom_extremum
+                and close > fields["open"]
+                and is_ma15_and_ma5_broken
             )
             if is_bottom_green_candle and (
                 normalized in OWN_STRUCTURE_REASONS
@@ -481,12 +540,34 @@ class UltimateShortExitGatekeeper:
             ):
                 return allow(BOTTOM_REVERSAL_EXIT_REASONS[side])
 
-        if side == "LONG" and close > fields["ma15"]:
-            is_top_red_candle = (
-                close < fields["open"]
-                and (fields["open"] - close) >= 0.35 * atr
-                and close < fields["ma5"]
+        # 2. 【真峰頂 2 點成立 ➔ 100% 瞬間平多 (True Top Exit - 取消 Body >= 0.35 ATR 限制，100% 豁免 KC 中軌限制)】：
+        #    - 審查條件（必須同時成立）：
+        #            (1) 1m 收盤價實質跌破 MA5 (close < ma5) 且跌破 MA15 (close < ma15)
+        #            (2) MA5 明確向下拐頭 (ma5 < ma5_prev) 且死叉 MA15 (ma5 < ma15)
+        #            (3) 持有多單且已展開波段獲利，或已滿足真峰頂極值
+        #    🚨【多頭主升浪一票否決】：若 1m 收盤價仍位於 MA5 上方或 MA15 上方，或 MA5 未死叉 MA15，
+        #       100% 判定為「多頭順勢支撐 / 正常回踩洗盤」，100% 傳回 False (HOLD) 阻斷提前平多！
+        if side == "LONG" and not full_structure_break_ready:
+            gain_atr_long = (peak_val - entry) / raw_atr if raw_atr > 0 else 0.0
+            gain_roe_long = (peak_val - entry) / entry * 5.0 if entry > 0 else 0.0
+            profit_expanded_long = gain_atr_long >= 0.5 or gain_roe_long >= 0.05
+            in_profit_long = (quote > entry and close > entry) or (gain_atr_long >= 1.5 and close > entry)
+            has_top_extremum = (
+                pos_peak is not None
+                or peak_val > fields["kc_upper"]
+            )
+            # 必須實質跌破 MA5 與 MA15，且 MA5 向下拐頭並死叉 MA15
+            is_ma15_and_ma5_broken = (
+                close < fields["ma5"]
+                and (close < fields["ma15"] or fields["ma5"] < fields["ma15"])
                 and fields["ma5"] < fields["ma5_prev"]
+            )
+            is_top_red_candle = (
+                profit_expanded_long
+                and in_profit_long
+                and has_top_extremum
+                and close < fields["open"]
+                and is_ma15_and_ma5_broken
             )
             if is_top_red_candle and (
                 normalized in OWN_STRUCTURE_REASONS
@@ -496,62 +577,79 @@ class UltimateShortExitGatekeeper:
             ):
                 return allow(BOTTOM_REVERSAL_EXIT_REASONS[side])
 
-        # 🛡️ 核心鐵律：多頭主升浪 100% 強制死抱鐵律 (Trend Wave Hold Gate)
-        # 1. 【大趨勢「KC 向上」未跌破 MA15 100% 絕對禁止平多（最高鐵律）】：
-        #    當 1m 收盤價仍位於 MA15 上方 (close >= ma15) 時，100% 認定為「多頭主升浪貼軌推升 / 洗盤」，【Gate 100% 傳回 False 阻斷平多】！強制死抱部位讓利潤奔跑！
-        # 2. 【MA5 未實質死叉 100% 絕對禁止平多】：
-        #    評估平多時，若 MA5 尚未實質向下死叉 MA15 (ma5 >= ma15)，100% 傳回 False 一票否決，嚴禁被單根上影線或回踩小紅 K 過敏騙出場！
-        # 3. 【綠 K 陽線 100% 絕對禁止平多】：
-        #    當前 1m K 棒收盤若為「實體綠 K / 陽線 (close > open)」，100% 傳回 False 一票否決！
-        # 4. 【只有大實體紅 K 實質貫穿跌破 MA15 ＋ MA5 死叉才授權平多】：
-        #    唯有同時滿足：(1) 實體紅 K (close < open 且 open - close >= 0.35 * atr)
-        #                 (2) 收盤價實質跌破 MA15 (close < ma15) 且跌破 KC 中軌 (close < kc_middle)
-        #                 (3) MA5 實質死叉 MA15 (ma5 < ma15)
-        #    若不滿足，100% 傳回 False 阻斷平多！
+        # 🛡️ 通道 B：一般波段「未過 MA15 100% 死抱防過敏」(Trend-Holding Immunity)
+        # 多頭主升浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
+        # 🚨【核心硬鎖：持多單時未達「真峰頂 2 點」100% 一票否決平多 (Anti-Premature Long Exit)】：
+        # 當持有一單多單且大趨勢標頭為「KC 向上 (只評估多單)」時：
+        # 只要 1m 收盤價仍位於 MA5 上方 (close_price >= ma5_curr) 或 MA5 仍向上發散 (ma5_curr >= ma5_prev)，
+        # 100% 認定為「多頭順勢拉升 / 正常洗盤」，Gate 100% 傳回 False (HOLD) 阻斷平多 API！
         if side == "LONG":
-            if close >= fields["ma15"]:
+            is_kc_up_header = fields["kc_middle"] > fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BULLISH"
+            if is_kc_up_header:
+                if close >= fields["ma5"]:
+                    return hold("VETO_HOLD_LONG_ABOVE_MA5")
+                if fields["ma5"] >= fields["ma5_prev"]:
+                    return hold("VETO_HOLD_LONG_MA5_NOT_TURNING_DOWN")
+            if close >= fields["ma15"] and fields["ma5"] >= fields["ma15"]:
                 return hold("VETO_HOLD_LONG_ABOVE_MA15")
-            if fields["ma5"] >= fields["ma15"]:
-                return hold("VETO_HOLD_LONG_MA5_ABOVE_MA15")
             if close > fields["open"]:
                 return hold("VETO_HOLD_LONG_ON_GREEN_CANDLE")
-            is_true_top_break = (
-                close < fields["open"]
-                and (fields["open"] - close) >= 0.35 * atr
-                and close < fields["ma15"]
-                and close < fields["kc_middle"]
-                and fields["ma5"] < fields["ma15"]
-            )
-            if not is_true_top_break:
-                return hold("VETO_HOLD_LONG_TREND_WAVE_ABOVE_MID")
 
         # 空頭主降浪 100% 強制死抱鐵律 (Symmetric Anti-Premature Exit Gate)
+        # 🚨【核心硬鎖：持空單時未達「真谷底 2 點」100% 一票否決平空 (Anti-Premature Short Exit)】：
+        # 當持有一單空單且大趨勢標頭為「KC 向下 (只評估空單)」時：
+        # 只要 1m 收盤價仍位於 MA5 下方 (close_price <= ma5_curr) 或 MA5 仍向下發散 (ma5_curr <= ma5_prev)，
+        # 100% 認定為「空頭順勢下殺 / 正常洗盤」，Gate 100% 傳回 False 阻斷平空 API！
         if side == "SHORT":
-            if close <= fields["ma15"]:
+            is_kc_down_header = fields["kc_middle"] < fields["kc_middle_prev"] or str(fields.get("macro_trend", "")).upper() == "BEARISH"
+            if is_kc_down_header:
+                if close <= fields["ma5"]:
+                    return hold("VETO_HOLD_SHORT_BELOW_MA5")
+                if fields["ma5"] <= fields["ma5_prev"]:
+                    return hold("VETO_HOLD_SHORT_MA5_NOT_TURNING_UP")
+            if close <= fields["ma15"] and fields["ma5"] <= fields["ma15"]:
                 return hold("VETO_HOLD_SHORT_BELOW_MA15")
-            if fields["ma5"] <= fields["ma15"]:
-                return hold("VETO_HOLD_SHORT_MA5_BELOW_MA15")
             if close < fields["open"]:
                 return hold("VETO_HOLD_SHORT_ON_RED_CANDLE")
-            is_true_bottom_break = (
-                close > fields["open"]
-                and (close - fields["open"]) >= 0.35 * atr
-                and close > fields["ma15"]
-                and close > fields["kc_middle"]
-                and fields["ma5"] > fields["ma15"]
-            )
-            if not is_true_bottom_break:
-                return hold("VETO_HOLD_SHORT_TREND_WAVE_BELOW_MID")
+
+        candle_body = abs(close - fields["open"])
+        fresh_ma_cross = -sign * (fields["ma5_prev"] - fields["ma15_prev"]) <= 0 and -sign * (fields["ma5"] - fields["ma15"]) > 0
+        ma_reversed = -sign * (fields["ma5"] - fields["ma15"]) > 0 and -sign * (fields["ma5"] - fields["ma5_prev"]) > 0
+        wave_favorable_atr = (
+            (entry - trough_val) / atr if (side == "SHORT" and atr > 0)
+            else ((peak_val - entry) / atr if (side == "LONG" and atr > 0) else 0.0)
+        )
+        wave_favorable_roe = (
+            (entry - trough_val) / entry * 5.0 if (side == "SHORT" and entry > 0)
+            else ((peak_val - entry) / entry * 5.0 if (side == "LONG" and entry > 0) else 0.0)
+        )
+        wave_expanded_for_fast_exit = wave_favorable_atr >= 1.5 or wave_favorable_roe >= 0.05 or loss_atr >= 1.0
+        fast_reversal = (
+            -sign * (close - fields["open"]) > 0
+            and candle_body >= 0.35 * raw_atr
+            and -sign * (close - fields["kc_middle"]) > 0
+            and -sign * (close - fields["ma15"]) > 0
+            and -sign * (quote - fields["kc_middle"]) > 0
+            and -sign * (quote - fields["ma15"]) > 0
+            and (fresh_ma_cross or (ma_reversed and candle_body >= 1.50 * raw_atr))
+            and wave_expanded_for_fast_exit
+        )
 
         bars_held = bar_minute - _minute(opened)
         evidence["bars_held"] = bars_held
         if bars_held < MIN_BARS_HELD:
+            if fast_reversal and normalized in OWN_STRUCTURE_REASONS and loss_atr >= 0.5:
+                return allow(FAST_TOP_EXIT_REASONS[side])
             return hold("VETO_HOLD_MIN_5_COMPLETED_BARS")
 
         if live_atr is not None and live_atr > 0:
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
 
-            if abs(loss_atr) <= COST_SHIELD_ATR and normalized not in PROFIT_PIVOT_REASONS and not any(
+            close_loss_atr = -sign * (close - entry) / disaster_atr
+            in_cost_shield = abs(loss_atr) <= COST_SHIELD_ATR or (
+                abs(close_loss_atr) <= COST_SHIELD_ATR and loss_atr <= COST_SHIELD_ATR
+            )
+            if in_cost_shield and normalized not in PROFIT_PIVOT_REASONS and not any(
                 token in normalized for token in COST_SHIELD_EXEMPT_TOKENS
             ):
                 if normalized in OWN_STRUCTURE_REASONS and _kc_flip_release(
@@ -566,23 +664,14 @@ class UltimateShortExitGatekeeper:
 
         # 🚀 頂部/底部大實體 K 線貫穿極速平倉通道 (Fast Top / Bottom Exit Channel)
         # 解決龍蝦/PEPE峰頂滯後平多：脫離成本保護盾(Cost Shield)後，當收線時出現大實體逆向K線(陰線下殺 Body >= 0.35 ATR 貫穿 KC 中軌與 MA15 且 MA5 死叉 MA15)，
-        # 100% 豁免後續 0.50 ATR 緩衝區，直接在頂部第一時間高位授權平倉！
-        candle_body = abs(close - fields["open"])
-        fresh_ma_cross = -sign * (fields["ma5_prev"] - fields["ma15_prev"]) <= 0 and -sign * (fields["ma5"] - fields["ma15"]) > 0
-        ma_reversed = -sign * (fields["ma5"] - fields["ma15"]) > 0 and -sign * (fields["ma5"] - fields["ma5_prev"]) > 0
-        fast_reversal = (
-            -sign * (close - fields["open"]) > 0
-            and candle_body >= 0.35 * atr
-            and -sign * (close - fields["kc_middle"]) > 0
-            and -sign * (close - fields["ma15"]) > 0
-            and (fresh_ma_cross or (ma_reversed and not beyond_buffer))
-        )
+        # 100% 豁免後續 0.50 ATR 緩衝區與 fresh_cross 限制，直接在頂部/底部第一時間授權平倉！
         if fast_reversal and (
             not beyond_buffer
+            or not fresh_ma_cross
             or normalized in FAST_TOP_EXIT_REASONS.values()
             or "FAST_TOP" in normalized
             or "FAST_BOTTOM" in normalized
-        ):
+        ) and normalized in OWN_STRUCTURE_REASONS:
             return allow(FAST_TOP_EXIT_REASONS[side])
 
         if not beyond_buffer:
@@ -616,11 +705,11 @@ class UltimateShortExitGatekeeper:
         """
         🚨 盤中極速大瀑布緊急避險出口 (100% 豁免 is_bar_closed，毫秒級防崩盤熔斷)
         做多時：
-          (1) 盤中最新報價 (Quote) 垂直貫穿跌破 KC 中軌與 MA15 深度達 > 0.5 ATR
-          (2) 單根盤中未收線 K 棒下殺幅度 (Live Candle Drop) 超過 1.2 ATR
+          (1) 盤中最新報價 (Quote) 垂直貫穿跌破 KC 中軌與 MA15 深度達 >= 0.5 ATR
+          (2) 或單根盤中未收線 K 棒下殺幅度 (Live Candle Drop) 超過 1.2 ATR 且跌破 KC 中軌
         做空時：
-          (1) 盤中最新報價 (Quote) 垂直爆拉突破 KC 中軌與 MA15 深度達 > 0.5 ATR
-          (2) 單根盤中未收線 K 棒拉升幅度 (Live Candle Pump) 超過 1.2 ATR
+          (1) 盤中最新報價 (Quote) 垂直爆拉突破 KC 中軌與 MA15 深度達 >= 0.5 ATR
+          (2) 或單根盤中未收線 K 棒拉升幅度 (Live Candle Pump) 超過 1.2 ATR 且突破 KC 中軌
         """
         evidence: Dict[str, Any] = {"symbol": symbol, "quote": price}
         if frame is None or not isinstance(frame, pd.DataFrame) or len(frame) < 2:
@@ -640,7 +729,11 @@ class UltimateShortExitGatekeeper:
             if dist_atr <= 0:
                 return False, "INVALID_ATR", evidence
 
-            kc_mid = _float(curr_candle.get("kc_middle")) or _float(prev_candle.get("kc_middle"))
+            kc_mid = (
+                _float(curr_candle.get("kc_middle"))
+                or _float(getattr(frame, "attrs", {}).get("live_kc_middle"))
+                or _float(prev_candle.get("kc_middle"))
+            )
             ma15 = _float(curr_candle.get("ma15")) or _float(prev_candle.get("ma15"))
             if kc_mid is None or ma15 is None:
                 return False, "INVALID_STRUCTURE_INDICATORS", evidence
@@ -653,25 +746,25 @@ class UltimateShortExitGatekeeper:
                 "ma15": ma15,
             })
 
-            if side == "LONG":
-                # 條件 1：即時價貫穿跌破 KC 中軌與 MA15 深度 > 0.5 ATR
-                penetrates_mid_ma15 = (price < (kc_mid - 0.5 * dist_atr)) and (price < (ma15 - 0.5 * dist_atr))
-                # 條件 2：單根盤中 K 棒下殺幅度超過 1.2 ATR
-                single_bar_dump = (live_open - price) >= 1.2 * dist_atr
+            if side == "LONG" and price < live_open:
+                # 條件 1：即時價貫穿跌破 KC 中軌與 MA15 深度 >= 0.5 ATR
+                penetrates_mid_ma15 = (price <= (kc_mid - 0.5 * dist_atr)) and (price <= (ma15 - 0.5 * dist_atr))
+                # 條件 2：單根盤中 K 棒下殺幅度超過 1.2 ATR 且跌破中軌
+                single_bar_dump = ((live_open - price) >= 1.2 * dist_atr) and (price < kc_mid)
 
                 if penetrates_mid_ma15 or single_bar_dump:
-                    reason = "EXIT_BY_EXTREME_WATERFALL"
+                    reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["LONG"]
                     evidence["trigger"] = "PENETRATES_MID_MA15" if penetrates_mid_ma15 else "SINGLE_BAR_DUMP"
                     return True, reason, evidence
 
-            elif side == "SHORT":
-                # 條件 1：即時價貫穿突破 KC 中軌與 MA15 深度 > 0.5 ATR
-                penetrates_mid_ma15 = (price > (kc_mid + 0.5 * dist_atr)) and (price > (ma15 + 0.5 * dist_atr))
-                # 條件 2：單根盤中 K 棒拉升幅度超過 1.2 ATR
-                single_bar_pump = (price - live_open) >= 1.2 * dist_atr
+            elif side == "SHORT" and price > live_open:
+                # 條件 1：即時價貫穿突破 KC 中軌與 MA15 深度 >= 0.5 ATR
+                penetrates_mid_ma15 = (price >= (kc_mid + 0.5 * dist_atr)) and (price >= (ma15 + 0.5 * dist_atr))
+                # 條件 2：單根盤中 K 棒拉升幅度超過 1.2 ATR 且突破中軌
+                single_bar_pump = ((price - live_open) >= 1.2 * dist_atr) and (price > kc_mid)
 
                 if penetrates_mid_ma15 or single_bar_pump:
-                    reason = "EXIT_BY_EXTREME_WATERFALL"
+                    reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["SHORT"]
                     evidence["trigger"] = "PENETRATES_MID_MA15" if penetrates_mid_ma15 else "SINGLE_BAR_PUMP"
                     return True, reason, evidence
 
@@ -687,3 +780,42 @@ class UltimateShortExitGatekeeper:
         verdict = cls.evaluate(symbol, position, metadata, "STRUCTURE_EXIT_PROBE", price,
                                frame=frame, now=now)
         return verdict.code if verdict.allowed else None
+
+    @classmethod
+    def evaluate_two_point_pivot_flip(
+        cls,
+        position_side: Optional[str],
+        close_price: float,
+        ma5_curr: float,
+        ma5_prev: float,
+        *,
+        is_bar_closed: bool = True,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """
+        ⚡ 真峰谷轉彎與 MA5/MA15 交叉 2 點秒平＋秒開/反手通道 (True Peak/Valley & MA Cross 2-Point Override):
+        當 1m K 棒確定收線 (is_bar_closed == True) 時，100% 豁免大趨勢標頭與超賣/走平限制：
+        1. 谷底轉彎 / 金叉成立 (close_price > ma5_curr 且 ma5_curr > ma5_prev):
+           - 若持空單 (SHORT): 回傳 (True, "CLOSE_SHORT", "OPEN_LONG")
+           - 若為空倉 (FLAT/NONE/""): 回傳 (True, "OPEN_LONG", "OPEN_LONG")
+        2. 頂部轉彎 / 死叉成立 (close_price < ma5_curr 且 ma5_curr < ma5_prev):
+           - 若持多單 (LONG): 回傳 (True, "CLOSE_LONG", "OPEN_SHORT")
+           - 若為空倉 (FLAT/NONE/""): 回傳 (True, "OPEN_SHORT", "OPEN_SHORT")
+        """
+        if not is_bar_closed:
+            return False, "HOLD", None
+        side = str(position_side or "").upper()
+        if side == "SHORT":
+            if close_price > ma5_curr and ma5_curr > ma5_prev:
+                return True, "CLOSE_SHORT", "OPEN_LONG"
+        elif side == "LONG":
+            if close_price < ma5_curr and ma5_curr < ma5_prev:
+                return True, "CLOSE_LONG", "OPEN_SHORT"
+        elif side in ("", "FLAT", "NONE"):
+            if close_price > ma5_curr and ma5_curr > ma5_prev:
+                return True, "OPEN_LONG", "OPEN_LONG"
+            if close_price < ma5_curr and ma5_curr < ma5_prev:
+                return True, "OPEN_SHORT", "OPEN_SHORT"
+        return False, "HOLD", None
+
+
+UltimateExitGatekeeper = UltimateShortExitGatekeeper

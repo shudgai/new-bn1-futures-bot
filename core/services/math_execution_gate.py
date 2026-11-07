@@ -172,7 +172,12 @@ def validate_entry_math(
     # The final account gate must enforce MA5 direction for every entry class.
     # A breakout, continuation, manual flag, or dip/hunter label cannot turn an
     # adverse/flat MA5 slope into an authorized entry.
-    pivot_guard_override = bool(outer_pivot_authorized or meme_pivot_authorized or is_swing_pivot)
+    pivot_guard_override = bool(
+        outer_pivot_authorized
+        or meme_pivot_authorized
+        or is_swing_pivot
+        or frame_attrs.get("is_pivot_flip_override")
+    )
     if side == "LONG" and ma5 <= previous_ma5 and not allow_override and not pivot_guard_override:
         return False, "BLOCKED_BY_MA5_NOT_UPWARD"
     if side == "SHORT" and ma5 >= previous_ma5 and not allow_override and not pivot_guard_override:
@@ -196,10 +201,10 @@ def validate_entry_math(
     if (
         side == "LONG" and kc_slope < 0
         and not outer_pivot_authorized and not early_long_authorized
-        and not meme_pivot_authorized and not is_swing_pivot
+        and not meme_pivot_authorized and not is_swing_pivot and not pivot_guard_override
     ):
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
-    if side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized and not meme_pivot_authorized and not is_swing_pivot:
+    if side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized and not meme_pivot_authorized and not is_swing_pivot and not pivot_guard_override:
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
@@ -241,12 +246,12 @@ def validate_entry_math(
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
     if (
         side == "LONG" and allow_override and not outer_pivot_authorized
-        and not meme_pivot_authorized and close < latest_middle - retest_buffer
+        and not meme_pivot_authorized and not pivot_guard_override and close < latest_middle - retest_buffer
     ):
         return False, "BLOCKED_LONG_BELOW_MIDLINE"
     if (
         side == "SHORT" and allow_override and not outer_pivot_authorized
-        and not meme_pivot_authorized and close > latest_middle + retest_buffer
+        and not meme_pivot_authorized and not pivot_guard_override and close > latest_middle + retest_buffer
     ):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE"
 

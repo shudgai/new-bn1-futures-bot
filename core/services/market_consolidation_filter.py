@@ -154,8 +154,18 @@ def evaluate_market_blacklist(
         weak_adx = adx is None or adx < LOW_ADX
         direction_sign = {"LONG": 1, "SHORT": -1}.get(str(side or "").upper(), 0)
         signal_body_atr = direction_sign * float(current["close"] - current["open"]) / float(atr.iloc[-1])
-        # Meme impulse bar (same-side body >= 0.6 ATR) starts a move from inside the box.
-        meme_impulse = meme_policy and signal_body_atr >= MEME_IMPULSE_BODY_ATR - 1e-12
+        meme_structural_trigger = (
+            meme_policy
+            and (
+                meme_structural_entry
+                or expansion and signal_body_atr >= MEME_STRUCTURAL_BODY_ATR - 1e-12
+            )
+        )
+        # Meme impulse bar (same-side body >= 0.6 ATR, or authorized MEME_GATE_ENTRY >= 0.35 ATR) starts a move from inside the box.
+        meme_impulse = meme_policy and (
+            signal_body_atr >= MEME_IMPULSE_BODY_ATR - 1e-12
+            or (meme_structural_trigger and signal_body_atr >= 0.35 - 1e-12)
+        )
         checks["signal_body_atr"] = signal_body_atr
         if inside_box and weak_adx and atr_pct < LOW_ATR_PCT and not meme_impulse:
             return True, "VETO_DONCHIAN_RANGE_LOW_TREND", checks
@@ -166,13 +176,6 @@ def evaluate_market_blacklist(
         vol_ratio = float(current["volume"] / avg_vol) if avg_vol > 0 else 0.0
         body = abs(float(current["close"]) - float(current["open"]))
         wick_total = max(0.0, float(current["high"]) - max(float(current["open"]), float(current["close"]))) + max(0.0, min(float(current["open"]), float(current["close"])) - float(current["low"]))
-        meme_structural_trigger = (
-            meme_policy
-            and (
-                meme_structural_entry
-                or expansion and signal_body_atr >= MEME_STRUCTURAL_BODY_ATR - 1e-12
-            )
-        )
         checks.update(
             volume_ratio=vol_ratio,
             wick_body_ratio=wick_total / max(body, 1e-12),

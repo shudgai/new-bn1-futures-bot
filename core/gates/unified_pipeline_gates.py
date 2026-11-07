@@ -198,7 +198,6 @@ class ExitGate:
         if (priority_result[0] and (
             priority_result[1] in ExitGate.ABSOLUTE_SAFETY_REASONS
             or priority_result[1] in ExitGate.PIVOT_EXIT_REASONS
-            or priority_result[1] in ExitGate.PROFIT_LOCK_EXIT_REASONS
         ) and not meme_strategy_disaster_disabled(symbol, priority_result[1])):
             return priority_result
         frame = (

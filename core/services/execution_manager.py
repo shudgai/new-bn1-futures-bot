@@ -800,6 +800,8 @@ class ExecutionManager:
         is_zoomed_out_bullish = is_macro_htf_bullish = is_3bar_bull_slope_ready = entry_kc_up
         is_zoomed_out_bearish = is_macro_htf_bearish = is_3bar_bear_slope_ready = entry_kc_down
         cls._symbol_macro_trend[symbol] = macro_trend
+        if hasattr(raw_df, "attrs"):
+            raw_df.attrs["macro_trend"] = macro_trend
         entry_m5_c = float(c_k.get("ma5", math.nan))
         entry_m5_p = float(p_k.get("ma5", math.nan))
         is_1m_confirmed_bull = bool(
@@ -1007,20 +1009,45 @@ class ExecutionManager:
                     getattr(account, "position_meta", {}).get(symbol, {}),
                     curr_quote, raw_df,
                 )
+                is_emerg_bar_open = bool(
+                    raw_df is not None
+                    and isinstance(raw_df, pd.DataFrame)
+                    and len(raw_df) >= 2
+                    and not bool(raw_df.iloc[-1].get("is_closed", True))
+                )
+                if not structure_reason and is_emerg_bar_open:
+                    wf_hit, wf_reason, _ = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
+                        symbol,
+                        current_position,
+                        getattr(account, "position_meta", {}).get(symbol, {}),
+                        curr_quote,
+                        frame=raw_df,
+                    )
+                    if wf_hit:
+                        structure_reason = wf_reason
                 if structure_reason:
+                    is_closed_flag = not (
+                        structure_reason in ("EXIT_LONG_EMERGENCY_WATERFALL", "EXIT_SHORT_EMERGENCY_SURGE")
+                        and is_emerg_bar_open
+                    )
                     success = await cls.close_position(
                         account=account, symbol=symbol, price=curr_quote,
-                        reason=structure_reason, meta={"raw_df": raw_df, "is_bar_closed": True},
+                        reason=structure_reason, meta={"raw_df": raw_df, "is_bar_closed": is_closed_flag},
                     )
                     flip = None
                     if success and symbol not in getattr(account, "positions", {}):
+                        acc_key = cls._get_account_key(account, symbol)
+                        cls._last_exit_record.pop(acc_key, None)
+                        cls._last_exit_record.pop(symbol, None)
+                        cls._last_trade_bar_time.pop(symbol, None)
                         flip = await cls._try_structure_position_flip(
                             account=account,
                             symbol=symbol,
                             position_side=pos_side,
                             frame=raw_df,
                             quote=curr_quote,
-                            macro_trend=getattr(market_data, "macro_trend", None),
+                            macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
+                            exit_reason=structure_reason,
                         )
                     if flip and flip.get("success"):
                         return {
@@ -2653,10 +2680,37 @@ class ExecutionManager:
             # 嚴格順勢方向審查（精準開多開空，絕不開錯邊，拉遠看是空頭絕不開多、多頭絕不開空）：
             # 做多必須 KC 中軌向上 (is_3bar_bull_slope_ready)、MA15 向上、拉遠非空頭 (not is_zoomed_out_bearish)、且黃金交叉發散確立；
             # 賣空必須 KC 中軌向下 (is_3bar_bear_slope_ready)、MA15 向下、拉遠非多頭 (not is_zoomed_out_bullish)、且死亡交叉發散確立！
+            # ⚡ 起漲/起跌點 100% 秒開倉 (Zero-Delay Entry)：
+            # 當大趨勢為 KC 同向，當根 1m 收線瞬間出現「實體綠K/紅K (Body >= 0.35 * ATR) 站上/跌破 MA5、MA15 與 KC 中軌」且 MA5 拐頭同向時，
+            # 當根收線第 1 毫秒立即授權進場，嚴禁傻等 MA5/MA15 大幅張口才追在天花板/地板！
+            is_zero_delay_long_ready = bool(
+                is_closed_bar_bull_confirmed
+                and (c_c > c_o)
+                and (atr_v > 0 and c_bd >= 0.35 * atr_v)
+                and (c_c >= m5_c and c_c > m15_c and c_c > kc_mid)
+                and (m5_c > m5_p)
+                and (m5_c > m15_c)
+                and (kc_slope > 0)
+                and is_3bar_bull_slope_ready
+                and has_room_to_upper_rail
+            )
+            is_zero_delay_short_ready = bool(
+                is_closed_bar_bear_confirmed
+                and (c_c < c_o)
+                and (atr_v > 0 and c_bd >= 0.35 * atr_v)
+                and (c_c <= m5_c and c_c < m15_c and c_c < kc_mid)
+                and (m5_c < m5_p)
+                and (m5_c < m15_c)
+                and (kc_slope < 0)
+                and is_3bar_bear_slope_ready
+                and has_room_to_lower_rail
+            )
+
             can_open_long = bool(
                 (not pivot_cooldown_blocked)
                 and (
                     is_confirmed_golden_cross_ready
+                    or is_zero_delay_long_ready
                     or is_cross_mid_long
                     or (is_valid_gc and has_room_to_upper_rail and is_closed_bar_bull_confirmed)
                     or is_true_bottom
@@ -2669,9 +2723,9 @@ class ExecutionManager:
                 and (not is_heavy_bear_smash)
                 and (not (is_weak_body_now and kc_slope <= 0 and not is_meme_3x_pinbar_long))
                 and (m5_c > m15_c)
-                and ((m5_c - m15_c) >= min_gc_dc_spread or is_meme_3x_pinbar_long or is_meme_vol_surge_breakout_long)
+                and ((m5_c - m15_c) >= min_gc_dc_spread or is_zero_delay_long_ready or is_meme_3x_pinbar_long or is_meme_vol_surge_breakout_long)
                 and is_3bar_bull_slope_ready
-                and (not is_entry_ma5_midline_adhered or is_meme_vol_surge_breakout_long)
+                and (not is_entry_ma5_midline_adhered or is_zero_delay_long_ready or is_meme_vol_surge_breakout_long)
                 and (not is_chop_zone or range_breakout_side == "LONG" or is_meme_vol_surge_breakout_long)
                 and allow_long_defense
                 and (not is_zoomed_out_bearish)
@@ -2687,6 +2741,7 @@ class ExecutionManager:
                 (not pivot_cooldown_blocked)
                 and (
                     is_confirmed_death_cross_ready
+                    or is_zero_delay_short_ready
                     or is_cross_mid_short
                     or (is_valid_dc and has_room_to_lower_rail and is_closed_bar_bear_confirmed)
                     or is_true_peak
@@ -2699,9 +2754,9 @@ class ExecutionManager:
                 and (not is_heavy_bull_surge)
                 and (not (is_weak_body_now and kc_slope >= 0 and not is_meme_3x_pinbar_short))
                 and (m5_c < m15_c)
-                and ((m15_c - m5_c) >= min_gc_dc_spread or is_meme_3x_pinbar_short or is_meme_vol_surge_breakdown_short)
+                and ((m15_c - m5_c) >= min_gc_dc_spread or is_zero_delay_short_ready or is_meme_3x_pinbar_short or is_meme_vol_surge_breakdown_short)
                 and is_3bar_bear_slope_ready
-                and (not is_entry_ma5_midline_adhered or is_meme_vol_surge_breakdown_short)
+                and (not is_entry_ma5_midline_adhered or is_zero_delay_short_ready or is_meme_vol_surge_breakdown_short)
                 and (not is_chop_zone or range_breakout_side == "SHORT" or is_meme_vol_surge_breakdown_short)
                 and allow_short_defense
                 and (not is_zoomed_out_bullish)
@@ -4499,6 +4554,8 @@ class ExecutionManager:
         frame: Any,
         quote: float,
         macro_trend: Optional[str],
+        *,
+        exit_reason: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Re-evaluate and enter the opposite side only after a confirmed close is flat."""
         from core.gates.master_gate_funnel import (
@@ -4514,45 +4571,83 @@ class ExecutionManager:
             logger.info("POSITION_FLIP_DATA_BLOCK symbol=%s error=%s", symbol, exc)
             return None
         candidate = MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
+        is_true_3pt_flip = False
+        if exit_reason in {
+            "EXIT_SHORT_BOTTOM_GREEN_CANDLE_MA5",
+            "EXIT_LONG_TOP_RED_CANDLE_MA5",
+            "EXIT_SHORT_TRUE_VALLEY_BOTTOM",
+            "EXIT_LONG_TRUE_PEAK_TOP",
+            "EXIT_SHORT_FAST_BOTTOM_BREAK_MA15_MID",
+            "EXIT_LONG_FAST_TOP_BREAK_MA15_MID",
+            "EXIT_SHORT_STRUCTURE_BREAK_050ATR",
+            "EXIT_LONG_STRUCTURE_BREAK_050ATR",
+            "EXIT_LONG_EMERGENCY_WATERFALL",
+            "EXIT_SHORT_EMERGENCY_SURGE",
+            "EXIT_LONG_KC_THREE_BAR_FLIP",
+            "EXIT_SHORT_KC_THREE_BAR_FLIP",
+        }:
+            held = str(position_side or "").upper()
+            if (
+                held == "SHORT"
+                and snapshot.is_closed
+                and snapshot.close_price > snapshot.open_price
+                and snapshot.close_price > snapshot.ma5_curr
+                and snapshot.ma5_curr > snapshot.ma5_prev
+            ):
+                if candidate is None:
+                    candidate = ("LONG", "TRIGGER_TRUE_BOTTOM_3PT_FLIP")
+                is_true_3pt_flip = True
+            elif (
+                held == "LONG"
+                and snapshot.is_closed
+                and snapshot.close_price < snapshot.open_price
+                and snapshot.close_price < snapshot.ma5_curr
+                and snapshot.ma5_curr < snapshot.ma5_prev
+            ):
+                if candidate is None:
+                    candidate = ("SHORT", "TRIGGER_TRUE_TOP_3PT_FLIP")
+                is_true_3pt_flip = True
         if candidate is None:
             return None
         target_side, trigger = candidate
         if symbol in getattr(account, "positions", {}):
             return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
-        location_veto = MasterGateFunnel.pivot_kc_location_veto(snapshot, target_side)
-        if location_veto:
-            logger.info(
-                "POSITION_FLIP_ENTRY_VETO symbol=%s side=%s trigger=%s reason=%s",
-                symbol, target_side, trigger, location_veto,
+        if not is_true_3pt_flip:
+            location_veto = MasterGateFunnel.pivot_kc_location_veto(snapshot, target_side)
+            if location_veto:
+                logger.info(
+                    "POSITION_FLIP_ENTRY_VETO symbol=%s side=%s trigger=%s reason=%s",
+                    symbol, target_side, trigger, location_veto,
+                )
+                return {"success": False, "side": target_side, "reason": location_veto}
+            gate = (
+                MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
+                if target_side == "LONG"
+                else MasterGateFunnel.evaluate_open_short(snapshot, is_in_cooldown=True)
             )
-            return {"success": False, "side": target_side, "reason": location_veto}
-        gate = (
-            MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
-            if target_side == "LONG"
-            else MasterGateFunnel.evaluate_open_short(snapshot, is_in_cooldown=True)
-        )
-        if not gate.can_execute:
-            logger.info(
-                "POSITION_FLIP_ENTRY_VETO symbol=%s side=%s trigger=%s reason=%s",
-                symbol, target_side, trigger, gate.reason,
-            )
-            return {"success": False, "side": target_side, "reason": gate.reason}
+            if not gate.can_execute:
+                logger.info(
+                    "POSITION_FLIP_ENTRY_VETO symbol=%s side=%s trigger=%s reason=%s",
+                    symbol, target_side, trigger, gate.reason,
+                )
+                return {"success": False, "side": target_side, "reason": gate.reason}
 
         account_key = cls._get_account_key(account, symbol)
         lock = cls._position_flip_locks.setdefault(account_key, asyncio.Lock())
         async with lock:
             if symbol in getattr(account, "positions", {}):
                 return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
-            current_gate = (
-                MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
-                if target_side == "LONG"
-                else MasterGateFunnel.evaluate_open_short(snapshot, is_in_cooldown=True)
-            )
-            if not current_gate.can_execute:
-                return {
-                    "success": False, "side": target_side,
-                    "reason": current_gate.reason,
-                }
+            if not is_true_3pt_flip:
+                current_gate = (
+                    MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
+                    if target_side == "LONG"
+                    else MasterGateFunnel.evaluate_open_short(snapshot, is_in_cooldown=True)
+                )
+                if not current_gate.can_execute:
+                    return {
+                        "success": False, "side": target_side,
+                        "reason": current_gate.reason,
+                    }
             recent_entries = [
                 stamp for stamp in cls._hourly_entry_records.get(
                     account_key, cls._hourly_entry_records.get(symbol, []),
@@ -4576,6 +4671,13 @@ class ExecutionManager:
                 "macro_trend": snapshot.macro_trend,
                 "bar_timestamp": int(closed_entry_candles(frame).iloc[-1]["timestamp"]),
             }
+            if is_true_3pt_flip:
+                entry_meta["direction_override"] = True
+                entry_meta["allow_kc_internal"] = True
+                entry_meta["is_flip"] = True
+                if hasattr(frame, "attrs") and isinstance(frame.attrs, dict):
+                    frame.attrs["direction_override"] = True
+                    frame.attrs["is_pivot_flip_override"] = True
             order_accepted = await cls.open_position(
                 engine_or_account=account,
                 symbol=symbol,
