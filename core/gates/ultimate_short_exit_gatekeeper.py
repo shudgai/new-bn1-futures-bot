@@ -235,6 +235,20 @@ def _outer_rail_true_pivot_release(
     #    - 峰值位置：必須衝破或觸碰同側 KC 外軌（多單 h2 >= kc_u2 或 h1 >= kc_u1；空單 l2 <= kc_l2 或 l1 <= kc_l1），或實體遠離中軌確立波段頂/底部。
     #    - 確認棒反轉：多單三點頂部樞紐（h2 > h1 且 h2 > h3，第 3 棒收陰跌破中點且跌破 MA5）；空單三點底部樞紐（l2 < l1 且 l2 < l3，第 3 棒收陽突破中點且站上 MA5）。
     if side == "SHORT":
+        ma15_2, ma15_3 = _float(b2.get("ma15")), _float(b3.get("ma15"))
+        kc_l3 = _float(b3.get("kc_lower"))
+        if (
+            ma15_2 is not None
+            and ma15_3 is not None
+            and c3 <= ma15_3
+            and ma5_3 <= ma15_3
+            and (
+                (entry - c3) < 1.0 * atr2
+                or ma5_3 <= ma5_2
+                or (ma15_3 - ma5_3) >= (ma15_2 - ma5_2)
+            )
+        ):
+            return False
         valley_low = min(l1, l2)
         gain_atr = (entry - valley_low) / atr2
         gain_roe = (entry - valley_low) / entry * 5.0
@@ -243,8 +257,9 @@ def _outer_rail_true_pivot_release(
         in_profit = c3 < entry and quote < entry
 
         # 空單真谷底平倉鐵律（True Valley Exit）：
-        # 1. 必須收出具有明確向上動能的陽線 (c3 - o3 >= 0.35 * atr2)
-        # 2. 必須強勢收盤站上 MA5 (c3 > ma5_3) 且站上中間棒高點或實體中點
+        # 1. 若 1m 收盤價仍位於 MA15 下方、MA5 未金叉 MA15 且仍在 1.0 ATR 成本保護區內，或 MA5 仍持續下探 (ma5_3 <= ma5_2) / 均線空頭張口擴大，
+        #    100% 認定為主跌浪反彈回踩洗盤 (PULLBACK)，嚴禁平空！
+        # 2. 必須收出具有明確向上動能的陽線 (c3 - o3 >= 0.35 * atr2) 且站上 MA5、MA5 明確上彎
         # 3. 谷底探底顯著性（Prominence）與防回踩過敏：
         #    - 中間棒 Low 必須明確探底：(l1 - l2 >= 0.45 * atr2) 或實體下殺 (o2 - c2 >= 0.45 * atr2) 或衝出下軌深度 (kc_l2 - l2 >= 0.45 * atr2)。
         #    - 若中間棒僅為扁平十字線 (Doji) 或探底幅度微弱 (< 0.45 * atr2)，確認棒 c3 必須實質突破左棒起跌高點 (c3 > h1)，
@@ -265,16 +280,51 @@ def _outer_rail_true_pivot_release(
             and is_strong_rebound_candle
             and c3 > mid2
             and c3 > ma5_3
-            and (ma5_3 > ma5_2 or c3 > h2)
+            and ma5_3 > ma5_2
             and profit_expanded
             and in_profit
         )
-        return is_true_valley
+        # 二波加速探底「雙下影線 / 跌勢衰竭收回下軌」真谷底平空 (對稱於二波衝頂真峰頂)
+        prior_outer_valley = False
+        if len(closed) >= 5:
+            for idx in range(max(0, len(closed) - 12), len(closed) - 3):
+                row_prev = closed.iloc[idx]
+                lp = _float(row_prev.get("low"))
+                kclp = _float(row_prev.get("kc_lower"))
+                if lp is not None and kclp is not None and lp <= kclp:
+                    prior_outer_valley = True
+                    break
+        body2_s = abs(c2 - o2)
+        body3_s = abs(c3 - o3)
+        lwick2 = min(o2, c2) - l2
+        lwick3 = min(o3, c3) - l3
+        is_second_wave_climax_valley = (
+            prior_outer_valley
+            and l2 < kc_l2
+            and l2 < l1
+            and l3 > l2
+            and lwick2 >= max(body2_s, 0.8 * atr2)
+            and lwick3 >= body3_s
+            and c3 > o3
+            and (kc_l3 is not None and c3 > kc_l3)
+            and profit_expanded
+            and in_profit
+        )
+        is_two_bar_climax_break_ma15_short = (
+            at_outer_rail
+            and l1 < l2 < l3
+            and c2 > o2
+            and c3 > o3
+            and c3 > ma5_3
+            and (ma15_3 is not None and c3 > ma15_3)
+            and profit_expanded
+            and in_profit
+        )
+        return is_true_valley or is_second_wave_climax_valley or is_two_bar_climax_break_ma15_short
 
     if side == "LONG":
-        ma15_3 = _float(b3.get("ma15"))
-        if ma15_3 is not None and c3 >= ma15_3 and ma5_3 >= ma15_3 and (c3 - entry) < 1.0 * atr2:
-            return False
+        ma15_2, ma15_3 = _float(b2.get("ma15")), _float(b3.get("ma15"))
+        kc_u3 = _float(b3.get("kc_upper"))
         peak_high = max(h1, h2)
         gain_atr = (peak_high - entry) / atr2
         gain_roe = (peak_high - entry) / entry * 5.0
@@ -282,9 +332,68 @@ def _outer_rail_true_pivot_release(
         at_outer_rail = (h2 >= kc_u2 or h1 >= kc_u1)
         in_profit = c3 > entry and quote > entry
 
-        # 多單真峰頂平倉鐵律（True Peak Exit）：
-        # 1. 若 1m 收盤價仍位於 MA15 上方、MA5 未死叉 MA15 且仍在 1.0 ATR 成本保護區內，100% 認定為主升浪回踩洗盤 (如 10:48 之 0.0050025)，嚴禁平多！
-        # 2. 必須收出具有明確向下下殺動能的陰線 (o3 - c3 >= 0.35 * atr2) 且跌破 MA5、MA5 明確下彎
+        # 二波加速衝頂「雙流星上影線 + 實體跌回上軌內」真峰頂平多 (Box 2 2號高點 09:14-09:15 實戰特徵)：
+        # 前波已出現過一次破上軌脈衝波，回踩不破後展開第 2 波創高衝出 KC 上軌 (h2 > kc_u2)，
+        # 但 b2 留長上影線 (uwick2 >= max(body2, 0.8 * atr2))，緊接著 b3 無法再創高 (h3 < h2)、
+        # 再度留長上影線 (uwick3 >= body3) 且收紅(陰)跌回 KC 上軌之內 (c3 < o3 and c3 < kc_u3)，立即在 2 號高點獲利了結！
+        prior_outer_peak = False
+        if len(closed) >= 5:
+            for idx in range(max(0, len(closed) - 12), len(closed) - 3):
+                row_prev = closed.iloc[idx]
+                hp = _float(row_prev.get("high"))
+                kcup = _float(row_prev.get("kc_upper"))
+                if hp is not None and kcup is not None and hp >= kcup:
+                    prior_outer_peak = True
+                    break
+        body2_l = abs(c2 - o2)
+        body3_l = abs(c3 - o3)
+        uwick2 = h2 - max(o2, c2)
+        uwick3 = h3 - max(o3, c3)
+        is_second_wave_climax_peak = (
+            prior_outer_peak
+            and h2 > kc_u2
+            and h2 > h1
+            and h3 < h2
+            and uwick2 >= max(body2_l, 0.8 * atr2)
+            and uwick3 >= body3_l
+            and c3 < o3
+            and (kc_u3 is not None and c3 < kc_u3)
+            and profit_expanded
+            and in_profit
+        )
+        is_two_bar_climax_break_ma15_long = (
+            at_outer_rail
+            and h1 > h2 > h3
+            and c2 < o2
+            and c3 < o3
+            and c3 < ma5_3
+            and (ma15_3 is not None and c3 < ma15_3)
+            and profit_expanded
+            and in_profit
+        )
+        if is_second_wave_climax_peak or is_two_bar_climax_break_ma15_long:
+            return True
+
+        # 多單真峰頂平倉鐵律（True Peak Exit）與主升浪回踩防洗保護（Box 1 09:09 回踩不平倉）：
+        # 1. 若 1m 收盤價仍位於 MA15 上方、MA5 未死叉 MA15，且滿足以下任一條件：
+        #    (a) 仍在 1.0 ATR 成本保護區內 ((c3 - entry) < 1.0 * atr2)
+        #    (b) MA5 斜率仍在向上推進 (ma5_3 >= ma5_2，如 09:08 之 0.017644 > 0.017634)
+        #    (c) MA5 與 MA15 多頭張口仍在擴大 ((ma5_3 - ma15_3) >= (ma5_2 - ma15_2))
+        #    100% 認定為主升浪正常回踩洗盤 (PULLBACK)，嚴禁平多！必須繼續抱到第 2 波高點！
+        if (
+            ma15_2 is not None
+            and ma15_3 is not None
+            and c3 >= ma15_3
+            and ma5_3 >= ma15_3
+            and (
+                (c3 - entry) < 1.0 * atr2
+                or ma5_3 >= ma5_2
+                or (ma5_3 - ma15_3) >= (ma15_2 - ma15_2)
+            )
+        ):
+            return False
+
+        # 2. 必須收出具有明確向下下殺動能的陰線 (o3 - c3 >= 0.35 * atr2) 且跌破 MA5、MA5 明確下彎 (ma5_3 < ma5_2)
         # 3. 峰頂衝頂顯著性（Prominence）與防回踩過敏：
         #    - 中間棒 High 必須明確衝頂：(h2 - h1 >= 0.45 * atr2) 或實體拉升 (c2 - o2 >= 0.45 * atr2) 或衝出上軌深度 (h2 - kc_u2 >= 0.45 * atr2)。
         #    - 若中間棒僅為扁平十字線 (Doji) 或衝頂幅度微弱 (< 0.45 * atr2)，確認棒 c3 必須實質跌破左棒起漲低點 (c3 < l1)，
@@ -305,7 +414,7 @@ def _outer_rail_true_pivot_release(
             and is_strong_drop_candle
             and c3 < mid2
             and c3 < ma5_3
-            and (ma5_3 < ma5_2 or c3 < l2)
+            and ma5_3 < ma5_2
             and profit_expanded
             and in_profit
         )

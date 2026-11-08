@@ -886,10 +886,6 @@ class MasterGateFunnel:
                 return "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
             if cls.is_outer_rail_continuation(m, "SHORT"):
                 return "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT"
-            if cls.is_continuation_entry(m, "SHORT"):
-                return "TRIGGER_CONTINUATION_ENTRY_SHORT"
-            if cls.is_express_trend_entry(m, "SHORT"):
-                return "TRIGGER_EXPRESS_TREND_ENTRY_SHORT"
         elif side == "LONG":
             if cls.is_bottom_pivot_long(m):
                 return "TRIGGER_BOTTOM_PIVOT_CROSS"
@@ -897,10 +893,6 @@ class MasterGateFunnel:
                 return "TRIGGER_EARLY_BREAKOUT_CHANNEL"
             if cls.is_outer_rail_continuation(m, "LONG"):
                 return "TRIGGER_OUTER_RAIL_CONTINUATION_LONG"
-            if cls.is_continuation_entry(m, "LONG"):
-                return "TRIGGER_CONTINUATION_ENTRY_LONG"
-            if cls.is_express_trend_entry(m, "LONG"):
-                return "TRIGGER_EXPRESS_TREND_ENTRY_LONG"
         if cls.is_ma_cross_slope_entry(m, side):
             return MA_CROSS_SLOPE_TRIGGER
         return None
@@ -995,7 +987,7 @@ class MasterGateFunnel:
         }
         if is_in_cooldown:
             # 結束了後面有走勢要延續開倉（強制上車）：
-            # 若為反轉觸發或滿足強勢延續開倉（外軌延續/大實體破軌/順勢斜率發散），豁免平倉冷卻期，立即授權上車！
+            # 若為反轉觸發或滿足強勢外軌延續開倉（AGENTS.md 模組二：實體運行在 KC 外軌強勢區）/ 大實體破軌，豁免平倉冷卻期，立即授權上車！
             is_continuation_pass = (
                 priority in CONTINUATION_PRIORITY_TRIGGERS
                 or cls.is_reverse_after_structure_exit(m, side)
@@ -1003,7 +995,6 @@ class MasterGateFunnel:
                     side == "SHORT"
                     and (
                         cls.is_outer_rail_continuation(m, "SHORT")
-                        or cls.is_continuation_entry(m, "SHORT")
                         or cls.is_big_body_breakout(m, "SHORT")
                     )
                 )
@@ -1011,7 +1002,6 @@ class MasterGateFunnel:
                     side == "LONG"
                     and (
                         cls.is_outer_rail_continuation(m, "LONG")
-                        or cls.is_continuation_entry(m, "LONG")
                         or cls.is_big_body_breakout(m, "LONG")
                     )
                 )
@@ -1041,6 +1031,31 @@ class MasterGateFunnel:
             )
         )
         valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side)
+        # 通道獲利空間足夠（Room Ready，拒絕貼軌內側追單，如 09:13 龍蝦買在 kc_upper 下方僅剩 5.7% 空間）：
+        # 做多：若未突破 KC 上軌 (close <= kc_upper) 且非從中軌以下起漲之底部反轉/穿中軌 (open > kc_middle)，
+        #       價格到 KC 上軌剩餘空間必須至少 20% 通道寬度 (kc_position <= 0.80)，貼著上軌內側無利可圖嚴禁追多！
+        # 做空：若未跌破 KC 下軌 (close >= kc_lower) 且非從中軌以上起跌之頂部反轉/穿中軌 (open < kc_middle)，
+        #       價格到 KC 下軌剩餘空間必須至少 20% 通道寬度 (kc_position >= 0.20)，貼著下軌內側無利可圖嚴禁追空！
+        kc_width = m.kc_upper - m.kc_lower
+        if math.isfinite(kc_width) and kc_width > 0 and not pivot_reversal:
+            kc_pos = (m.close_price - m.kc_lower) / kc_width
+            if (
+                side == "LONG"
+                and m.close_price <= m.kc_upper
+                and m.open_price > m.kc_middle
+                and kc_pos > 0.80
+                and not math.isclose(kc_pos, 0.80, rel_tol=1e-9, abs_tol=0)
+            ):
+                return block("BLOCKED_LONG_INSUFFICIENT_KC_ROOM_ANTI_CHASE")
+            if (
+                side == "SHORT"
+                and m.close_price >= m.kc_lower
+                and m.open_price < m.kc_middle
+                and kc_pos < 0.20
+                and not math.isclose(kc_pos, 0.20, rel_tol=1e-9, abs_tol=0)
+            ):
+                return block("BLOCKED_SHORT_INSUFFICIENT_KC_ROOM_ANTI_CHASE")
+
         if is_meme_breakout_symbol(m.symbol):
             distance_atr = meme_distance_atr(m.symbol, m.atr)
             directional_and_aligned = (
@@ -1770,7 +1785,12 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             if not is_fresh_non_meme_breakdown and (m.close_price <= oversold_band or m.quote <= oversold_band):
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_OVERSOLD_FLOOR_FOMO", details)
 
-            # 舊開空漏斗（若通過一票否決驗證，則進一步驗證細節觸發點）
+            # 呼叫底層詳細漏斗驗證觸發點 (免除重複 validate_open_signal 迴圈)
+            filtered = cls.evaluate_entry_filters(m, "SHORT", is_in_cooldown)
+            if not filtered.can_execute:
+                return filtered
+
+            # 舊開空漏斗（若通過一票否決與空間過濾驗證，則進一步驗證細節觸發點）
             if (
                 m.is_closed
                 and not is_in_cooldown
@@ -1791,11 +1811,6 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                     "AUTHORIZED_SHORT:TRIGGER_KC_DOWN_MA5_TURN_SHORT",
                     {**details, "trigger": "TRIGGER_KC_DOWN_MA5_TURN_SHORT"},
                 )
-
-            # 呼叫底層詳細漏斗驗證觸發點 (免除重複 validate_open_signal 迴圈)
-            filtered = cls.evaluate_entry_filters(m, "SHORT", is_in_cooldown)
-            if not filtered.can_execute:
-                return filtered
             kc_slope = m.kc_middle - m.kc_middle_prev
             trigger_hit = None
             is_top_reversal = (
@@ -1885,7 +1900,11 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             ):
                 return GateDecision(False, "HOLD", "BLOCKED_LONG_OVERBOUGHT_CEILING_FOMO", details)
 
-            # 舊開多漏斗（若通過一票否決驗證，則進一步驗證細節觸發點）
+            filtered = cls.evaluate_entry_filters(m, "LONG", is_in_cooldown)
+            if not filtered.can_execute:
+                return filtered
+
+            # 舊開多漏斗（若通過一票否決與空間過濾驗證，則進一步驗證細節觸發點）
             if (
                 m.is_closed
                 and not is_in_cooldown
@@ -1904,10 +1923,6 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                     "AUTHORIZED_LONG:TRIGGER_KC_UP_MA5_TURN_LONG",
                     {**details, "trigger": "TRIGGER_KC_UP_MA5_TURN_LONG"},
                 )
-
-            filtered = cls.evaluate_entry_filters(m, "LONG", is_in_cooldown)
-            if not filtered.can_execute:
-                return filtered
             trigger_hit = None
             if cls.is_bottom_pivot_long(m):
                 trigger_hit = "TRIGGER_BOTTOM_PIVOT_CROSS"
