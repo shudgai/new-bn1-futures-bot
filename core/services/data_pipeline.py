@@ -382,7 +382,7 @@ class DataPipeline:
         else:
             df_calc = closed_df_with_ind
             if hasattr(df_calc, "attrs"):
-                df_calc.attrs["entry_finality_verified"] = is_verified
+                df_calc.attrs["entry_finality_verified"] = False
                 df_calc.attrs["macro_trend"] = macro_trend
                 df_calc.attrs.setdefault("timeframe_ms", df.attrs.get("timeframe_ms", 60_000))
                 if hasattr(df, "attrs") and "snapshot_ms" in df.attrs:

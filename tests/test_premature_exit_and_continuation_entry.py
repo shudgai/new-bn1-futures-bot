@@ -256,3 +256,63 @@ def test_lobster_0909_pullback_holds_and_exits_at_box2_climax_peak():
     assert verdict_0915.allowed, f"Box 2 (09:15) 2nd-wave climax peak MUST exit LONG, got: {verdict_0915.code}"
     assert verdict_0915.code == "EXIT_LONG_TRUE_PEAK_TOP"
 
+
+def test_lobster_0920_0921_ma_cross_opens_short():
+    """Verify that when MA5 crosses below MA15 and KC middle slopes downward in 龙虾 at 09:20 and 09:21,
+    the short entry is authorized and opens immediately at the start of the downward wave."""
+    m_0920 = MarketSnapshot(
+        symbol="龙虾/USDT",
+        quote=0.01757,
+        open_price=0.01760,
+        close_price=0.01757,
+        high_price=0.01762,
+        low_price=0.01754,
+        ma5_curr=0.017584,
+        ma5_prev=0.017606,
+        ma15_curr=0.017630,
+        ma15_prev=0.017636,
+        kc_upper=0.017708,
+        kc_middle=0.017606,
+        kc_middle_prev=0.017610,
+        kc_lower=0.017504,
+        atr=0.000045,
+        timeframe_ms=60000,
+        is_closed=True,
+        ma_cross_count_8=1,
+        kc_width_max_20=0.0002,
+        macro_trend="BEARISH",
+        ma3_curr=0.01757,
+        ma3_prev=0.01759,
+    )
+    dec_0920 = MasterGateFunnel.evaluate_open_short(m_0920, is_in_cooldown=False)
+    assert dec_0920.can_execute is True, f"09:20 short must be authorized, got: {dec_0920.reason}"
+    assert dec_0920.action == "OPEN_SHORT"
+
+    m_0921 = MarketSnapshot(
+        symbol="龙虾/USDT",
+        quote=0.01755,
+        open_price=0.01757,
+        close_price=0.01755,
+        high_price=0.01757,
+        low_price=0.01752,
+        ma5_curr=0.017568,
+        ma5_prev=0.017584,
+        ma15_curr=0.017620,
+        ma15_prev=0.017630,
+        kc_upper=0.017700,
+        kc_middle=0.017601,
+        kc_middle_prev=0.017606,
+        kc_lower=0.017503,
+        atr=0.000045,
+        timeframe_ms=60000,
+        is_closed=True,
+        ma_cross_count_8=1,
+        kc_width_max_20=0.0002,
+        macro_trend="BEARISH",
+        ma3_curr=0.01755,
+        ma3_prev=0.01757,
+    )
+    dec_0921 = MasterGateFunnel.evaluate_open_short(m_0921, is_in_cooldown=False)
+    assert dec_0921.can_execute is True, f"09:21 short must be authorized, got: {dec_0921.reason}"
+    assert dec_0921.action == "OPEN_SHORT"
+

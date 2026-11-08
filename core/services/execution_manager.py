@@ -4467,6 +4467,9 @@ class ExecutionManager:
                     if call_meta.get("raw_df") is None and klines_df is not None:
                         call_meta["raw_df"] = klines_df
                     raw_df_instance = call_meta.get("raw_df")
+                    if raw_df_instance is not None:
+                        call_meta.setdefault("entry_gate_frame", raw_df_instance)
+                        call_meta.setdefault("frame", raw_df_instance)
                     try:
                         call_meta["intrabar_authorized"] = bool(
                             raw_df_instance is not None

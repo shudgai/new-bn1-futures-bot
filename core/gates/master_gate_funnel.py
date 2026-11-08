@@ -1539,9 +1539,11 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                 return False, "BLOCKED_SHORT_MACRO_TREND_CONFLICT"
             if curr_sh is not None and prev_sh is not None and curr_sh >= prev_sh:
                 return False, "BLOCKED_SHORT_MULTI_BAR_STRUCTURE_NOT_LH"
-            # 2. 長下影線否決：(min(open, close) - low) >= 0.4 * ATR
+            # 2. 長下影線否決：(min(open, close) - low) >= 0.4 * ATR (妖幣採用 meme_distance_atr 避免微幅跳價誤殺)
+            from core.symbol_aliases import is_meme_breakout_symbol
+            effective_atr = meme_distance_atr(m.symbol, m.atr) if is_meme_breakout_symbol(m.symbol) else m.atr
             lower_wick = min(m.open_price, m.close_price) - m.low_price
-            if lower_wick >= 0.4 * m.atr or math.isclose(lower_wick, 0.4 * m.atr, rel_tol=1e-9):
+            if lower_wick >= 0.4 * effective_atr or math.isclose(lower_wick, 0.4 * effective_atr, rel_tol=1e-9):
                 return False, "BLOCKED_SHORT_LONG_LOWER_WICK_V_TRAP"
             # 3. 跌破下軌時之通道張口與均線斜率審查
             if m.close_price < m.kc_lower:
@@ -1753,8 +1755,10 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             # 6. 結構審查 (頂頂低 LH) 與長下影線過濾
             if curr_sh is not None and prev_sh is not None and curr_sh >= prev_sh:
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_MULTI_BAR_STRUCTURE_NOT_LH", details)
+            from core.symbol_aliases import is_meme_breakout_symbol
+            effective_atr = meme_distance_atr(m.symbol, m.atr) if is_meme_breakout_symbol(m.symbol) else m.atr
             lower_wick = min(m.open_price, m.close_price) - m.low_price
-            if lower_wick >= 0.4 * m.atr or math.isclose(lower_wick, 0.4 * m.atr, rel_tol=1e-9):
+            if lower_wick >= 0.4 * effective_atr or math.isclose(lower_wick, 0.4 * effective_atr, rel_tol=1e-9):
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_LONG_LOWER_WICK_V_TRAP", details)
 
             # 7. 破軌真偽檢驗 (通道張口、均線斜率等)

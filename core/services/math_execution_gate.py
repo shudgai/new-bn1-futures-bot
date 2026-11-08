@@ -997,16 +997,14 @@ async def validate_entry_at_execution(
     # account-side gates. Re-fetching here and again in entry_firewall both
     # wastes REST calls and can hold the global submit lock across settlement
     # retries.
-    frame = payload.get("entry_gate_frame")
+    frame = payload.get("entry_gate_frame") or payload.get("frame") or payload.get("raw_df")
     provider = getattr(account, "entry_frame_provider", None)
     if frame is None and callable(provider):
         frame = provider(symbol)
         if hasattr(frame, "__await__"):
             frame = await frame
     if frame is None:
-        frame = payload.get("entry_gate_frame")
-    if frame is None:
-        frame = payload.get("frame")
+        frame = payload.get("entry_gate_frame") or payload.get("frame") or payload.get("raw_df")
     if frame is None:
         snapshot = payload.get("snapshot")
         if isinstance(snapshot, Mapping):
