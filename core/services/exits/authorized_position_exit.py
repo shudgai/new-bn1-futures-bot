@@ -85,6 +85,11 @@ class UltimateExitGatekeeper:
             logger.error("ULTIMATE_EXIT_INVALID_PRICE symbol=%s price=%s", symbol, price)
             return False
 
+        # 🚀 ACTIVE_EXIT 授權：主動鎖盈平倉、峰頂吞噬/RSI下彎、追蹤止盈、破MA5及時平倉
+        if "ACTIVE_EXIT" in str(reason).upper():
+            logger.info("⚡ [ULTIMATE_EXIT_ALLOWED] symbol=%s ACTIVE_EXIT 授權通過: reason=%s", symbol, reason)
+            return True
+
         from core.gates.ultimate_short_exit_gatekeeper import (
             DEFER, UltimateShortExitGatekeeper,
         )

@@ -659,6 +659,14 @@ def check_exit_conditions(
     # 2. 一般情況：必須等待 K 線完全走完 (收盤) 才評估真峰谷轉向
     # =========================================================
     if is_bar_closed:
+        # 優先執行三層主動鎖盈平倉機制 (evaluate_exit_logic)
+        if entry_price is not None and entry_price > 0:
+            exit_eval = evaluate_exit_logic(
+                df=df, current_position=current_position, entry_price=entry_price
+            )
+            if exit_eval.get("action") in ("CLOSE_LONG", "CLOSE_SHORT"):
+                return exit_eval
+
         return evaluate_true_peak_trough_strategy(
             df, current_position=current_position, live_price=current_price, symbol=symbol
         )
@@ -803,7 +811,124 @@ def evaluate_strategy(
                 "reason": "錯過峰頂，反彈 MA5 受阻補救開空",
             }
 
-    return {"action": "HOLD", "reason": "無明確訊號，維持現狀"}
+# =============================================================================
+# 三層主動鎖盈平倉機制 (evaluate_exit_logic)
+# 專治平倉滯後：1. 真峰谷第一時間轉折平倉 (主動鎖盈)
+#               2. 追蹤止盈 (Trailing Stop / 獲利回吐平倉)
+#               3. 失守 MA5 均線平倉防禦
+# =============================================================================
+def evaluate_exit_logic(
+    df: pd.DataFrame, current_position: PositionState, entry_price: float
+) -> dict:
+    """
+    專治平倉滯後的三層離場/平倉機制：
+    1. 真峰谷第一時間轉折平倉 (主動鎖盈)
+    2. 追蹤止盈 (Trailing Stop / 獲利回吐平倉)
+    3. 跌破 MA5 均線及時平倉
+    """
+    if isinstance(current_position, str):
+        current_position = PositionState(current_position.upper())
+
+    if current_position == PositionState.NONE:
+        return {"action": "HOLD", "reason": "無持倉"}
+
+    if len(df) < 5:
+        return {"action": "HOLD", "reason": "數據長度不足"}
+
+    c0 = float(df["close"].iloc[-1])
+    o0 = float(df["open"].iloc[-1])
+    h0 = float(df["high"].iloc[-1])
+    l0 = float(df["low"].iloc[-1])
+    l1 = float(df["low"].iloc[-2])
+    h1 = float(df["high"].iloc[-2])
+
+    kc_mid = float(df["kc_mid"].iloc[-1]) if "kc_mid" in df.columns else float(df["kc_middle"].iloc[-1])
+    rsi0 = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+    rsi1 = float(df["rsi"].iloc[-2]) if "rsi" in df.columns else 50.0
+    ma5_val = float(df["ma5"].iloc[-1]) if "ma5" in df.columns else c0
+
+    # 進場後近期最高/最低點 (取最近 10 根)
+    high_series = df["high"].iloc[-10:] if len(df) >= 10 else df["high"]
+    low_series = df["low"].iloc[-10:] if len(df) >= 10 else df["low"]
+    max_price_since_entry = float(high_series.max())
+    min_price_since_entry = float(low_series.min())
+
+    # =========================================================
+    # 🟢 持有「多單」時的平倉/鎖盈條件 (針對 1000PEPE / 龙虾 修正)
+    # =========================================================
+    if current_position == PositionState.LONG:
+        # 【條件 A：真峰頂第一時間主動平多】(防止跌到底部才平)
+        # 價格處於 KC 中軌上方高位 + 出現陰線實體吞噬前低 (或 RSI 自高位 >65 下彎)
+        is_high_zone = c0 >= kc_mid
+        is_bearish_engulf = (c0 < o0) and (c0 < l1)
+        is_rsi_peak_down = (rsi1 > 65.0) and (rsi0 < rsi1)
+
+        if is_high_zone and (is_bearish_engulf or is_rsi_peak_down):
+            return {
+                "action": "CLOSE_LONG",
+                "reason": "觸發真峰頂轉向信號，高位第一時間獲利平多",
+            }
+
+        # 【條件 B：動態追蹤止盈 / 獲利回吐保護】(防止利潤全吐光)
+        # 若曾衝高獲利 > 0.6%，但從最高點拉回超過 0.3% 時，立刻平倉鎖定利潤
+        if entry_price > 0:
+            max_profit_pct = (max_price_since_entry - entry_price) / entry_price
+            current_drawback = (
+                (max_price_since_entry - c0) / max_price_since_entry
+                if max_price_since_entry > 0
+                else 0.0
+            )
+
+            if max_profit_pct > 0.006 and current_drawback > 0.003:
+                return {
+                    "action": "CLOSE_LONG",
+                    "reason": "觸發追蹤止盈，利潤自最高點回吐 0.3% 強制平多鎖盈",
+                }
+
+        # 【條件 C：失守 MA5 均線平多】(第二道退路，絕不可等跌穿 KC 下軌)
+        if c0 < ma5_val and c0 < o0:
+            return {
+                "action": "CLOSE_LONG",
+                "reason": "收盤跌破 MA5 均線，及時平多保本",
+            }
+
+    # =========================================================
+    # 🔴 持有「空單」時的平倉/鎖盈條件
+    # =========================================================
+    elif current_position == PositionState.SHORT:
+        is_low_zone = c0 <= kc_mid
+        is_bullish_engulf = (c0 > o0) and (c0 > h1)
+        is_rsi_trough_up = (rsi1 < 35.0) and (rsi0 > rsi1)
+
+        if is_low_zone and (is_bullish_engulf or is_rsi_trough_up):
+            return {
+                "action": "CLOSE_SHORT",
+                "reason": "觸發真谷底轉向信號，低位第一時間平空/買回",
+            }
+
+        # 空單追蹤止盈：跌幅獲利超過 0.6%，自最低點反彈超過 0.3%
+        if entry_price > 0:
+            max_profit_pct = (entry_price - min_price_since_entry) / entry_price
+            current_rebound = (
+                (c0 - min_price_since_entry) / min_price_since_entry
+                if min_price_since_entry > 0
+                else 0.0
+            )
+            if max_profit_pct > 0.006 and current_rebound > 0.003:
+                return {
+                    "action": "CLOSE_SHORT",
+                    "reason": "觸發空單追蹤止盈，自最低點反彈 0.3% 強制平空鎖盈",
+                }
+
+        # 失守 MA5：收盤突破 MA5 且收陽線
+        if c0 > ma5_val and c0 > o0:
+            return {
+                "action": "CLOSE_SHORT",
+                "reason": "收盤突破 MA5 均線，及時平空保本",
+            }
+
+    return {"action": "HOLD", "reason": "未達平倉條件，繼續持倉"}
+
 
 
 

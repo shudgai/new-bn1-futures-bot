@@ -30,6 +30,7 @@ from core.strategies.true_peak_trough_strategy import (
     evaluate_true_peak_trough,
     evaluate_true_peak_trough_strategy,
     check_exit_conditions,
+    evaluate_exit_logic,
     CHOP_ADX_MIN,
     CHOP_BW_MIN,
     RSI_PEAK_THRESHOLD,
@@ -641,6 +642,68 @@ class TestCleanEvaluateStrategy:
         res = evaluate_strategy(df, PositionState.NONE)
         assert res["action"] == "OPEN_SHORT"
         assert "反彈 MA5 受阻補救開空" in res["reason"]
+
+
+class TestEvaluateExitLogic:
+    """專治平倉滯後的三層離場/平倉機制 (evaluate_exit_logic) 測試"""
+
+    def test_peak_engulfing_exit_long(self):
+        """【條件 A】真峰頂第一時間吞噬平多：高位 + 陰線實體跌破前低 ➔ CLOSE_LONG"""
+        rows = _build_bullish_market(6)
+        rows[-2]["low"] = 101.0
+        rows[-1]["open"] = 101.5
+        rows[-1]["close"] = 100.8  # c0 < o0 且 c0 < l1
+        rows[-1]["kc_mid"] = 100.0  # c0 >= kc_mid (高位)
+        df = _make_df(rows)
+        res = evaluate_exit_logic(df, PositionState.LONG, entry_price=100.0)
+        assert res["action"] == "CLOSE_LONG"
+        assert "真峰頂" in res["reason"]
+
+    def test_trailing_stop_profit_lock_exit_long(self):
+        """【條件 B】動態追蹤止盈平多：最高浮盈 > 0.6% 且自高點回吐 > 0.3% ➔ CLOSE_LONG"""
+        rows = _build_bullish_market(10)
+        entry_price = 100.0
+        # 曾經衝高到 101.0 (+1.0% > 0.6%)
+        rows[4]["high"] = 101.0
+        # 目前回吐到 100.5 (自 101.0 回吐 0.5/101 = 0.495% > 0.3%)
+        # 但未跌破 MA5 也未吞噬，僅觸發追蹤止盈
+        rows[-1]["open"] = 100.4
+        rows[-1]["close"] = 100.5  # 陽線 (排除條件 A)
+        rows[-1]["ma5"] = 100.4    # close > ma5 (排除條件 C)
+        rows[-1]["high"] = 100.6
+        rows[-1]["kc_mid"] = 100.0
+        df = _make_df(rows)
+        res = evaluate_exit_logic(df, PositionState.LONG, entry_price=entry_price)
+        assert res["action"] == "CLOSE_LONG"
+        assert "追蹤止盈" in res["reason"]
+
+    def test_broken_ma5_exit_long(self):
+        """【條件 C】跌破 MA5 均線平多及時保本：close < ma5 且收黑陰線 ➔ CLOSE_LONG"""
+        rows = _build_bullish_market(6)
+        rows[-2]["low"] = 99.0
+        # 排除追蹤止盈觸發 (entry_price 設為 101.0，最高點 101.3，最高浮盈 0.29% < 0.6%)
+        entry_price = 101.0
+        rows[-1]["open"] = 101.0
+        rows[-1]["close"] = 100.8  # 陰線
+        rows[-1]["ma5"] = 100.9    # close < ma5
+        rows[-1]["kc_mid"] = 99.5
+        df = _make_df(rows)
+        res = evaluate_exit_logic(df, PositionState.LONG, entry_price=entry_price)
+        assert res["action"] == "CLOSE_LONG"
+        assert "跌破 MA5" in res["reason"]
+
+    def test_trough_engulfing_exit_short(self):
+        """空單真谷底第一時間平空：低位 + 陽線突破前高 ➔ CLOSE_SHORT"""
+        rows = _build_bearish_market(6)
+        rows[-2]["high"] = 99.0
+        rows[-1]["open"] = 98.5
+        rows[-1]["close"] = 99.2  # c0 > o0 且 c0 > h1
+        rows[-1]["kc_mid"] = 100.0  # c0 <= kc_mid (低位)
+        df = _make_df(rows)
+        res = evaluate_exit_logic(df, PositionState.SHORT, entry_price=100.0)
+        assert res["action"] == "CLOSE_SHORT"
+        assert "真谷底" in res["reason"]
+
 
 
 

@@ -1012,12 +1012,30 @@ class ExecutionManager:
             # 🛡️ 妖幣平倉唯一結構出口：收線 + 真峰谷確認 / 完整結構破壞 / 緊急斷路器（未達真峰谷或結構未破前嚴禁因 Stage 1 鎖利提前平倉！）
             from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
             if _is_meme_exit_symbol(symbol):
-                from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
-                structure_reason = UltimateShortExitGatekeeper.structure_exit_candidate(
-                    symbol, current_position,
-                    getattr(account, "position_meta", {}).get(symbol, {}),
-                    curr_quote, raw_df,
-                )
+                # 🚀 優先評估三層主動鎖盈平倉機制 (evaluate_exit_logic: 峰頂吞噬/RSI下彎、追蹤止盈回吐0.3%、破MA5保本)
+                from core.strategies.true_peak_trough_strategy import evaluate_exit_logic, PositionState as _TruePosState
+                _active_exit_res = None
+                if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 5:
+                    try:
+                        _active_exit_res = evaluate_exit_logic(
+                            df=raw_df,
+                            current_position=_TruePosState(pos_side),
+                            entry_price=pos_entry,
+                        )
+                    except Exception as _ex:
+                        logger.warning(f"[evaluate_exit_logic] error: {_ex}")
+                        _active_exit_res = None
+
+                if _active_exit_res and _active_exit_res.get("action") in ("CLOSE_LONG", "CLOSE_SHORT"):
+                    structure_reason = f"ACTIVE_EXIT_{_active_exit_res['action']}|{_active_exit_res.get('reason', '')}"
+                    logger.info(f"⚡ [ACTIVE_EXIT_TRIGGERED] {symbol} {pos_side} 觸發主動鎖盈/及時平倉: {structure_reason}")
+                else:
+                    from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+                    structure_reason = UltimateShortExitGatekeeper.structure_exit_candidate(
+                        symbol, current_position,
+                        getattr(account, "position_meta", {}).get(symbol, {}),
+                        curr_quote, raw_df,
+                    )
                 is_emerg_bar_open = bool(
                     raw_df is not None
                     and isinstance(raw_df, pd.DataFrame)
