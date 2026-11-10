@@ -556,14 +556,33 @@ class TestCleanEvaluateStrategy:
     """清理後簡潔結構 evaluate_strategy 測試"""
 
     def test_chop_freeze(self):
-        """ADX < 20 或帶幅 < 0.015 ➔ 凍結交易"""
+        """一般幣種 ADX < 20 或帶幅 < 0.015 ➔ 凍結交易"""
         rows = _build_bullish_market(6)
         for r in rows:
             r["adx"] = 18.0
         df = _make_df(rows)
-        res = evaluate_strategy(df, PositionState.NONE)
+        res = evaluate_strategy(df, PositionState.NONE, symbol="BTC/USDT")
         assert res["action"] == "HOLD"
         assert "震盪盤保護中" in res["reason"]
+
+    def test_meme_coin_relax_threshold(self):
+        """妖幣帶寬 0.0045 且 ADX 25 ➔ 不凍結；若帶寬 < 0.004 且 ADX < 35 ➔ 凍結"""
+        rows = _build_bullish_market(6)
+        for r in rows:
+            r["bandwidth"] = 0.003
+            r["adx"] = 25.0
+        df = _make_df(rows)
+        res_freeze = evaluate_strategy(df, PositionState.NONE, symbol="1000PEPE/USDT")
+        assert res_freeze["action"] == "HOLD"
+        assert "震盪盤保護中" in res_freeze["reason"]
+
+        # ADX >= 35 強動能 ➔ 妖幣豁免帶寬過窄
+        for r in rows:
+            r["bandwidth"] = 0.003
+            r["adx"] = 38.0
+        df2 = _make_df(rows)
+        res_pass = evaluate_strategy(df2, PositionState.NONE, symbol="1000PEPE/USDT")
+        assert "震盪盤保護中" not in res_pass["reason"]
 
     def test_long_flip_to_short_at_peak(self):
         """持有多單，到達真峰頂 (陰線跌破前低) ➔ FLIP_TO_SHORT"""

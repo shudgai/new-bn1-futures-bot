@@ -341,19 +341,28 @@ class TruePeakTroughStrategy:
 
     def _chop_gate(self, adx: Optional[float], bandwidth: Optional[float]) -> Optional[SignalResult]:
         """
-        震盪總開關：ADX 過低或帶寬過窄時凍結所有訊號。
+        震盪總開關：針對妖幣/小幣進行動態微調。
         回傳 SignalResult("FREEZE", ...) 或 None（代表通過）。
         """
-        if adx is not None and adx < CHOP_ADX_MIN:
+        is_meme_coin = self.symbol in ["龙虾/USDT", "1000PEPE/USDT", "1000RATS/USDT"] or any(
+            k in self.symbol.upper() for k in ("LOBSTER", "PEPE", "RATS", "CAP")
+        )
+        bw_threshold = 0.004 if is_meme_coin else 0.015
+        adx_threshold = 20.0
+
+        curr_adx = adx if adx is not None else 25.0
+        curr_bw = bandwidth if bandwidth is not None else 0.05
+        is_strong_trend = curr_adx >= 35.0
+
+        if is_meme_coin:
+            is_choppy = (curr_bw < bw_threshold) and not is_strong_trend
+        else:
+            is_choppy = (curr_adx < adx_threshold) or (curr_bw < bw_threshold)
+
+        if is_choppy:
             return SignalResult(
                 "FREEZE",
-                f"CHOP_GATE_ADX_LOW: adx={adx:.1f} < {CHOP_ADX_MIN}",
-                adx=adx, bandwidth=bandwidth,
-            )
-        if bandwidth is not None and bandwidth < CHOP_BW_MIN:
-            return SignalResult(
-                "FREEZE",
-                f"CHOP_GATE_BW_LOW: bandwidth={bandwidth:.4f} < {CHOP_BW_MIN}",
+                f"震盪盤保護中 (ADX={curr_adx:.1f}, BW={curr_bw:.4f}) - 凍結交易",
                 adx=adx, bandwidth=bandwidth,
             )
         return None
@@ -666,11 +675,11 @@ def check_exit_conditions(
 # 策略主引擎 (清理後的簡潔結構 / 輕量純粹版本 evaluate_strategy)
 # =============================================================================
 def evaluate_strategy(
-    df: pd.DataFrame, current_position: PositionState = PositionState.NONE
+    df: pd.DataFrame, current_position: PositionState = PositionState.NONE, symbol: str = ""
 ) -> dict:
     """
     真峰谷轉折與翻倉策略 (清理後之輕量高階純粹函式)：
-      1. 震盪盤 (ADX < 20 / 帶幅 < 0.015) ➔ 凍結交易 (不開倉、不平倉、不翻倉)
+      1. 關卡 1：震盪盤防禦 (針對妖幣/小幣進行動態微調)
       2. 捕捉真峰谷第一時間 ➔ 發動開倉或瞬間翻倉 (Flip Position)
       3. 一般 K 線 ➔ 必須走完 (收盤) 才評估平倉；大瀑布 / 暴跌 ➔ 盤中即時緊急風控
       4. 錯過第一時間 ➔ 回踩 MA5 止跌/受阻時進行補救開倉
@@ -716,9 +725,29 @@ def evaluate_strategy(
 
     ma5_val = float(df["ma5"].iloc[-1]) if "ma5" in df.columns else c0
 
-    # --- Step B: 關卡 1 - 震盪盤防禦 (無效盤整一律凍結) ---
-    if (curr_adx < 20) or (curr_bw < 0.015):
-        return {"action": "HOLD", "reason": "震盪盤保護中 - 凍結交易"}
+    # --- Step B: 關卡 1 - 震盪盤防禦 (針對妖幣/小幣進行動態微調) ---
+    is_meme_coin = symbol in ["龙虾/USDT", "1000PEPE/USDT", "1000RATS/USDT"] or any(
+        k in symbol.upper() for k in ("LOBSTER", "PEPE", "RATS", "CAP")
+    )
+    bw_threshold = 0.004 if is_meme_coin else 0.015  # 妖幣放寬至 0.4%
+    adx_threshold = 20.0
+
+    # 判定條件：若 ADX 非常強 (ADX >= 35)，代表爆發力強，允許帶寬適度放寬
+    is_strong_trend = curr_adx >= 35.0
+
+    # 震盪凍結判定
+    if is_meme_coin:
+        # 妖幣邏輯：帶寬極低 ( < 0.004 ) 且 無強大動能 ( ADX < 20 ) 時才凍結
+        is_choppy = (curr_bw < bw_threshold) and not is_strong_trend
+    else:
+        # 一般幣種邏輯
+        is_choppy = (curr_adx < adx_threshold) or (curr_bw < bw_threshold)
+
+    if is_choppy:
+        return {
+            "action": "HOLD",
+            "reason": f"震盪盤保護中 (ADX={curr_adx:.1f}, BW={curr_bw:.4f}) - 凍結交易",
+        }
 
     # --- Step C: 關卡 2 - 真峰谷訊號判定 ---
     # 🔴 真峰頂：高位區 + 陰線實體跌破前低 (或 RSI 下彎)
