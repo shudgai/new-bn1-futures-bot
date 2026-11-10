@@ -662,3 +662,119 @@ def check_exit_conditions(
     }
 
 
+# =============================================================================
+# 策略主引擎 (清理後的簡潔結構 / 輕量純粹版本 evaluate_strategy)
+# =============================================================================
+def evaluate_strategy(
+    df: pd.DataFrame, current_position: PositionState = PositionState.NONE
+) -> dict:
+    """
+    真峰谷轉折與翻倉策略 (清理後之輕量高階純粹函式)：
+      1. 震盪盤 (ADX < 20 / 帶幅 < 0.015) ➔ 凍結交易 (不開倉、不平倉、不翻倉)
+      2. 捕捉真峰谷第一時間 ➔ 發動開倉或瞬間翻倉 (Flip Position)
+      3. 一般 K 線 ➔ 必須走完 (收盤) 才評估平倉；大瀑布 / 暴跌 ➔ 盤中即時緊急風控
+      4. 錯過第一時間 ➔ 回踩 MA5 止跌/受阻時進行補救開倉
+    """
+    if isinstance(current_position, str):
+        current_position = PositionState(current_position.upper())
+
+    if len(df) < 5:
+        return {"action": "HOLD", "reason": "數據長度不足"}
+
+    # --- Step A: 取得指標數據 (相容 kc_mid / kc_middle, bandwidth / kc_width) ---
+    c0 = float(df["close"].iloc[-1])
+    o0 = float(df["open"].iloc[-1])
+    h0 = float(df["high"].iloc[-1])
+    l0 = float(df["low"].iloc[-1])
+
+    c1 = float(df["close"].iloc[-2])
+    l1 = float(df["low"].iloc[-2])
+    h1 = float(df["high"].iloc[-2])
+
+    kc_mid = float(df["kc_mid"].iloc[-1]) if "kc_mid" in df.columns else float(df["kc_middle"].iloc[-1])
+
+    if "bb_upper" in df.columns and "bb_lower" in df.columns:
+        bb_upper = float(df["bb_upper"].iloc[-1])
+        bb_lower = float(df["bb_lower"].iloc[-1])
+    elif "kc_upper" in df.columns and "kc_lower" in df.columns:
+        bb_upper = float(df["kc_upper"].iloc[-1])
+        bb_lower = float(df["kc_lower"].iloc[-1])
+    else:
+        bb_upper = float(df["bb_upper"].iloc[-1]) if "bb_upper" in df.columns else (kc_mid * 1.02)
+        bb_lower = float(df["bb_lower"].iloc[-1]) if "bb_lower" in df.columns else (kc_mid * 0.98)
+
+    curr_adx = float(df["adx"].iloc[-1]) if "adx" in df.columns else 25.0
+    if "bandwidth" in df.columns:
+        curr_bw = float(df["bandwidth"].iloc[-1])
+    elif "kc_width" in df.columns:
+        curr_bw = float(df["kc_width"].iloc[-1]) / (kc_mid if kc_mid != 0 else 1.0)
+    else:
+        curr_bw = (bb_upper - bb_lower) / (kc_mid if kc_mid != 0 else 1.0)
+
+    rsi0 = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+    rsi1 = float(df["rsi"].iloc[-2]) if "rsi" in df.columns else 50.0
+
+    ma5_val = float(df["ma5"].iloc[-1]) if "ma5" in df.columns else c0
+
+    # --- Step B: 關卡 1 - 震盪盤防禦 (無效盤整一律凍結) ---
+    if (curr_adx < 20) or (curr_bw < 0.015):
+        return {"action": "HOLD", "reason": "震盪盤保護中 - 凍結交易"}
+
+    # --- Step C: 關卡 2 - 真峰谷訊號判定 ---
+    # 🔴 真峰頂：高位區 + 陰線實體跌破前低 (或 RSI 下彎)
+    is_true_peak = (c0 >= kc_mid) and (
+        (c0 < o0 and c0 < l1) or (rsi1 > 60 and rsi0 < rsi1)
+    )
+
+    # 🟢 真谷底：低位區 + 陽線實體突破前高 (或 RSI 上彎)
+    is_true_trough = (c0 <= kc_mid) and (
+        (c0 > o0 and c0 > h1) or (rsi1 < 40 and rsi0 > rsi1)
+    )
+
+    # --- Step D: 關卡 3 - 狀態機決策 (清乾淨的 if/elif 分流) ---
+
+    # 情況 1：持有多單中
+    if current_position == PositionState.LONG:
+        if is_true_peak:
+            return {
+                "action": "FLIP_TO_SHORT",
+                "reason": "到達真峰頂，平多並瞬間開空",
+            }
+        return {"action": "HOLD", "reason": "未達真峰頂，無視盤中回檔繼續持多"}
+
+    # 情況 2：持有空單中
+    elif current_position == PositionState.SHORT:
+        if is_true_trough:
+            return {
+                "action": "FLIP_TO_LONG",
+                "reason": "到達真谷底，平空並瞬間開多",
+            }
+        return {"action": "HOLD", "reason": "未達真谷底，無視盤中反彈繼續持空"}
+
+    # 情況 3：完全無持倉 (尋求首波或補救進場)
+    elif current_position == PositionState.NONE:
+        # 首選：真峰谷第一時間
+        if is_true_peak and c0 > bb_lower:
+            return {"action": "OPEN_SHORT", "reason": "第一時間真峰頂開空"}
+        if is_true_trough and c0 < bb_upper:
+            return {"action": "OPEN_LONG", "reason": "第一時間真谷底開多"}
+
+        # 次選：補救開倉 (回踩 MA5 止跌/受阻)
+        is_ma5_retest_long = (c0 > o0) and (c0 >= ma5_val)
+        is_ma5_retest_short = (c0 < o0) and (c0 <= ma5_val)
+
+        if (c0 > kc_mid) and is_ma5_retest_long and (c0 < bb_upper):
+            return {
+                "action": "OPEN_LONG",
+                "reason": "錯過谷底，回踩 MA5 止跌補救開多",
+            }
+        if (c0 < kc_mid) and is_ma5_retest_short and (c0 > bb_lower):
+            return {
+                "action": "OPEN_SHORT",
+                "reason": "錯過峰頂，反彈 MA5 受阻補救開空",
+            }
+
+    return {"action": "HOLD", "reason": "無明確訊號，維持現狀"}
+
+
+

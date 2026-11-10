@@ -26,6 +26,7 @@ import pandas as pd
 from core.strategies.true_peak_trough_strategy import (
     TruePeakTroughStrategy,
     PositionState,
+    evaluate_strategy,
     evaluate_true_peak_trough,
     evaluate_true_peak_trough_strategy,
     check_exit_conditions,
@@ -549,6 +550,79 @@ class TestSecondaryPullbackEntry:
         res = strategy.evaluate(df, PositionState.NONE)
         assert res["action"] == "OPEN_LONG"
         assert "【補救開倉】" in res["reason"]
+
+
+class TestCleanEvaluateStrategy:
+    """清理後簡潔結構 evaluate_strategy 測試"""
+
+    def test_chop_freeze(self):
+        """ADX < 20 或帶幅 < 0.015 ➔ 凍結交易"""
+        rows = _build_bullish_market(6)
+        for r in rows:
+            r["adx"] = 18.0
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.NONE)
+        assert res["action"] == "HOLD"
+        assert "震盪盤保護中" in res["reason"]
+
+    def test_long_flip_to_short_at_peak(self):
+        """持有多單，到達真峰頂 (陰線跌破前低) ➔ FLIP_TO_SHORT"""
+        rows = _build_bullish_market(6)
+        # 前一根陽線
+        rows[-2]["close"] = 101.5
+        rows[-2]["open"] = 100.5
+        rows[-2]["low"] = 100.4
+        # 當前一根陰線實體跌破前低
+        rows[-1]["close"] = 100.2
+        rows[-1]["open"] = 101.4
+        rows[-1]["kc_mid"] = 100.0  # c0 >= kc_mid (高位)
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.LONG)
+        assert res["action"] == "FLIP_TO_SHORT"
+        assert "到達真峰頂" in res["reason"]
+
+    def test_short_flip_to_long_at_trough(self):
+        """持有空單，到達真谷底 (陽線突破前高) ➔ FLIP_TO_LONG"""
+        rows = _build_bearish_market(6)
+        rows[-2]["close"] = 98.5
+        rows[-2]["open"] = 99.5
+        rows[-2]["high"] = 99.6
+        # 當前一根陽線實體突破前高
+        rows[-1]["close"] = 99.8
+        rows[-1]["open"] = 98.6
+        rows[-1]["kc_mid"] = 100.0  # c0 <= kc_mid (低位)
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.SHORT)
+        assert res["action"] == "FLIP_TO_LONG"
+        assert "到達真谷底" in res["reason"]
+
+    def test_none_position_ma5_retest_long(self):
+        """無持倉，回踩 MA5 止跌補救開多"""
+        rows = _build_bullish_market(6)
+        rows[-1]["kc_mid"] = 100.0
+        rows[-1]["ma5"] = 100.8
+        rows[-1]["open"] = 100.7
+        rows[-1]["close"] = 101.0  # c0 > o0, c0 >= ma5, c0 > kc_mid
+        rows[-1]["bb_upper"] = 103.0  # c0 < bb_upper
+        # 避開真谷底條件 (c0 > kc_mid 本身就不是低位)
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.NONE)
+        assert res["action"] == "OPEN_LONG"
+        assert "回踩 MA5 止跌補救開多" in res["reason"]
+
+    def test_none_position_ma5_retest_short(self):
+        """無持倉，反彈 MA5 受阻補救開空"""
+        rows = _build_bearish_market(6)
+        rows[-1]["kc_mid"] = 100.0
+        rows[-1]["ma5"] = 99.2
+        rows[-1]["open"] = 99.3
+        rows[-1]["close"] = 99.0  # c0 < o0, c0 <= ma5, c0 < kc_mid
+        rows[-1]["bb_lower"] = 97.0  # c0 > bb_lower
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.NONE)
+        assert res["action"] == "OPEN_SHORT"
+        assert "反彈 MA5 受阻補救開空" in res["reason"]
+
 
 
 
