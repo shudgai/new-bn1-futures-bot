@@ -517,3 +517,38 @@ class TestCheckExitConditions:
         assert "VETO_HOLD_LONG" in res["reason"]
 
 
+class TestSecondaryPullbackEntry:
+    """錯過首波真峰谷後的「補救開倉 (Secondary Entry)」測試"""
+
+    def test_secondary_pullback_short_entry(self):
+        """
+        中軌向下 (偏空) + 反彈回踩 MA5 收陰受阻 (close < open 且 close <= ma5) ➔ 補救開空
+        """
+        rows = _build_bearish_market(6, kc_mid=100.0, slope=-0.1)
+        # 最新一根回踩 MA5 且收陰：kc_mid=99.4, ma5=99.2, open=99.3, close=99.1 <= ma5
+        rows[-1]["close"] = 99.1
+        rows[-1]["open"] = 99.3
+        rows[-1]["ma5"] = 99.2
+        rows[-1]["bb_lower"] = 98.0
+        df = _make_df(rows)
+        res = strategy.evaluate(df, PositionState.NONE)
+        assert res["action"] == "OPEN_SHORT"
+        assert "【補救開倉】" in res["reason"]
+
+    def test_secondary_pullback_long_entry(self):
+        """
+        中軌向上 (偏多) + 回踩 MA5 止跌收陽 (close > open 且 close >= ma5) ➔ 補救開多
+        """
+        rows = _build_bullish_market(6, kc_mid=100.0, slope=0.1)
+        # 最新一根回踩 MA5 且收陽：kc_mid=100.6, ma5=100.8, open=100.7, close=100.9 >= ma5
+        rows[-1]["close"] = 100.9
+        rows[-1]["open"] = 100.7
+        rows[-1]["ma5"] = 100.8
+        rows[-1]["bb_upper"] = 102.0
+        df = _make_df(rows)
+        res = strategy.evaluate(df, PositionState.NONE)
+        assert res["action"] == "OPEN_LONG"
+        assert "【補救開倉】" in res["reason"]
+
+
+

@@ -142,6 +142,9 @@ class TruePeakTroughStrategy:
         prev_open = metrics["prev_open"]
         prev_high = metrics["prev_high"]
         prev_low = metrics["prev_low"]
+        curr_ma5 = metrics["curr_ma5"]
+        curr_bb_upper = metrics["curr_bb_upper"]
+        curr_bb_lower = metrics["curr_bb_lower"]
         curr_body = abs(curr_close - curr_open)
         prev_body = abs(prev_close - prev_open)
 
@@ -152,7 +155,7 @@ class TruePeakTroughStrategy:
 
         # ─── 3. 無持倉：尋找新開倉機會 ───
         if current_position == PositionState.NONE:
-            # 嘗試峰頂開空
+            # 1. 首選：首波真峰谷轉折開倉
             peak_signal = self._check_true_peak(
                 curr_close, curr_open, curr_high, curr_body,
                 prev_close, prev_open, prev_high, prev_body,
@@ -160,14 +163,15 @@ class TruePeakTroughStrategy:
                 metrics,
             )
             if peak_signal:
-                return SignalResult(
-                    "OPEN_SHORT",
-                    peak_signal,
-                    rsi=rsi, macd_hist=macd_hist, adx=adx,
-                    bandwidth=bandwidth, kc_slope=kc_slope,
-                ).to_dict()
+                # 若有布林下軌防護，避免貼軌地板放空 (c0 > bb_lower)
+                if curr_bb_lower is None or curr_close > curr_bb_lower:
+                    return SignalResult(
+                        "OPEN_SHORT",
+                        f"【第一順位】捕捉到真峰頂，第一時間開空|{peak_signal}",
+                        rsi=rsi, macd_hist=macd_hist, adx=adx,
+                        bandwidth=bandwidth, kc_slope=kc_slope,
+                    ).to_dict()
 
-            # 嘗試谷底開多
             trough_signal = self._check_true_trough(
                 curr_close, curr_open, curr_low, curr_body,
                 prev_close, prev_open, prev_low, prev_body,
@@ -175,9 +179,38 @@ class TruePeakTroughStrategy:
                 metrics,
             )
             if trough_signal:
+                # 若有布林上軌防護，避免貼軌天花板追多 (c0 < bb_upper)
+                if curr_bb_upper is None or curr_close < curr_bb_upper:
+                    return SignalResult(
+                        "OPEN_LONG",
+                        f"【第一順位】捕捉到真谷底，第一時間開多|{trough_signal}",
+                        rsi=rsi, macd_hist=macd_hist, adx=adx,
+                        bandwidth=bandwidth, kc_slope=kc_slope,
+                    ).to_dict()
+
+            # 2. 次選：錯過峰谷後的「補救開倉 (Secondary Entry)」
+            # 🔴 補救開空：中軌向下 (主趨勢偏空) + 價格反彈回踩 MA5 且收陰線受阻
+            is_trend_down = kc_slope < 0
+            is_pullback_short = (curr_close < curr_open) and (curr_ma5 is not None and curr_close <= curr_ma5)
+            bb_lower_ok = (curr_bb_lower is None or curr_close > curr_bb_lower)
+
+            if is_trend_down and is_pullback_short and bb_lower_ok:
+                return SignalResult(
+                    "OPEN_SHORT",
+                    f"【補救開倉】錯過峰頂，於拉回回踩 MA5 受阻時補救開空 (close={curr_close:.4f}<=ma5={curr_ma5:.4f})",
+                    rsi=rsi, macd_hist=macd_hist, adx=adx,
+                    bandwidth=bandwidth, kc_slope=kc_slope,
+                ).to_dict()
+
+            # 🟢 補救開多：中軌向上 (主趨勢偏多) + 價格回踩 MA5 且收陽線受支撐
+            is_trend_up = kc_slope > 0
+            is_pullback_long = (curr_close > curr_open) and (curr_ma5 is not None and curr_close >= curr_ma5)
+            bb_upper_ok = (curr_bb_upper is None or curr_close < curr_bb_upper)
+
+            if is_trend_up and is_pullback_long and bb_upper_ok:
                 return SignalResult(
                     "OPEN_LONG",
-                    trough_signal,
+                    f"【補救開倉】錯過谷底，於拉回回踩 MA5 止跌時補救開多 (close={curr_close:.4f}>=ma5={curr_ma5:.4f})",
                     rsi=rsi, macd_hist=macd_hist, adx=adx,
                     bandwidth=bandwidth, kc_slope=kc_slope,
                 ).to_dict()
@@ -276,6 +309,9 @@ class TruePeakTroughStrategy:
         prev_rsi = _safe(prev.get("rsi"))
         macd_hist = _safe(curr.get("macd_hist"))
         prev_macd_hist = _safe(prev.get("macd_hist"))
+        curr_ma5 = _safe(curr.get("ma5"))
+        curr_bb_upper = _safe(curr.get("bb_upper"))
+        curr_bb_lower = _safe(curr.get("bb_lower"))
 
         curr_close = _safe(live_price) or _safe(curr.get("close"))
         if curr_close is None:
@@ -288,6 +324,9 @@ class TruePeakTroughStrategy:
             "prev_rsi": prev_rsi,
             "macd_hist": macd_hist,
             "prev_macd_hist": prev_macd_hist,
+            "curr_ma5": curr_ma5,
+            "curr_bb_upper": curr_bb_upper,
+            "curr_bb_lower": curr_bb_lower,
             "kc_mid": kc_mid_curr,
             "kc_slope": kc_mid_curr - kc_mid_prev,
             "curr_close": curr_close,
