@@ -32,6 +32,7 @@ from core.strategies.true_peak_trough_strategy import (
     check_exit_conditions,
     evaluate_exit_logic,
     evaluate_exit_with_trend_lock,
+    check_wave_start_and_open,
     CHOP_ADX_MIN,
     CHOP_BW_MIN,
     RSI_PEAK_THRESHOLD,
@@ -768,6 +769,83 @@ class TestEvaluateExitWithTrendLock:
         res = evaluate_exit_with_trend_lock(df, PositionState.LONG, entry_price=entry_price)
         assert res["action"] == "EMERGENCY_CLOSE"
         assert "極端風控" in res["reason"]
+
+
+class TestCheckWaveStartAndOpen:
+    """波段開始第一時間開倉與翻倉 (check_wave_start_and_open) 測試"""
+
+    def test_wave_hold_when_adx_low_and_bandwidth_small(self):
+        """ADX < 20 且帶寬 < 0.005 ➔ 波段尚未發動，HOLD"""
+        rows = _build_bullish_market(6)
+        for r in rows:
+            r["adx"] = 15.0
+            r["bandwidth"] = 0.003
+        df = _make_df(rows)
+        res = check_wave_start_and_open(df, PositionState.NONE)
+        assert res["action"] == "HOLD"
+        assert "波段尚未發動" in res["reason"]
+
+    def test_wave_start_open_long_at_trough(self):
+        """帶寬 >= 0.005，低位谷底大陽吞噬突破前高 ➔ 🚀 多頭波段開始！第一時間開多"""
+        rows = _build_bearish_market(6)
+        for r in rows:
+            r["bandwidth"] = 0.006
+        # 前一根陰線
+        rows[-2]["high"] = 99.5
+        rows[-2]["close"] = 98.8
+        # 當前一根大陽線實體突破前高
+        rows[-1]["open"] = 98.7
+        rows[-1]["close"] = 99.7  # c0 > o0 且 c0 > h1
+        rows[-1]["kc_mid"] = 100.0 # c0 <= kc_mid (低位)
+        rows[-1]["bb_upper"] = 102.0
+        df = _make_df(rows)
+        res = check_wave_start_and_open(df, PositionState.NONE)
+        assert res["action"] == "OPEN_LONG"
+        assert "多頭波段開始" in res["reason"]
+
+    def test_wave_start_open_short_at_peak(self):
+        """帶寬 >= 0.005，高位峰頂大陰吞噬跌破前低 ➔ 📉 空頭波段開始！第一時間開空"""
+        rows = _build_bullish_market(6)
+        for r in rows:
+            r["bandwidth"] = 0.006
+        rows[-2]["low"] = 100.5
+        rows[-2]["close"] = 101.2
+        rows[-1]["open"] = 101.3
+        rows[-1]["close"] = 100.3  # c0 < o0 且 c0 < l1
+        rows[-1]["kc_mid"] = 100.0 # c0 >= kc_mid (高位)
+        rows[-1]["bb_lower"] = 98.0
+        df = _make_df(rows)
+        res = check_wave_start_and_open(df, PositionState.NONE)
+        assert res["action"] == "OPEN_SHORT"
+        assert "空頭波段開始" in res["reason"]
+
+    def test_hold_long_during_wave_continuation(self):
+        """持有多單，未到真峰頂前 ➔ 繼續持多讓利潤奔跑"""
+        rows = _build_bullish_market(6)
+        for r in rows:
+            r["bandwidth"] = 0.006
+        rows[-1]["open"] = 100.8
+        rows[-1]["close"] = 101.2  # 順向陽線
+        rows[-1]["kc_mid"] = 100.0
+        df = _make_df(rows)
+        res = check_wave_start_and_open(df, PositionState.LONG)
+        assert res["action"] == "HOLD"
+        assert "多頭波段走向未變" in res["reason"]
+
+    def test_flip_to_short_when_long_reaches_peak(self):
+        """持有多單，波段到頂出現峰頂反轉 ➔ 🔄 平多並瞬間翻空"""
+        rows = _build_bullish_market(6)
+        for r in rows:
+            r["bandwidth"] = 0.006
+        rows[-2]["low"] = 100.5
+        rows[-1]["open"] = 101.3
+        rows[-1]["close"] = 100.3  # 陰線實體破前低
+        rows[-1]["kc_mid"] = 100.0
+        df = _make_df(rows)
+        res = check_wave_start_and_open(df, PositionState.LONG)
+        assert res["action"] == "FLIP_TO_SHORT"
+        assert "平多並瞬間翻空" in res["reason"]
+
 
 
 

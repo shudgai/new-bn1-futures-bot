@@ -1024,6 +1024,123 @@ def evaluate_exit_with_trend_lock(
     return {"action": "HOLD", "reason": "無動作"}
 
 
+# =============================================================================
+# 波段開始第一時間開倉與翻倉邏輯 (check_wave_start_and_open)
+# 核心原則：
+#   1. 判定盤整結束、波段發動 (ADX >= 20 且上升 / 帶寬張開 >= 0.005)
+#   2. 捕捉波段起漲 (谷底第一根大陽/突破) 或 波段起跌 (峰頂第一根大陰/跌破)
+#   3. 波段走向未變前保持持倉 (HOLD 讓利潤奔跑)
+# =============================================================================
+def check_wave_start_and_open(
+    df: pd.DataFrame, current_position: PositionState = PositionState.NONE
+) -> dict:
+    """
+    專門捕捉「波段開始第一時間」發動開倉/翻倉的邏輯：
+    1. 判定盤整結束、波段發動 (ADX 向上爆發 / 帶寬張開)
+    2. 捕捉波段起漲 (谷底第一根大陽/突破) 或 波段起跌 (峰頂第一根大陰/跌破)
+    3. 波段走向未變前保持持倉 (HOLD 讓利潤奔跑)
+    """
+    if isinstance(current_position, str):
+        current_position = PositionState(current_position.upper())
+
+    if len(df) < 5:
+        return {"action": "HOLD", "reason": "數據長度不足"}
+
+    c0 = float(df["close"].iloc[-1])
+    o0 = float(df["open"].iloc[-1])
+    h0 = float(df["high"].iloc[-1])
+    l0 = float(df["low"].iloc[-1])
+    h1 = float(df["high"].iloc[-2])
+    l1 = float(df["low"].iloc[-2])
+
+    kc_mid = float(df["kc_mid"].iloc[-1]) if "kc_mid" in df.columns else float(df["kc_middle"].iloc[-1])
+
+    if "bb_upper" in df.columns and "bb_lower" in df.columns:
+        bb_upper = float(df["bb_upper"].iloc[-1])
+        bb_lower = float(df["bb_lower"].iloc[-1])
+    elif "kc_upper" in df.columns and "kc_lower" in df.columns:
+        bb_upper = float(df["kc_upper"].iloc[-1])
+        bb_lower = float(df["kc_lower"].iloc[-1])
+    else:
+        bb_upper = float(df["bb_upper"].iloc[-1]) if "bb_upper" in df.columns else (kc_mid * 1.02)
+        bb_lower = float(df["bb_lower"].iloc[-1]) if "bb_lower" in df.columns else (kc_mid * 0.98)
+
+    adx0 = float(df["adx"].iloc[-1]) if "adx" in df.columns else 25.0
+    adx1 = float(df["adx"].iloc[-2]) if "adx" in df.columns else 25.0
+
+    if "bandwidth" in df.columns:
+        bw0 = float(df["bandwidth"].iloc[-1])
+    elif "kc_width" in df.columns:
+        bw0 = float(df["kc_width"].iloc[-1]) / (kc_mid if kc_mid != 0 else 1.0)
+    else:
+        bw0 = (bb_upper - bb_lower) / (kc_mid if kc_mid != 0 else 1.0)
+
+    rsi0 = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+    rsi1 = float(df["rsi"].iloc[-2]) if "rsi" in df.columns else 50.0
+
+    # =========================================================
+    # Step 1: 判定是否為「波段剛開始發動」的特徵
+    # =========================================================
+    # 條件: ADX 大於 20 且呈上升趨勢 (或帶寬由收斂轉張開 >= 0.005)
+    is_wave_starting = (adx0 >= 20.0 and adx0 > adx1) or (bw0 >= 0.005)
+
+    # 若市場仍死水微幅橫盤，繼續凍結
+    if not is_wave_starting:
+        return {"action": "HOLD", "reason": "波段尚未發動 (ADX/帶寬未放大)，持續等待"}
+
+    # =========================================================
+    # Step 2: 捕捉波段起跌與起漲的第一時間點位
+    # =========================================================
+    # 🔴 多頭波段發動 / 真谷底起漲點 (開多 / 翻多)
+    is_trough_reversal = (c0 <= kc_mid) and (
+        (c0 > o0 and c0 > h1) or (rsi1 < 40.0 and rsi0 > rsi1)
+    )
+
+    # 🟢 空頭波段發動 / 真峰頂起跌點 (開空 / 翻空)
+    is_peak_reversal = (c0 >= kc_mid) and (
+        (c0 < o0 and c0 < l1) or (rsi1 > 60.0 and rsi0 < rsi1)
+    )
+
+    # =========================================================
+    # Step 3: 狀態機發動交易 (無持倉開倉 / 有持倉到達波段終點翻倉)
+    # =========================================================
+    # 情況 A：無持倉 ➔ 捕捉波段起點進場
+    if current_position == PositionState.NONE:
+        if is_trough_reversal and c0 < bb_upper:
+            return {
+                "action": "OPEN_LONG",
+                "reason": "🚀 多頭波段開始！第一時間於谷底/起漲點開多",
+            }
+        elif is_peak_reversal and c0 > bb_lower:
+            return {
+                "action": "OPEN_SHORT",
+                "reason": "📉 空頭波段開始！第一時間於峰頂/起跌點開空",
+            }
+
+    # 情況 B：持有多單 ➔ 只有波段走向反轉到真峰頂才平多翻空
+    elif current_position == PositionState.LONG:
+        if is_peak_reversal:
+            return {
+                "action": "FLIP_TO_SHORT",
+                "reason": "🔄 多頭波段結束，空頭波段開始！平多並瞬間翻空",
+            }
+        else:
+            return {"action": "HOLD", "reason": "多頭波段走向未變，繼續持多讓利潤奔跑"}
+
+    # 情況 C：持有空單 ➔ 只有波段走向反轉到真谷底才平空翻多
+    elif current_position == PositionState.SHORT:
+        if is_trough_reversal:
+            return {
+                "action": "FLIP_TO_LONG",
+                "reason": "🔄 空頭波段結束，多頭波段開始！平空並瞬間翻多",
+            }
+        else:
+            return {"action": "HOLD", "reason": "空頭波段走向未變，繼續持空讓利潤奔跑"}
+
+    return {"action": "HOLD", "reason": "等待波段確立發動"}
+
+
+
 
 
 
