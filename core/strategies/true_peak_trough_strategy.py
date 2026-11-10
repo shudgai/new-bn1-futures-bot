@@ -930,5 +930,100 @@ def evaluate_exit_logic(
     return {"action": "HOLD", "reason": "未達平倉條件，繼續持倉"}
 
 
+# =============================================================================
+# 波段方向鎖定平倉邏輯 (evaluate_exit_with_trend_lock)
+# 核心原則：只要 KC 中軌生命線方向沒變，中間微幅拉回小陰小陽一律不平倉，抱緊讓利潤奔跑！
+# =============================================================================
+def evaluate_exit_with_trend_lock(
+    df: pd.DataFrame, current_position: PositionState, entry_price: float
+) -> dict:
+    """
+    專注於「波段走向沒變就不平倉」的平倉/翻倉邏輯：
+    1. 以 KC 中軌 (MA20) 方向作為波段生命線
+    2. 中間微幅 K 線反向、未跌破中軌前，一律 HOLD
+    3. 只有波段趨勢真正反轉 (實體破中軌或大瀑布極端風控) 才離場
+    """
+    if isinstance(current_position, str):
+        current_position = PositionState(current_position.upper())
+
+    if current_position == PositionState.NONE:
+        return {"action": "HOLD", "reason": "無持倉"}
+
+    if len(df) < 5:
+        return {"action": "HOLD", "reason": "數據長度不足"}
+
+    c0 = float(df["close"].iloc[-1])
+    o0 = float(df["open"].iloc[-1])
+
+    # 1. 計算波段生命線 (KC 中軌 MA20) 與其斜率/方向
+    kc_mid = float(df["kc_mid"].iloc[-1]) if "kc_mid" in df.columns else float(df["kc_middle"].iloc[-1])
+    kc_mid_prev = float(df["kc_mid"].iloc[-2]) if "kc_mid" in df.columns else float(df["kc_middle"].iloc[-2])
+
+    # 波段方向判定 (中軌當前 > 前一根 = 波段向上)
+    is_main_trend_up = kc_mid > kc_mid_prev
+    is_main_trend_down = kc_mid < kc_mid_prev
+
+    # 2. 判斷極端大瀑布 / 風控防禦 (防止黑天鵝)
+    atr = float(df["atr"].iloc[-1]) if ("atr" in df.columns and len(df["atr"]) > 0 and pd.notna(df["atr"].iloc[-1])) else (c0 * 0.02)
+    price_change = (
+        (c0 - entry_price)
+        if current_position == PositionState.LONG
+        else (entry_price - c0)
+    )
+
+    # 情況 A：防範極端大瀑布 (損失超過 2 倍 ATR 硬止損)
+    if entry_price > 0 and price_change < -abs(atr * 2.0):
+        return {
+            "action": "EMERGENCY_CLOSE",
+            "reason": f"觸及極端風控硬止損 (損失={abs(price_change):.4f} > 2.0*ATR={2*atr:.4f})，保護本金平倉",
+        }
+
+    # =========================================================
+    # 🟢 持有「多單」時的離場邏輯
+    # =========================================================
+    if current_position == PositionState.LONG:
+        # 判斷波段走向是否真的改變：
+        # 條件 1: KC 中軌轉向向下
+        # 條件 2: 價格收盤價實體跌破 KC 中軌 (代表主升段結束)
+        is_trend_broken = is_main_trend_down or (c0 < kc_mid)
+
+        if is_trend_broken:
+            # 確認真峰頂或破位，才執行平多 / 翻空
+            return {
+                "action": "FLIP_TO_SHORT",
+                "reason": "波段走向已改變 (跌破 KC 中軌或中軌下行)，平多並翻空",
+            }
+        else:
+            # 🔴 【核心修正】：只要 KC 中軌依然向上且未跌破中軌，中間任何拉回小陰線一律不平倉！
+            return {
+                "action": "HOLD",
+                "reason": "多頭波段走向未變 (中軌支撐有效)，無視短線拉回，繼續持多",
+            }
+
+    # =========================================================
+    # 🔴 持有「空單」時的離場邏輯
+    # =========================================================
+    elif current_position == PositionState.SHORT:
+        # 判斷波段走向是否真的改變：
+        # 條件 1: KC 中軌轉向向上
+        # 條件 2: 價格收盤價實體突破 KC 中軌 (代表主跌段結束)
+        is_trend_broken = is_main_trend_up or (c0 > kc_mid)
+
+        if is_trend_broken:
+            return {
+                "action": "FLIP_TO_LONG",
+                "reason": "波段走向已改變 (突破 KC 中軌或中軌上行)，平空並翻多",
+            }
+        else:
+            # 🔴 【核心修正】：只要 KC 中軌依然向下且未突破中軌，中間任何反彈小陽線一律不平倉！
+            return {
+                "action": "HOLD",
+                "reason": "空頭波段走向未變 (中軌壓力有效)，無視短線反彈，繼續持空",
+            }
+
+    return {"action": "HOLD", "reason": "無動作"}
+
+
+
 
 

@@ -1009,26 +1009,30 @@ class ExecutionManager:
                 tier1_drawback_pct=0.20,
             )
 
-            # 🛡️ 妖幣平倉唯一結構出口：收線 + 真峰谷確認 / 完整結構破壞 / 緊急斷路器（未達真峰谷或結構未破前嚴禁因 Stage 1 鎖利提前平倉！）
+            # 🛡️ 妖幣平倉唯一結構出口：波段方向鎖定（KC中軌未轉向不平倉）/ 完整結構破壞 / 緊急斷路器
             from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
             if _is_meme_exit_symbol(symbol):
-                # 🚀 優先評估三層主動鎖盈平倉機制 (evaluate_exit_logic: 峰頂吞噬/RSI下彎、追蹤止盈回吐0.3%、破MA5保本)
-                from core.strategies.true_peak_trough_strategy import evaluate_exit_logic, PositionState as _TruePosState
+                # 🚀 優先評估波段方向鎖平倉機制 (evaluate_exit_with_trend_lock: 中軌方向沒變一律不平倉，跌破中軌或極端風控才離場)
+                from core.strategies.true_peak_trough_strategy import evaluate_exit_with_trend_lock, PositionState as _TruePosState
                 _active_exit_res = None
                 if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 5:
                     try:
-                        _active_exit_res = evaluate_exit_logic(
+                        _active_exit_res = evaluate_exit_with_trend_lock(
                             df=raw_df,
                             current_position=_TruePosState(pos_side),
                             entry_price=pos_entry,
                         )
                     except Exception as _ex:
-                        logger.warning(f"[evaluate_exit_logic] error: {_ex}")
+                        logger.warning(f"[evaluate_exit_with_trend_lock] error: {_ex}")
                         _active_exit_res = None
 
-                if _active_exit_res and _active_exit_res.get("action") in ("CLOSE_LONG", "CLOSE_SHORT"):
+                if _active_exit_res and _active_exit_res.get("action") in ("CLOSE_LONG", "CLOSE_SHORT", "FLIP_TO_LONG", "FLIP_TO_SHORT", "EMERGENCY_CLOSE"):
                     structure_reason = f"ACTIVE_EXIT_{_active_exit_res['action']}|{_active_exit_res.get('reason', '')}"
-                    logger.info(f"⚡ [ACTIVE_EXIT_TRIGGERED] {symbol} {pos_side} 觸發主動鎖盈/及時平倉: {structure_reason}")
+                    logger.info(f"⚡ [ACTIVE_EXIT_TRIGGERED] {symbol} {pos_side} 觸發波段反轉/風控平倉: {structure_reason}")
+                elif _active_exit_res and _active_exit_res.get("action") == "HOLD":
+                    # 🔴 核心鐵律：波段走向未變，一票否決平倉 (VETO_HOLD)
+                    structure_reason = None
+                    logger.info(f"🛡️ [TREND_LOCK_HOLD] {symbol} {pos_side} {_active_exit_res.get('reason', '')}，阻斷任何普通平倉！")
                 else:
                     from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
                     structure_reason = UltimateShortExitGatekeeper.structure_exit_candidate(

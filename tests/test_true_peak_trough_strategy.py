@@ -31,6 +31,7 @@ from core.strategies.true_peak_trough_strategy import (
     evaluate_true_peak_trough_strategy,
     check_exit_conditions,
     evaluate_exit_logic,
+    evaluate_exit_with_trend_lock,
     CHOP_ADX_MIN,
     CHOP_BW_MIN,
     RSI_PEAK_THRESHOLD,
@@ -703,6 +704,71 @@ class TestEvaluateExitLogic:
         res = evaluate_exit_logic(df, PositionState.SHORT, entry_price=100.0)
         assert res["action"] == "CLOSE_SHORT"
         assert "真谷底" in res["reason"]
+
+
+class TestEvaluateExitWithTrendLock:
+    """波段方向鎖定平倉邏輯 (evaluate_exit_with_trend_lock) 測試"""
+
+    def test_hold_long_during_minor_pullback_when_kc_up(self):
+        """【走向未變抱緊】多單持倉，KC中軌持續向上，收陰小回踩不跌破中軌 ➔ 強制 HOLD"""
+        rows = _build_bullish_market(6, kc_mid=100.0, slope=0.1)
+        # 最新一根小陰線回踩，但 KC 中軌仍向上 (slope > 0) 且 c0 > kc_mid
+        rows[-1]["open"] = 101.2
+        rows[-1]["close"] = 100.8  # 小陰線
+        rows[-1]["kc_mid"] = 100.5 # c0 > kc_mid
+        df = _make_df(rows)
+        res = evaluate_exit_with_trend_lock(df, PositionState.LONG, entry_price=100.0)
+        assert res["action"] == "HOLD"
+        assert "多頭波段走向未變" in res["reason"]
+
+    def test_flip_short_when_long_breaks_kc_mid(self):
+        """【走向改變平多翻空】多單持倉，價格實體跌破 KC 中軌 ➔ FLIP_TO_SHORT"""
+        rows = _build_bullish_market(6, kc_mid=100.0, slope=0.1)
+        # 最新一根貫穿跌破 KC 中軌
+        rows[-1]["open"] = 100.8
+        rows[-1]["close"] = 100.2  # 實體破中軌
+        rows[-1]["kc_mid"] = 100.5 # c0 < kc_mid
+        df = _make_df(rows)
+        res = evaluate_exit_with_trend_lock(df, PositionState.LONG, entry_price=100.0)
+        assert res["action"] == "FLIP_TO_SHORT"
+        assert "波段走向已改變" in res["reason"]
+
+    def test_hold_short_during_minor_rebound_when_kc_down(self):
+        """【走向未變抱緊】空單持倉，KC中軌持續向下，收陽小反彈不突破中軌 ➔ 強制 HOLD"""
+        rows = _build_bearish_market(6, kc_mid=100.0, slope=-0.1)
+        # 最新一根小陽線反彈，但 KC 中軌仍向下且 c0 < kc_mid
+        rows[-1]["open"] = 99.0
+        rows[-1]["close"] = 99.3   # 小陽線
+        rows[-1]["kc_mid"] = 99.5  # c0 < kc_mid
+        df = _make_df(rows)
+        res = evaluate_exit_with_trend_lock(df, PositionState.SHORT, entry_price=100.0)
+        assert res["action"] == "HOLD"
+        assert "空頭波段走向未變" in res["reason"]
+
+    def test_flip_long_when_short_breaks_kc_mid(self):
+        """【走向改變平空翻多】空單持倉，價格實體突破 KC 中軌 ➔ FLIP_TO_LONG"""
+        rows = _build_bearish_market(6, kc_mid=100.0, slope=-0.1)
+        # 最新一根突破 KC 中軌
+        rows[-1]["open"] = 99.2
+        rows[-1]["close"] = 99.8   # 突破中軌
+        rows[-1]["kc_mid"] = 99.5  # c0 > kc_mid
+        df = _make_df(rows)
+        res = evaluate_exit_with_trend_lock(df, PositionState.SHORT, entry_price=100.0)
+        assert res["action"] == "FLIP_TO_LONG"
+        assert "波段走向已改變" in res["reason"]
+
+    def test_emergency_close_on_2atr_waterfall(self):
+        """極端風控防禦：虧損超過 2 倍 ATR ➔ EMERGENCY_CLOSE"""
+        rows = _build_bullish_market(6)
+        for r in rows:
+            r["atr"] = 1.0  # 2 ATR = 2.0
+        entry_price = 100.0
+        rows[-1]["close"] = 97.8 # 虧損 2.2 > 2.0 ATR
+        df = _make_df(rows)
+        res = evaluate_exit_with_trend_lock(df, PositionState.LONG, entry_price=entry_price)
+        assert res["action"] == "EMERGENCY_CLOSE"
+        assert "極端風控" in res["reason"]
+
 
 
 
