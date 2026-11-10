@@ -851,6 +851,8 @@ class PaperAccount:
         if not math_allowed:
             message = f"[FORBIDDEN_ENTRY] {math_reason}"
             self.log(f"ENTRY_MATH_GATE {symbol} {message}", "WARNING")
+            from core.services.execution_manager import ExecutionManager
+            ExecutionManager._last_open_error[symbol] = str(math_reason)
             return False
 
         if (

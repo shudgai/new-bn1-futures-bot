@@ -541,6 +541,24 @@ def revalidate_entry_method(
     method = str(context.get("entry_method_authority") or "")
     if method not in ENTRY_METHODS:
         return False, "BLOCKED_ENTRY_METHOD_UNSUPPORTED"
+
+    # 🚨 多空方向一致性保護：
+    # 當市場方向明確為 KC_UP（中軌向上 / 介面標頭「只評估多單」）：
+    # - 不允許一般趨勢/突破/交叉引擎開空。
+    # - 只有獨立的極值峰頂反轉引擎，在具備完整反轉證據時，才可評估逆勢空單。
+    # 當市場方向明確為 KC_DOWN（中軌向下 / 介面標頭「只評估空單」）：
+    # - 不允許一般趨勢/突破/交叉引擎開多。
+    # - 只有獨立的極值谷底反轉引擎，在具備完整反轉證據時，才可評估逆勢多單。
+    closed_for_dir = closed_entry_candles(frame) if isinstance(frame, pd.DataFrame) else None
+    if closed_for_dir is not None and len(closed_for_dir) >= 2:
+        c_curr_mid = float(closed_for_dir.iloc[-1].get("kc_middle", 0.0))
+        c_prev_mid = float(closed_for_dir.iloc[-2].get("kc_middle", c_curr_mid))
+        is_reversal_method = method in (KC_OUTER_PIVOT_REVERSAL, THREE_BAR_PIVOT_REVERSAL)
+        if c_curr_mid > c_prev_mid and str(side).upper() == "SHORT" and not is_reversal_method:
+            return False, "BLOCKED_SHORT_ON_KC_UPWARD_TREND"
+        if c_curr_mid < c_prev_mid and str(side).upper() == "LONG" and not is_reversal_method:
+            return False, "BLOCKED_LONG_ON_KC_DOWNWARD_TREND"
+
     last_exit_timestamp = context.get("entry_method_last_exit_timestamp")
     if is_meme_breakout_symbol(symbol):
         from core.gates.master_gate_funnel import evaluate_meme_entry_frame

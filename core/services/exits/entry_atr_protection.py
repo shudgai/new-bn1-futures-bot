@@ -243,9 +243,16 @@ async def enforce_atr_protection(account, symbol, price):
                 return False
 
             # ⚠️ 【四大離場門檻總鎖定】：未滿足離場門檻，絕對一票否決平倉！
-            # 🚨 極端安全風控例外 (Waterfalls / Hard SL / Disasters 100% 豁免總鎖定)
+            # 🚨 極端安全風控例外 (Waterfalls / Hard SL / Disasters / True Reversals 100% 豁免總鎖定)
             from core.services.math_execution_gate import is_emergency_exit
-            if not is_emergency_exit(exit_reason) and not check_trend_lock_exit_permission(position, frame, price):
+            is_reversal_exit = exit_reason in (
+                "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+                "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
+                "EXIT_SHORT_TREND_REVERSAL",
+                "EXIT_LONG_TREND_REVERSAL",
+                "OPPOSITE_KC_BAND_BREACH",
+            )
+            if not is_emergency_exit(exit_reason) and not is_reversal_exit and not check_trend_lock_exit_permission(position, frame, price):
                 account.log(
                     f"🛡️ [TREND_LOCK_MASTER_VETO] symbol={symbol} side={position.get('side')} "
                     f"未滿足四大極限離場門檻，entry_atr_protection 一票否決 KC 結構平倉，強制續抱！(reason={exit_reason})",

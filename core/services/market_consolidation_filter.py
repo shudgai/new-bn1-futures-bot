@@ -179,10 +179,10 @@ def evaluate_market_blacklist(
                 or expansion and signal_body_atr >= MEME_STRUCTURAL_BODY_ATR - 1e-12
             )
         )
-        # Meme impulse bar (same-side body >= 0.6 ATR, or authorized MEME_GATE_ENTRY >= 0.35 ATR) starts a move from inside the box.
+        # Meme impulse bar (same-side body >= 0.6 ATR, or authorized MEME_GATE_ENTRY >= 0.25 ATR) starts a move from inside the box.
         meme_impulse = meme_policy and (
             signal_body_atr >= MEME_IMPULSE_BODY_ATR - 1e-12
-            or (meme_structural_trigger and signal_body_atr >= 0.35 - 1e-12)
+            or (meme_structural_trigger and signal_body_atr >= 0.25 - 1e-12)
         )
         checks["signal_body_atr"] = signal_body_atr
         if inside_box and weak_adx and atr_pct < LOW_ATR_PCT and not meme_impulse:

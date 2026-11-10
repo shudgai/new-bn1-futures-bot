@@ -370,9 +370,14 @@ class MacroCandleStructureGate:
                 "TOP_BOTTOM_DIVERGENCE",
                 "PINBAR_EXHAUSTION_TURN",
                 "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+                "SWING_PIVOT",
+                "MEME_PEAK_HUNTER",
             }
         ):
-            return False, "VETO_REVERSAL: 缺少峰谷背離或長針力竭確認"
+            # 妖幣放寬：妖幣轉折開倉不因缺少傳統背離而阻斷，只要 MA5 拐頭轉折即可進場！
+            from core.symbol_aliases import is_meme_breakout_symbol
+            if not is_meme_breakout_symbol(symbol):
+                return False, "VETO_REVERSAL: 缺少峰谷背離或長針力竭確認"
         if mode == "CONTINUATION" and confirmation in {
             "PROFIT_LOCK_CONTINUATION",
             CONTINUATION_OUTSIDE_KC,

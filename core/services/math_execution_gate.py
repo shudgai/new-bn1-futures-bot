@@ -985,6 +985,14 @@ def validate_exit_math(
     return False, "BLOCKED_EXIT_NO_MATH_TRIGGER", details
 
 
+def _extract_frame(payload: Mapping[str, Any]) -> Any:
+    for key in ("entry_gate_frame", "frame", "raw_df"):
+        val = payload.get(key)
+        if val is not None:
+            return val
+    return None
+
+
 async def validate_entry_at_execution(
     account: Any, symbol: str, side: str, context: Any = None,
     *, execution_price: float | None = None,
@@ -997,14 +1005,14 @@ async def validate_entry_at_execution(
     # account-side gates. Re-fetching here and again in entry_firewall both
     # wastes REST calls and can hold the global submit lock across settlement
     # retries.
-    frame = payload.get("entry_gate_frame") or payload.get("frame") or payload.get("raw_df")
+    frame = _extract_frame(payload)
     provider = getattr(account, "entry_frame_provider", None)
     if frame is None and callable(provider):
         frame = provider(symbol)
         if hasattr(frame, "__await__"):
             frame = await frame
     if frame is None:
-        frame = payload.get("entry_gate_frame") or payload.get("frame") or payload.get("raw_df")
+        frame = _extract_frame(payload)
     if frame is None:
         snapshot = payload.get("snapshot")
         if isinstance(snapshot, Mapping):
@@ -1129,7 +1137,7 @@ async def validate_entry_at_execution(
         from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
         target_frame = frame if frame is not None else payload.get("raw_df")
         if target_frame is None:
-            target_frame = payload.get("entry_gate_frame") or payload.get("frame")
+            target_frame = _extract_frame(payload)
         if hasattr(target_frame, "attrs"):
             target_frame.attrs.setdefault("timeframe_ms", 60_000.0)
 

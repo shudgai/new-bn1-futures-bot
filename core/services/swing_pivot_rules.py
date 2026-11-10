@@ -36,7 +36,8 @@ def evaluate_swing_pivot_entry(frame: Any) -> dict[str, Any] | None:
         high_pivot, low_pivot = _num(pivot, "high"), _num(pivot, "low")
         high_confirm, low_confirm = _num(current, "high"), _num(current, "low")
         pivot_open, pivot_close = _num(pivot, "open"), _num(pivot, "close")
-        atr, pivot_atr = _num(current, "atr"), _num(pivot, "atr")
+        atr = float(current.get("atr") or (high_confirm - low_confirm) or 0.00001)
+        pivot_atr = float(pivot.get("atr") or (high_pivot - low_pivot) or atr)
         if min(close, opening, high_left, low_left, high_pivot, low_pivot,
                high_confirm, low_confirm, pivot_open, pivot_close, atr, pivot_atr) <= 0:
             return None

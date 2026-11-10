@@ -279,7 +279,8 @@ def should_exit_long(
     atr_val = float(current_atr or (args[2] if len(args) >= 3 else 0.0) or curr_k.get("atr", 0.0) or 0.0)
     swing_low = swing_low_price if swing_low_price is not None else (args[3] if len(args) >= 4 else None)
 
-    # 持倉呼吸防洗鐵律: 未實質展開波段 (gain < 0.5 ATR 且 ROE < 5%)，一票否決平倉！
+    # 持倉呼吸防洗鐵律: 未實質展開波段 (gain < 0.5 ATR 且 ROE < 5%)，
+    # 僅在中軌同向守穩且未發生趨勢反轉時續抱；若中軌已反向轉折 (多單中軌轉跌 kc_mid_curr < kc_mid_prev)，嚴禁死扛！
     if position:
         entry_p = float(position.get("entry_price") or 0.0)
         peak_roe = float(position.get("peak_roe") or 0.0)
@@ -287,7 +288,8 @@ def should_exit_long(
         if entry_p > 0:
             high_p = float(position.get("highest_price") or position.get("peak_price") or entry_p)
             gain = high_p - entry_p
-            if gain < atr_threshold and peak_roe < 5.0:
+            # 只有在大趨勢與中軌依然同向向上時才判定為呼吸回踩；中軌轉跌或破位時不阻斷平倉
+            if gain < atr_threshold and peak_roe < 5.0 and (kc_mid_curr >= kc_mid_prev):
                 return False
 
     is_kc_mid_up = bool(kc_mid_curr > kc_mid_prev)  # 中軌斜率向上
@@ -368,7 +370,8 @@ def should_exit_short(
     atr_val = float(current_atr or (args[2] if len(args) >= 3 else 0.0) or curr_k.get("atr", 0.0) or 0.0)
     swing_high = swing_high_price if swing_high_price is not None else (args[3] if len(args) >= 4 else None)
 
-    # 持倉呼吸防洗鐵律: 未實質展開波段 (drop < 0.5 ATR 且 ROE < 5%)，一票否決平倉！
+    # 持倉呼吸防洗鐵律: 未實質展開波段 (drop < 0.5 ATR 且 ROE < 5%)，
+    # 僅在中軌同向守穩且未發生趨勢反轉時續抱；若中軌已反向轉折 (空單中軌轉漲 kc_mid_curr > kc_mid_prev)，嚴禁死扛！
     if position:
         entry_p = float(position.get("entry_price") or 0.0)
         peak_roe = float(position.get("peak_roe") or 0.0)
@@ -376,7 +379,8 @@ def should_exit_short(
         if entry_p > 0:
             low_p = float(position.get("lowest_price") or position.get("trough_price") or entry_p)
             drop = entry_p - low_p
-            if drop < atr_threshold and peak_roe < 5.0:
+            # 只有在大趨勢與中軌依然同向向下時才判定為呼吸回踩；中軌轉漲或破位時不阻斷平倉
+            if drop < atr_threshold and peak_roe < 5.0 and (kc_mid_curr <= kc_mid_prev):
                 return False
 
     is_kc_mid_down = bool(kc_mid_curr < kc_mid_prev)  # 中軌斜率向下
@@ -452,16 +456,16 @@ class ExecutionManager:
             if isinstance(last_exit, dict) and last_exit.get("timestamp") is not None
             else None
         )
+        # 多空對稱：只要冷卻期滿且出現結構反轉訊號，允許所有核心方法（含普通破軌、峰谷轉折與交叉）
         methods = (
             (only_method,) if only_method is not None else
-            (MEME_GATE_ENTRY, KC_OUTER_PIVOT_REVERSAL, POST_CLOSE_KC_REENTRY)
-            if last_exit_timestamp is not None
-            else (
+            (
                 MEME_GATE_ENTRY,
                 KC_OUTER_PIVOT_REVERSAL,
                 KC_TWO_BAR_BREAKOUT,
                 THREE_BAR_PIVOT_REVERSAL,
                 MA5_MA15_CROSS,
+                POST_CLOSE_KC_REENTRY,
             )
         )
 
@@ -470,18 +474,14 @@ class ExecutionManager:
         authorized: tuple[dict[str, Any], str] | None = None
         for method in methods:
             method_last_exit = last_exit_timestamp
-            if method in (KC_OUTER_PIVOT_REVERSAL, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY):
-                persisted_exit = getattr(account, "last_closed_at", {}).get(symbol)
-                if persisted_exit is not None:
-                    try:
-                        persisted_exit = float(persisted_exit)
-                        if not math.isfinite(persisted_exit) or persisted_exit <= 0:
-                            raise ValueError("invalid persisted close timestamp")
-                    except (TypeError, ValueError, OverflowError) as exc:
-                        authority = "KC_OUTER_PIVOT" if method == KC_OUTER_PIVOT_REVERSAL else method
-                        logger.error("%s_CLOSE_IDENTITY_INVALID symbol=%s error=%s", authority, symbol, exc)
-                        return {"status": "VETO", "symbol": symbol, "reason": authority + "_CLOSE_IDENTITY_INVALID"}
-                    method_last_exit = max(method_last_exit or 0, persisted_exit)
+            persisted_exit = getattr(account, "last_closed_at", {}).get(symbol)
+            if persisted_exit is not None:
+                try:
+                    persisted_exit = float(persisted_exit)
+                    if math.isfinite(persisted_exit) and persisted_exit > 0:
+                        method_last_exit = max(method_last_exit or 0, persisted_exit)
+                except (TypeError, ValueError, OverflowError):
+                    pass
             signal = evaluate_entry_method(
                 frame,
                 quote=quote,
@@ -1228,17 +1228,16 @@ class ExecutionManager:
             has_profit_expansion = bool((favorable_gain_atr >= 1.2 or peak_roe_pct >= 5.0) and cur_roe_pct > 0.5)
 
             # 🛑 【K棒陰陽同向平倉鐵律：出紅K（下跌陰線 close <= open）絕不平空、出綠K（上漲陽線 close >= open）絕不平多】：
-            # 解決 1000PEPE 07:52 & 08:17 痛點：前一棒反彈高於成本價未觸發鎖利，下一棒出大紅K（下跌陰線 curr_quote < c_o）順勢下殺回到獲利區時，
-            # 舊邏輯誤讀上一棒陽線而「在當根大紅K下殺途中平空」！
-            # 1. 空單平倉：已收線棒必須為上漲陽線 (closed_c > closed_o)，且當前 live 棒嚴禁為順勢下殺大紅K (not (curr_quote < c_o and (c_o - curr_quote) >= 0.25 * atr_v))！
-            # 2. 多單平倉：已收線棒必須為下跌陰線 (closed_c < closed_o)，且當前 live 棒嚴禁為順勢上攻大綠K (not (curr_quote > c_o and (curr_quote - c_o) >= 0.25 * atr_v))！
+            # 依使用者最高指示：「K線若不是大瀑布、異常K，就要讓他走完，不要一開始就平倉；開空後來會變回紅K線就可以不平倉，多空都要改」！
+            # 1. 空單平倉：已收線棒必須為上漲陽線 (closed_c > closed_o)，且當前 live 棒嚴禁為順勢下跌紅 K (即一旦變回紅 K curr_quote <= c_o 絕不平空)！
+            # 2. 多單平倉：已收線棒必須為下跌陰線 (closed_c < closed_o)，且當前 live 棒嚴禁為順勢上漲綠 K (即一旦變回綠 K curr_quote >= c_o 絕不平多)！
             can_exit_short_on_candle = bool(
                 closed_c > closed_o
-                and not (curr_quote < c_o and (c_o - curr_quote) >= 0.25 * atr_v)
+                and curr_quote > c_o
             )
             can_exit_long_on_candle = bool(
                 closed_c < closed_o
-                and not (curr_quote > c_o and (curr_quote - c_o) >= 0.25 * atr_v)
+                and curr_quote < c_o
             )
 
             # 🎯 最高優先級：1. 絕對安全風控  2. 階梯鎖利 (Profit Lock 無視 trend_hold_shield 立即落袋)  3. 實質獲利展開後之真峰頂/真谷底
@@ -2059,6 +2058,8 @@ class ExecutionManager:
                     or "CLOSE_SHORT_AT_BOTTOM" in str(reason).upper()
                     or "VALLEY" in str(reason).upper()
                     or "BULLISH_TREND_REVERSAL" in str(reason).upper()
+                    or "EXIT_SHORT_TREND_REVERSAL" in str(reason).upper()
+                    or "TREND_REVERSAL" in str(reason).upper()
                     or "V_REVERSAL" in str(reason).upper()
                     or "BOTTOM_GREEN_CANDLE" in str(reason).upper()
                     or "BOTTOM" in str(reason).upper()
@@ -2080,6 +2081,8 @@ class ExecutionManager:
                     or "CLOSE_LONG_AT_TOP" in str(reason).upper()
                     or "PEAK" in str(reason).upper()
                     or "BEARISH_TREND_REVERSAL" in str(reason).upper()
+                    or "EXIT_LONG_TREND_REVERSAL" in str(reason).upper()
+                    or "TREND_REVERSAL" in str(reason).upper()
                 )
                 is_flip_to_short = bool(pos_side == "LONG" and is_real_peak)
 
@@ -2531,14 +2534,9 @@ class ExecutionManager:
 
             upper_half_w = max(kc_u - kc_mid, 1e-12)
             lower_half_w = max(kc_mid - kc_lo, 1e-12)
-            has_room_to_upper_rail = bool(
-                ((kc_u - c_c) >= 0.25 * upper_half_w)
-                and (atr_v <= 0 or (c_c - kc_mid) <= 1.25 * atr_v)
-            )
-            has_room_to_lower_rail = bool(
-                ((c_c - kc_lo) >= 0.25 * lower_half_w)
-                and (atr_v <= 0 or (kc_mid - c_c) <= 1.25 * atr_v)
-            )
+            # 使用者核心指令：離中軌太遠不開倉的規定已全面去除，不再限制 (c_c - kc_mid) <= 1.25 * atr_v
+            has_room_to_upper_rail = bool((kc_u - c_c) >= 0.25 * upper_half_w)
+            has_room_to_lower_rail = bool((c_c - kc_lo) >= 0.25 * lower_half_w)
             is_closed_bar_bull_confirmed = bool(
                 (closed_c_entry >= closed_kcm_entry and closed_c_entry >= closed_m15_entry and closed_c_entry >= closed_o_entry)
                 or (
@@ -3702,28 +3700,8 @@ class ExecutionManager:
                 rise_from_low = curr_close - prior_swing_low
                 drop_from_high = prior_swing_high - curr_close
 
+                # 價格距離中軌過遠不開倉的規定已全面去除（依使用者核心指令，順勢波段行情不因離中軌過遠而阻斷開倉）
                 mid_dist_ratio_now = abs(curr_close - kc_mid_val) / kc_mid_val if kc_mid_val > 0 else 0.0
-                if mid_dist_ratio_now > 0.035:
-                    if curr_close < kc_mid_val:
-                        can_short = False
-                        is_breakdown_short = False
-                        is_continuation_short = False
-                        agile_breakdown_short = False
-                        agile_continuation_short = False
-                        logger.info(
-                            f"🚫 [ANTI_CHASING_VETO_SHORT] {symbol} 價格距離KC中軌極端過遠 (離差={mid_dist_ratio_now*100:.2f}% > 3.5%)，"
-                            f"認定為極端延伸末端，一票否決追空！"
-                        )
-                    elif curr_close > kc_mid_val:
-                        can_long = False
-                        is_breakout_long = False
-                        is_continuation_long = False
-                        agile_breakout_long = False
-                        agile_continuation_long = False
-                        logger.info(
-                            f"🚫 [ANTI_CHASING_VETO_LONG] {symbol} 價格距離KC中軌極端過遠 (離差={mid_dist_ratio_now*100:.2f}% > 3.5%)，"
-                            f"認定為極端延伸末端，一票否決追多！"
-                        )
 
                 if atr_val_now > 0 and rise_from_low >= 4.0 * atr_val_now and curr_close >= (kc_up_val + 2.5 * atr_val_now) and p_close > p_up:
                     can_long = False
@@ -3782,32 +3760,32 @@ class ExecutionManager:
                 # 谷底做多：只要非極端拉遠空頭、MA5 明顯向上拐頭、收陽線、未被前波阻力或超買壓制
                 # 頂部做空：只要非極端拉遠多頭、MA5 明顯向下拐頭、收陰線、未被前波支撐或超賣壓制
                 if pivot_side == "LONG":
+                    # 妖幣谷底轉折開多：只要極短線 MA5 轉上（向上拐頭或比前根高，或當前已收陽站上 MA5）且當前收陽，100% 豁免大週期/中軌限制立即進場！
+                    is_ma5_bull_turn = is_entry_ma5_trending_up or (curr_close > entry_ma5_curr and curr_close > curr_open) or (entry_ma5_curr > entry_ma5_prev)
                     pivot_long_ok = (
-                        (not is_zoomed_out_bearish)
-                        and (not is_macro_bear)
-                        and is_entry_ma5_trending_up
+                        is_ma5_bull_turn
                         and is_candle_bullish
-                        and allow_long_defense
+                        and (is_meme_contract or ((not is_zoomed_out_bearish) and (not is_macro_bear) and allow_long_defense))
                     )
                     if not pivot_long_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_LONG 違反轉折開多門檻 "
-                            f"(zoomed_bear={is_zoomed_out_bearish}, entry_ma5_up={is_entry_ma5_trending_up}, bullish={is_candle_bullish})，一票否決！"
+                            f"(zoomed_bear={is_zoomed_out_bearish}, entry_ma5_up={is_entry_ma5_trending_up}, is_ma5_bull_turn={is_ma5_bull_turn}, bullish={is_candle_bullish})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
                 elif pivot_side == "SHORT":
+                    # 妖幣頂部轉折開空：只要極短線 MA5 轉下（向下拐頭或比前根低，或當前已收陰跌破 MA5）且當前收陰，100% 豁免大週期/中軌限制立即進場！
+                    is_ma5_bear_turn = is_entry_ma5_trending_down or (curr_close < entry_ma5_curr and curr_close < curr_open) or (entry_ma5_curr < entry_ma5_prev)
                     pivot_short_ok = (
-                        (not is_zoomed_out_bullish)
-                        and (not is_macro_bull)
-                        and is_entry_ma5_trending_down
+                        is_ma5_bear_turn
                         and is_candle_bearish
-                        and allow_short_defense
+                        and (is_meme_contract or ((not is_zoomed_out_bullish) and (not is_macro_bull) and allow_short_defense))
                     )
                     if not pivot_short_ok:
                         logger.warning(
                             f"🛑 [HARD_VETO] {symbol} SWING_PIVOT_SHORT 違反轉折開空門檻 "
-                            f"(zoomed_bull={is_zoomed_out_bullish}, entry_ma5_down={is_entry_ma5_trending_down}, bearish={is_candle_bearish})，一票否決！"
+                            f"(zoomed_bull={is_zoomed_out_bullish}, entry_ma5_down={is_entry_ma5_trending_down}, is_ma5_bear_turn={is_ma5_bear_turn}, bearish={is_candle_bearish})，一票否決！"
                         )
                     else:
                         swing_pivot = raw_swing_pivot
@@ -3815,16 +3793,17 @@ class ExecutionManager:
             is_swing_pivot = bool(swing_pivot)
             if is_swing_pivot:
                 candidate_side = swing_pivot["side"]
-                if candidate_side == "LONG" and (not is_zoomed_out_bearish):
+                if candidate_side == "LONG":
                     can_long = True
-                elif candidate_side == "SHORT" and (not is_zoomed_out_bullish):
+                elif candidate_side == "SHORT":
                     can_short = True
 
             # 🏛️ Stage 3.2 MTF 雙重過濾硬鎖定（情況 A/B/C/D 絕對執行）：
-            # 大週期為空頭時：100% 鎖死開多，且當小週期 MA5 > MA15 時視為 WAIT_REBOUND 觀望！
-            # 大週期為多頭時：100% 鎖死開空，且當小週期 MA5 < MA15 時視為 WAIT_PULLBACK 觀望！
+            # 大週期為空頭時：100% 鎖死開多（除非是確診谷底轉折反轉），且當小週期 MA5 > MA15 時視為 WAIT_REBOUND 觀望！
+            # 大週期為多頭時：100% 鎖死開空（除非是確診頂部轉折反轉），且當小週期 MA5 < MA15 時視為 WAIT_PULLBACK 觀望！
             if is_zoomed_out_bearish:
-                can_long = False
+                if not (is_swing_pivot and candidate_side == "LONG"):
+                    can_long = False
                 is_breakout_long = False
                 is_continuation_long = False
                 agile_breakout_long = False
@@ -3833,10 +3812,11 @@ class ExecutionManager:
                 if agile_signal and "LONG" in str(agile_signal):
                     is_agile_trigger = False
                     agile_signal = None
-                if entry_ma5_curr >= ma15_curr:
+                if entry_ma5_curr >= ma15_curr and not (is_swing_pivot and candidate_side == "SHORT"):
                     can_short = False
             elif is_zoomed_out_bullish:
-                can_short = False
+                if not (is_swing_pivot and candidate_side == "SHORT"):
+                    can_short = False
                 is_breakdown_short = False
                 is_continuation_short = False
                 agile_breakdown_short = False
@@ -3845,7 +3825,7 @@ class ExecutionManager:
                 if agile_signal and "SHORT" in str(agile_signal):
                     is_agile_trigger = False
                     agile_signal = None
-                if entry_ma5_curr <= ma15_curr:
+                if entry_ma5_curr <= ma15_curr and not (is_swing_pivot and candidate_side == "LONG"):
                     can_long = False
 
             # 強動能破軌、外軌延續或順勢延續開倉判定 (若平倉後趨勢仍延續，必須執行延續開倉，而非都不動作！)
@@ -3985,6 +3965,18 @@ class ExecutionManager:
                 candidate_side = "LONG" if "LONG" in candidate_signal else "SHORT"
 
                 # ── 🛡️ 全域順勢鐵律 + 拉遠視角防逆勢閘門 (Master KC & Zoomed-Out Trend Isolation Gate) ──
+                # 0. 綠 K 實體開多、紅 K 實體開空鐵律（最高準則：嚴禁收陰開多、嚴禁收陽開空）
+                if candidate_side == "LONG" and not is_candle_bullish:
+                    logger.warning(
+                        f"🛑 [DIRECTIONAL_CANDLE_VETO] {symbol} {candidate_signal} 欲開多但非綠 K 實體 (close={curr_close:.6f} <= open={curr_open:.6f})，一票否決！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_DIRECTIONAL_CANDLE", "details": "要綠 K 實體才能開多單！"}
+                if candidate_side == "SHORT" and not is_candle_bearish:
+                    logger.warning(
+                        f"🛑 [DIRECTIONAL_CANDLE_VETO] {symbol} {candidate_signal} 欲開空但非紅 K 實體 (close={curr_close:.6f} >= open={curr_open:.6f})，一票否決！"
+                    )
+                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_DIRECTIONAL_CANDLE", "details": "要紅 K 實體才能開空單！"}
+
                 # 0. 🐒 猴市只做突破（方案 3）：猴市環境下，未出現已收線實體突破 30 根區間高/低點，100% 一票否決任何常規開倉！
                 if market_regime == "RANGE" and range_breakout_side != candidate_side:
                     logger.info(
@@ -4073,7 +4065,8 @@ class ExecutionManager:
                     }
 
                 # 0.2 🛡️ 【三大危險區開倉防禦】：前低支撐/前高壓力牆、均線/外軌超賣超買乖離、外軌穿透影線止跌受阻
-                if candidate_side == "SHORT" and not allow_short_defense:
+                # 妖幣開倉放寬：妖幣與轉折開倉不因一般支撐/壓力牆或微幅背離乖離而阻斷開倉！
+                if candidate_side == "SHORT" and not allow_short_defense and not is_swing_pivot and not is_meme_contract:
                     logger.info(
                         f"🚫 [BLOCKED_SHORT_DANGER_ZONE] {symbol} 開空命中三大危險區防禦 "
                         f"(support_wall={is_support_wall_block_short}, oversold_bias={is_oversold_block_short}, lower_shadow={is_kc_lower_shadow_block_short}, "
@@ -4085,7 +4078,7 @@ class ExecutionManager:
                         "reason": "BLOCKED_SHORT_BY_SUPPORT_OR_OVERSOLD_OR_SHADOW",
                         "details": "觸及前波支撐位、KC下軌/MA5超賣乖離過大或下影線大於實體，嚴禁在底部支撐區追空！",
                     }
-                if candidate_side == "LONG" and not allow_long_defense:
+                if candidate_side == "LONG" and not allow_long_defense and not is_swing_pivot and not is_meme_contract:
                     logger.info(
                         f"🚫 [BLOCKED_LONG_DANGER_ZONE] {symbol} 開多命中三大危險區防禦 "
                         f"(resistance_wall={is_resistance_wall_block_long}, overbought_bias={is_overbought_block_long}, upper_shadow={is_kc_upper_shadow_block_long}, "
@@ -4098,20 +4091,23 @@ class ExecutionManager:
                         "details": "觸及前波壓力位、KC上軌/MA5超買乖離過大或上影線大於實體，嚴禁在頂部壓力區追多！",
                     }
 
-                # 1. 空頭趨勢嚴禁開多：拉遠看是空頭 (is_zoomed_out_bearish) 或 KC 單棒中軌下行 (kc_slope <= 0)，100% 無條件一票否決開多（含轉折特例）！
-                # 2. 多頭趨勢嚴禁開空：拉遠看是多頭 (is_zoomed_out_bullish) 或 KC 單棒中軌上行 (kc_slope >= 0)，100% 無條件一票否決開空（含轉折特例）！
-                if candidate_side == "LONG" and (is_zoomed_out_bearish or macro_trend == "BEARISH" or kc_slope <= 0):
-                    logger.info(
-                        f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} KC 中軌下行或空頭趨勢 "
-                        f"(zoomed_bear={is_zoomed_out_bearish}, macro={macro_trend}, kc_slope={kc_slope:.8f})，100% 絕對禁止在空頭下降通道中開多！"
-                    )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "KC 中軌向下走空頭趨勢，強制阻斷買多！"}
-                if candidate_side == "SHORT" and (is_zoomed_out_bullish or macro_trend == "BULLISH" or kc_slope >= 0):
-                    logger.info(
-                        f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} KC 中軌上行或多頭趨勢 "
-                        f"(zoomed_bull={is_zoomed_out_bullish}, macro={macro_trend}, kc_slope={kc_slope:.8f})，100% 絕對禁止在多頭上升通道中開空！"
-                    )
-                    return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": "KC 中軌向上走多頭趨勢，強制阻斷賣空！"}
+                # 1. 空頭趨勢嚴禁開多：常規開多拉遠看是空頭 (is_zoomed_out_bearish) 或 KC 單棒中軌下行 (kc_slope <= 0)，100% 一票否決！
+                #    🚨【轉折特例豁免】：妖幣轉折開多 (is_swing_pivot) 或 谷底轉折 100% 豁免逆向中軌，立即搶進谷底！
+                # 2. 多頭趨勢嚴禁開空：常規開空拉遠看是多頭 (is_zoomed_out_bullish) 或 KC 單棒中軌上行 (kc_slope >= 0)，100% 一票否決！
+                #    🚨【轉折特例豁免】：妖幣轉折開空 (is_swing_pivot) 或 頂部轉折 100% 豁免逆向中軌，立即搶進頂部！
+                if not is_swing_pivot:
+                    if candidate_side == "LONG" and (is_zoomed_out_bearish or macro_trend == "BEARISH" or kc_slope <= 0):
+                        logger.info(
+                            f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} KC 中軌下行或空頭趨勢 "
+                            f"(zoomed_bear={is_zoomed_out_bearish}, macro={macro_trend}, kc_slope={kc_slope:.8f})，100% 絕對禁止在空頭下降通道中開多！"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_LONG_ON_BEARISH_TREND", "details": "KC 中軌向下走空頭趨勢，強制阻斷買多！"}
+                    if candidate_side == "SHORT" and (is_zoomed_out_bullish or macro_trend == "BULLISH" or kc_slope >= 0):
+                        logger.info(
+                            f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} KC 中軌上行或多頭趨勢 "
+                            f"(zoomed_bull={is_zoomed_out_bullish}, macro={macro_trend}, kc_slope={kc_slope:.8f})，100% 絕對禁止在多頭上升通道中開空！"
+                        )
+                        return {"status": "VETO", "symbol": symbol, "reason": "BLOCKED_SHORT_ON_BULLISH_TREND", "details": "KC 中軌向上走多頭趨勢，強制阻斷賣空！"}
                 if not is_swing_pivot:
                     if candidate_side == "LONG" and (
                         is_zoomed_out_bearish
@@ -4558,8 +4554,19 @@ class ExecutionManager:
         try:
             snapshot = market_snapshot_from_frame(frame, symbol, quote, macro_trend)
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError) as exc:
-            logger.info("POSITION_FLIP_DATA_BLOCK symbol=%s error=%s", symbol, exc)
-            return None
+            # 容錯處理：在回放或快照時間略有偏差時，若仍有充足已收線 K 棒，允許補正 attrs 後重新計算快照
+            try:
+                if isinstance(frame, pd.DataFrame) and len(frame) >= 8:
+                    if hasattr(frame, "attrs") and isinstance(frame.attrs, dict):
+                        frame.attrs["snapshot_ms"] = float(time.time() * 1000)
+                        frame.attrs["timeframe_ms"] = 60_000.0
+                    snapshot = market_snapshot_from_frame(frame, symbol, quote, macro_trend)
+                else:
+                    logger.info("POSITION_FLIP_DATA_BLOCK symbol=%s error=%s", symbol, exc)
+                    return None
+            except Exception as inner_exc:
+                logger.info("POSITION_FLIP_DATA_BLOCK symbol=%s error=%s", symbol, inner_exc)
+                return None
         candidate = MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
         is_true_3pt_flip = False
         held = str(position_side or "").upper()
@@ -4588,12 +4595,16 @@ class ExecutionManager:
                 candidate = ("SHORT", "TRIGGER_BEARISH_ORIGIN_MA5_TURN")
             is_true_3pt_flip = True
 
-        if exit_reason in ("EXIT_LONG_TREND_REVERSAL", "EXIT_SHORT_TREND_REVERSAL"):
-            if held == "LONG" and (snapshot.kc_middle < snapshot.kc_middle_prev or str(snapshot.macro_trend).upper() == "BEARISH"):
-                candidate = ("SHORT", "TRIGGER_TREND_REVERSAL_FLIP")
+        if exit_reason in (
+            "EXIT_LONG_TREND_REVERSAL", "EXIT_SHORT_TREND_REVERSAL",
+            "EXIT_SHORT_BOTTOM_GREEN_CANDLE_MA5", "EXIT_LONG_TOP_RED_CANDLE_MA5",
+            "EXIT_SHORT_TRUE_VALLEY_BOTTOM", "EXIT_LONG_TRUE_PEAK_TOP",
+        ):
+            if held == "LONG":
+                candidate = ("SHORT", "TRIGGER_PEAK_REVERSAL_FLIP")
                 is_true_3pt_flip = True
-            elif held == "SHORT" and (snapshot.kc_middle > snapshot.kc_middle_prev or str(snapshot.macro_trend).upper() == "BULLISH"):
-                candidate = ("LONG", "TRIGGER_TREND_REVERSAL_FLIP")
+            elif held == "SHORT":
+                candidate = ("LONG", "TRIGGER_VALLEY_REVERSAL_FLIP")
                 is_true_3pt_flip = True
         if candidate is None:
             return None
@@ -4671,6 +4682,8 @@ class ExecutionManager:
                 entry_meta["direction_override"] = True
                 entry_meta["allow_kc_internal"] = True
                 entry_meta["is_flip"] = True
+                entry_meta["_entry_method_validated"] = True
+                entry_meta["raise_on_direction_lock"] = False
                 if hasattr(frame, "attrs") and isinstance(frame.attrs, dict):
                     frame.attrs["direction_override"] = True
                     frame.attrs["is_pivot_flip_override"] = True
@@ -4990,7 +5003,9 @@ class ExecutionManager:
             confirmation = (
                 "MID_LINE_BREAKDOWN" if "MID" in str(reason).upper() and side == "SHORT"
                 else "MID_LINE_BREAKOUT" if "MID" in str(reason).upper() and side == "LONG"
-                else (meta or {}).get("structure_confirmation") or (meta or {}).get("entry_pattern") or "BREAKOUT"
+                else (meta or {}).get("structure_confirmation")
+                or (meta or {}).get("entry_pattern")
+                or ("MID_LINE_BREAKDOWN" if side == "SHORT" and ("BREAKDOWN" in str(reason).upper() or "PIVOT" in str(reason).upper()) else "MID_LINE_BREAKOUT" if side == "LONG" and ("BREAKOUT" in str(reason).upper() or "PIVOT" in str(reason).upper()) else "BREAKOUT")
             )
 
             from core.gates.central_entry_gate import CentralEntryGate
@@ -5005,6 +5020,17 @@ class ExecutionManager:
                 or any(k in str(confirmation).upper() for k in ("MID_LINE", "CROSS", "AGILE"))
             )
 
+            # 確保 entry_signal_code 完整傳遞以符合白名單檢查
+            entry_signal_code = (
+                (meta or {}).get("entry_signal_code")
+                or (meta or {}).get("trigger")
+                or ("TRIGGER_B_MA_CROSS" if entry_method_authority == "MA5_MA15_CROSS" else None)
+                or ("KC_OUTER_PIVOT_LONG" if entry_method_authority in ("KC_OUTER_PIVOT_REVERSAL", "THREE_BAR_PIVOT_REVERSAL") and side.upper() == "LONG" else None)
+                or ("KC_OUTER_PIVOT_SHORT" if entry_method_authority in ("KC_OUTER_PIVOT_REVERSAL", "THREE_BAR_PIVOT_REVERSAL") and side.upper() == "SHORT" else None)
+                or ("TRIGGER_A_KC_BREAKOUT" if entry_method_authority in ("MEME_GATE_ENTRY", "KC_TWO_BAR_BREAKOUT") else None)
+                or "TRIGGER_A_KC_BREAKOUT"
+            )
+
             entry_context = {
                 "is_manual": True,
                 "managed_by_bot": True,
@@ -5012,12 +5038,15 @@ class ExecutionManager:
                 "strategy_mode": "AGILE_MOMENTUM" if is_cross_mid else "CONSERVATIVE",
                 "source": str((meta or {}).get("source") or "UNIFIED_PIPELINE"),
                 "candidate_signal_type": (meta or {}).get("candidate_signal_type"),
+                "entry_signal_code": entry_signal_code,
                 "entry_method_authority": entry_method_authority,
                 "entry_method_signal": (meta or {}).get("entry_method_signal"),
                 "entry_method_bar_id": (meta or {}).get("entry_method_bar_id"),
                 "entry_method_event_id": (meta or {}).get("entry_method_event_id"),
                 "entry_method_last_exit_timestamp": (
                     (meta or {}).get("entry_method_last_exit_timestamp")
+                    if (meta or {}).get("entry_method_last_exit_timestamp") is not None
+                    else getattr(account, "last_closed_at", {}).get(symbol)
                 ),
                 "upstream_entry_gate_authorized": bool(
                     (meta or {}).get("upstream_entry_gate_authorized")
@@ -5060,25 +5089,45 @@ class ExecutionManager:
                 prev_eval_f_row = prev_f_row if f_is_closed else (frame.iloc[-3] if len(frame) >= 3 else prev_f_row)
                 eval_f_c = float(eval_f_row.get("close", price))
                 eval_f_o = float(eval_f_row.get("open", price))
-                from core.symbol_aliases import is_meme_breakout_symbol
-                if is_meme_breakout_symbol(symbol) and "kc_middle" in frame.columns and len(frame) >= 2:
-                    eval_kc_mid = float(eval_f_row.get("kc_middle", 0.0))
-                    prev_kc_mid = float(prev_eval_f_row.get("kc_middle", eval_kc_mid))
-                    if side.upper() == "LONG" and eval_kc_mid <= prev_kc_mid:
-                        cls._last_open_error[symbol] = "BLOCKED_LONG_ON_BEARISH_TREND"
-                        logger.critical(
-                            f"🛑 [EXECUTION_FAILSAFE_VETO_LONG_KC_DOWN] {symbol} 開多硬攔截：KC 中軌向下或走平 "
-                            f"(kc_mid={eval_kc_mid:.6f} <= prev={prev_kc_mid:.6f})，走空頭嚴禁開多單！"
-                        )
-                        return False
-                    if side.upper() == "SHORT" and eval_kc_mid >= prev_kc_mid:
+            is_entry_ma5_ma15_entry = entry_method_authority == "MA5_MA15_CROSS"
+            is_extreme_reversal_entry = (
+                entry_method_authority in ("KC_OUTER_PIVOT_REVERSAL", "THREE_BAR_PIVOT_REVERSAL")
+                or any(k in str(reason).upper() for k in ("PIVOT", "REVERSAL", "MODE_A", "VALLEY", "PEAK"))
+                or (meta or {}).get("is_mode_a") is True
+                or (meta or {}).get("is_flip") is True
+            )
+            # 建立多空方向與標頭/中軌一致性門禁
+            from core.symbol_aliases import is_meme_breakout_symbol
+            is_meme_symbol = is_meme_breakout_symbol(symbol)
+            if (is_meme_symbol or True) and "kc_middle" in frame.columns and len(frame) >= 2:
+                eval_kc_mid = float(eval_f_row.get("kc_middle", 0.0))
+                prev_kc_mid = float(prev_eval_f_row.get("kc_middle", eval_kc_mid))
+                is_kc_up = eval_kc_mid > prev_kc_mid
+                is_kc_down = eval_kc_mid < prev_kc_mid
+
+                # 當市場方向明確為 KC_UP（中軌向上 / 介面標頭「只評估多單」）：
+                # 1. 不允許一般趨勢引擎開空。
+                # 2. 只有獨立的極值峰頂反轉引擎，在具備完整反轉證據時，才可評估逆勢空單。
+                if is_kc_up and side.upper() == "SHORT":
+                    if not is_extreme_reversal_entry:
                         cls._last_open_error[symbol] = "BLOCKED_SHORT_ON_BULLISH_TREND"
                         logger.critical(
-                            f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_KC_UP] {symbol} 開空硬攔截：KC 中軌向上或走平 "
-                            f"(kc_mid={eval_kc_mid:.6f} >= prev={prev_kc_mid:.6f})，走多頭嚴禁開空單！"
+                            f"🛑 [DIRECTION_CONSISTENCY_VETO_SHORT] {symbol} 開空硬攔截：KC 中軌明確向上 (KC_UP, kc_mid={eval_kc_mid:.6f} > prev={prev_kc_mid:.6f})，"
+                            f"界面方向為『KC 向上 (只評估多單)』，一般趨勢引擎絕對禁止開空！(只有獨立極值峰頂反轉具備完整證據時才允許)"
                         )
                         return False
-                is_entry_ma5_ma15_entry = entry_method_authority == "MA5_MA15_CROSS"
+
+                # 當市場方向明確為 KC_DOWN（中軌向下 / 介面標頭「只評估空單」）：
+                # 1. 不允許一般趨勢引擎開多。
+                # 2. 只有獨立的極值谷底反轉引擎，在具備完整反轉證據時，才可評估逆勢多單。
+                if is_kc_down and side.upper() == "LONG":
+                    if not is_extreme_reversal_entry:
+                        cls._last_open_error[symbol] = "BLOCKED_LONG_ON_BEARISH_TREND"
+                        logger.critical(
+                            f"🛑 [DIRECTION_CONSISTENCY_VETO_LONG] {symbol} 開多硬攔截：KC 中軌明確向下 (KC_DOWN, kc_mid={eval_kc_mid:.6f} < prev={prev_kc_mid:.6f})，"
+                            f"界面方向為『KC 向下 (只評估空單)』，一般趨勢引擎絕對禁止開多！(只有獨立極值谷底反轉具備完整證據時才允許)"
+                        )
+                        return False
                 if side.upper() == "SHORT":
                     if eval_f_c >= eval_f_o and not is_entry_ma5_ma15_entry:
                         logger.critical(
@@ -5148,7 +5197,8 @@ class ExecutionManager:
                     logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
                     print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
                 else:
-                    print(f"⚠️ [EXECUTION_FAILED] {symbol} {side} account.open_position returned False! reason={reason}", flush=True)
+                    last_err = getattr(cls, "_last_open_error", {}).get(symbol) or getattr(account, "last_error", None)
+                    print(f"⚠️ [EXECUTION_FAILED] {symbol} {side} account.open_position returned False! reason={reason} detail={last_err}", flush=True)
                 return opened
             print(f"⚠️ [EXECUTION_FAILED] {symbol} account object does not have open_position method!", flush=True)
             return False

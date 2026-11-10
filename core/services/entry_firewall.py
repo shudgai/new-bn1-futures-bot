@@ -859,12 +859,13 @@ async def validate_account_entry(account, symbol, side, context):
             raise ValueError("[FORBIDDEN_ENTRY] " + meme_gate.reason)
     from core.services.entry_methods import (
         KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY,
+        THREE_BAR_PIVOT_REVERSAL, MA5_MA15_CROSS, POST_CLOSE_KC_REENTRY, ENTRY_METHODS,
         revalidate_entry_method,
     )
     method = context.get("entry_method_authority")
-    if method in (KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY):
+    if method in ENTRY_METHODS:
         firewall_authority = (
-            "KC_OUTER_PIVOT" if method == KC_OUTER_PIVOT_REVERSAL else method
+            "KC_OUTER_PIVOT" if method in (KC_OUTER_PIVOT_REVERSAL, THREE_BAR_PIVOT_REVERSAL) else method
         )
         if (
             side not in ("LONG", "SHORT")
