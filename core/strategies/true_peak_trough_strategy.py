@@ -493,6 +493,21 @@ class TruePeakTroughStrategy:
 
 
 # ─────────────────────── 便利函式 ───────────────────────
+def evaluate_true_peak_trough_strategy(
+    df: pd.DataFrame,
+    current_position: PositionState = PositionState.NONE,
+    live_price: Optional[float] = None,
+    symbol: str = "",
+) -> dict:
+    """
+    與 evaluate_true_peak_trough 等價之標準別名介面。
+    """
+    if isinstance(current_position, str):
+        current_position = PositionState(current_position.upper())
+    strategy = TruePeakTroughStrategy(symbol=symbol)
+    return strategy.evaluate(df, current_position=current_position, live_price=live_price)
+
+
 def evaluate_true_peak_trough(
     df: pd.DataFrame,
     current_position: PositionState = PositionState.NONE,
@@ -509,8 +524,102 @@ def evaluate_true_peak_trough(
     :param symbol: 交易對名稱（供 log 追蹤）
     :return: 訊號字典（含 action, reason, rsi, adx, kc_slope 等欄位）
     """
+    return evaluate_true_peak_trough_strategy(
+        df, current_position=current_position, live_price=live_price, symbol=symbol
+    )
+
+
+def check_exit_conditions(
+    df: pd.DataFrame,
+    current_price: float,
+    current_position: PositionState,
+    entry_price: Optional[float] = None,
+    is_bar_closed: bool = True,
+    hard_sl_pct: float = 0.02,
+    waterfall_atr_mult: float = 3.0,
+    symbol: str = "",
+) -> dict:
+    """
+    平倉雙軌過濾機制：
+    1. 異常 K 線 / 大瀑布 ➔ 即時觸發強制平倉 (EMERGENCY_CLOSE / STOP_LOSS)
+    2. 一般 K 線 ➔ 必須等 K 線收盤 (Completed Bar) 確定轉折才平倉
+
+    :param df: K 線數據 DataFrame (若含 atr 欄位直接使用，否則以 14 週期計算)
+    :param current_price: 當前最新報價 (Quote)
+    :param current_position: 當前持倉狀態 (LONG / SHORT / NONE)
+    :param entry_price: 開倉進場成本價
+    :param is_bar_closed: 當前 K 線是否已收盤
+    :param hard_sl_pct: 硬止損百分比 (預設 0.02 即 2%)
+    :param waterfall_atr_mult: 大瀑布 ATR 倍數門檻 (預設 3.0 倍)
+    :param symbol: 交易對名稱
+    :return: 決策字典 (action, reason 等)
+    """
     if isinstance(current_position, str):
         current_position = PositionState(current_position.upper())
-    strategy = TruePeakTroughStrategy(symbol=symbol)
-    return strategy.evaluate(df, current_position=current_position, live_price=live_price)
+
+    if current_position == PositionState.NONE:
+        return {"action": "HOLD", "reason": "目前無持倉，無須平倉"}
+
+    # 取得 ATR
+    atr_val = None
+    if "atr" in df.columns and len(df["atr"]) > 0:
+        atr_val = df["atr"].iloc[-1]
+    if atr_val is None or not np.isfinite(atr_val) or atr_val <= 0:
+        # 簡易計算 14 週期 ATR
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr_series = tr.rolling(window=14).mean()
+        atr_val = float(atr_series.iloc[-1]) if pd.notna(atr_series.iloc[-1]) else (current_price * 0.01)
+
+    # =========================================================
+    # 1. 例外緊急狀況：大瀑布 / 異常 K 線 (盤中即時監控，無須等收盤)
+    # =========================================================
+    if entry_price is not None and entry_price > 0:
+        # 情況 A：價格波動超過 waterfall_atr_mult 倍 ATR (大瀑布 / 暴跌暴漲異常 K 線)
+        price_change = abs(current_price - entry_price)
+        if price_change > (atr_val * waterfall_atr_mult):
+            return {
+                "action": "EMERGENCY_CLOSE",
+                "reason": f"防範大瀑布/異常極端 K 線，價格偏差={price_change:.4f} > {waterfall_atr_mult}*ATR({atr_val:.4f})，觸發緊急風控平倉！",
+                "atr": atr_val,
+                "entry_price": entry_price,
+                "current_price": current_price,
+            }
+
+        # 情況 B：硬止損 (Hard Stop Loss，如固定 2% 離場)
+        if current_position == PositionState.LONG and current_price <= entry_price * (1.0 - hard_sl_pct):
+            return {
+                "action": "STOP_LOSS",
+                "reason": f"觸及硬止損線 {hard_sl_pct*100:.1f}%，現價={current_price:.4f} <= 止損價={entry_price * (1.0 - hard_sl_pct):.4f}，立即平多",
+                "entry_price": entry_price,
+                "current_price": current_price,
+            }
+        elif current_position == PositionState.SHORT and current_price >= entry_price * (1.0 + hard_sl_pct):
+            return {
+                "action": "STOP_LOSS",
+                "reason": f"觸及硬止損線 {hard_sl_pct*100:.1f}%，現價={current_price:.4f} >= 止損價={entry_price * (1.0 + hard_sl_pct):.4f}，立即平空",
+                "entry_price": entry_price,
+                "current_price": current_price,
+            }
+
+    # =========================================================
+    # 2. 一般情況：必須等待 K 線完全走完 (收盤) 才評估真峰谷轉向
+    # =========================================================
+    if is_bar_closed:
+        return evaluate_true_peak_trough_strategy(
+            df, current_position=current_position, live_price=current_price, symbol=symbol
+        )
+
+    # K 線還在走且無異常大瀑布時，一律繼續持倉防洗
+    return {
+        "action": "HOLD",
+        "reason": "K線尚未走完，忽略盤中微幅反向波動 (VETO_HOLD_UNCLOSED_BAR)",
+        "current_price": current_price,
+    }
+
 

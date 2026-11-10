@@ -27,6 +27,8 @@ from core.strategies.true_peak_trough_strategy import (
     TruePeakTroughStrategy,
     PositionState,
     evaluate_true_peak_trough,
+    evaluate_true_peak_trough_strategy,
+    check_exit_conditions,
     CHOP_ADX_MIN,
     CHOP_BW_MIN,
     RSI_PEAK_THRESHOLD,
@@ -421,4 +423,97 @@ class TestConvenienceFunction:
         result = evaluate_true_peak_trough(df, current_position=PositionState.NONE)
         assert isinstance(result, dict)
         assert "action" in result
+
+
+class TestCheckExitConditions:
+    """平倉雙軌過濾機制 (check_exit_conditions) 測試"""
+
+    def test_emergency_close_on_waterfall_atr(self):
+        """價格偏離超過 3 倍 ATR ➔ EMERGENCY_CLOSE (大瀑布緊急出場)"""
+        rows = _build_bullish_market(6)
+        df = _make_df(rows)
+        entry_price = 100.0
+        # ATR 為 1.0 (kc_mid * 0.01 = 1.0)，若跌破 4.0 點 (> 3 ATR) 觸發緊急出場
+        current_price = 95.0  # 偏差 5.0 > 3.0 ATR
+        res = check_exit_conditions(
+            df=df,
+            current_price=current_price,
+            current_position=PositionState.LONG,
+            entry_price=entry_price,
+            is_bar_closed=False,  # 盤中即可觸發
+        )
+        assert res["action"] == "EMERGENCY_CLOSE"
+        assert "大瀑布" in res["reason"] or "EMERGENCY" in res["reason"]
+
+    def test_hard_stop_loss_long(self):
+        """多單跌幅 >= 2% 觸發硬止損 ➔ STOP_LOSS"""
+        rows = _build_bullish_market(6)
+        df = _make_df(rows)
+        entry_price = 100.0
+        current_price = 97.9  # 虧損 2.1% (但未超過 3 ATR，假設 ATR 較大如 2.0，3 ATR=6.0)
+        # 設定 df 中的 atr 為 2.0
+        for r in rows:
+            r["atr"] = 2.0
+        df = _make_df(rows)
+        res = check_exit_conditions(
+            df=df,
+            current_price=current_price,
+            current_position=PositionState.LONG,
+            entry_price=entry_price,
+            is_bar_closed=False,
+        )
+        assert res["action"] == "STOP_LOSS"
+        assert "硬止損" in res["reason"]
+
+    def test_hard_stop_loss_short(self):
+        """空單漲幅 >= 2% 觸發硬止損 ➔ STOP_LOSS"""
+        rows = _build_bearish_market(6)
+        for r in rows:
+            r["atr"] = 2.0
+        df = _make_df(rows)
+        entry_price = 100.0
+        current_price = 102.1  # 虧損 2.1%
+        res = check_exit_conditions(
+            df=df,
+            current_price=current_price,
+            current_position=PositionState.SHORT,
+            entry_price=entry_price,
+            is_bar_closed=False,
+        )
+        assert res["action"] == "STOP_LOSS"
+        assert "硬止損" in res["reason"]
+
+    def test_hold_when_bar_unclosed_without_emergency(self):
+        """未收盤且無異常瀑布/硬止損 ➔ HOLD (防洗)"""
+        rows = _build_bullish_market(6)
+        df = _make_df(rows)
+        entry_price = 100.0
+        current_price = 99.5  # 輕微回踩 0.5%
+        res = check_exit_conditions(
+            df=df,
+            current_price=current_price,
+            current_position=PositionState.LONG,
+            entry_price=entry_price,
+            is_bar_closed=False,
+        )
+        assert res["action"] == "HOLD"
+        assert "K線尚未走完" in res["reason"]
+
+    def test_evaluate_flip_when_bar_is_closed(self):
+        """K 線已收盤 ➔ 轉由 evaluate_true_peak_trough_strategy 評估"""
+        rows = _build_bullish_market(6)
+        df = _make_df(rows)
+        entry_price = 100.0
+        current_price = 100.5
+        res = check_exit_conditions(
+            df=df,
+            current_price=current_price,
+            current_position=PositionState.LONG,
+            entry_price=entry_price,
+            is_bar_closed=True,
+        )
+        # 多單且 KC 向上 ➔ 應為 HOLD (VETO_HOLD_LONG)
+        assert res["action"] == "HOLD"
+        assert "VETO_HOLD_LONG" in res["reason"]
+
 
