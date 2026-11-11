@@ -619,10 +619,11 @@ class TestCleanEvaluateStrategy:
         assert "到達真谷底" in res["reason"]
 
     def test_none_position_ma5_retest_long(self):
-        """無持倉，回踩 MA5 止跌補救開多"""
+        """無持倉，回踩 MA5 止跌補救開多 (MA5 平緩，排除急拉斷頭)"""
         rows = _build_bullish_market(6)
+        rows[-2]["ma5"] = 100.75
         rows[-1]["kc_mid"] = 100.0
-        rows[-1]["ma5"] = 100.8
+        rows[-1]["ma5"] = 100.8   # ma5_diff = 0.05, angle ~ 26度
         rows[-1]["open"] = 100.7
         rows[-1]["close"] = 101.0  # c0 > o0, c0 >= ma5, c0 > kc_mid
         rows[-1]["bb_upper"] = 103.0  # c0 < bb_upper
@@ -633,10 +634,11 @@ class TestCleanEvaluateStrategy:
         assert "回踩 MA5 止跌補救開多" in res["reason"]
 
     def test_none_position_ma5_retest_short(self):
-        """無持倉，反彈 MA5 受阻補救開空"""
+        """無持倉，反彈 MA5 受阻補救開空 (MA5 平緩，排除急砸斷頭)"""
         rows = _build_bearish_market(6)
+        rows[-2]["ma5"] = 99.25
         rows[-1]["kc_mid"] = 100.0
-        rows[-1]["ma5"] = 99.2
+        rows[-1]["ma5"] = 99.2    # ma5_diff = -0.05, angle ~ -26度
         rows[-1]["open"] = 99.3
         rows[-1]["close"] = 99.0  # c0 < o0, c0 <= ma5, c0 < kc_mid
         rows[-1]["bb_lower"] = 97.0  # c0 > bb_lower
@@ -845,6 +847,67 @@ class TestCheckWaveStartAndOpen:
         res = check_wave_start_and_open(df, PositionState.LONG)
         assert res["action"] == "FLIP_TO_SHORT"
         assert "平多並瞬間翻空" in res["reason"]
+
+
+class TestVShapeAngleReversal:
+    """斷頭式 (<= -75度) 與 真谷式 (>= +75度) 極速開倉與反手測試"""
+
+    def test_v_shape_down_instant_flip_short(self):
+        """持有多單遇斷頭式急砸 (MA5 <= -75°) ➔ 秒級平多並瞬間開空"""
+        rows = _build_bullish_market(6)
+        # 前收 101.0, 現價 100.0, ma5_diff = -0.5
+        # angle = arctan(-0.5 / 101 * 1000) = arctan(-4.95) = -78.6°
+        rows[-2]["close"] = 101.0
+        rows[-2]["ma5"] = 101.5
+        rows[-1]["close"] = 100.0
+        rows[-1]["open"] = 101.5
+        rows[-1]["ma5"] = 101.0  # ma5_diff = -0.5
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.LONG)
+        assert res["action"] == "FLIP_TO_SHORT"
+        assert "斷頭式" in res["reason"]
+
+    def test_v_shape_up_instant_flip_long(self):
+        """持有空單遇真谷式急拉 (MA5 >= +75°) ➔ 秒級平空並瞬間開多"""
+        rows = _build_bearish_market(6)
+        # 前收 99.0, 現價 100.0, ma5_diff = +0.5
+        # angle = arctan(+0.5 / 99 * 1000) = arctan(5.05) = +78.8°
+        rows[-2]["close"] = 99.0
+        rows[-2]["ma5"] = 98.5
+        rows[-1]["close"] = 100.0
+        rows[-1]["open"] = 98.5
+        rows[-1]["ma5"] = 99.0  # ma5_diff = +0.5
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.SHORT)
+        assert res["action"] == "FLIP_TO_LONG"
+        assert "真谷式" in res["reason"]
+
+    def test_v_shape_down_open_short_when_none(self):
+        """無持倉遇斷頭式急砸 (MA5 <= -75°) ➔ 直接市價開空"""
+        rows = _build_bullish_market(6)
+        rows[-2]["close"] = 101.0
+        rows[-2]["ma5"] = 101.5
+        rows[-1]["close"] = 100.0
+        rows[-1]["open"] = 101.5
+        rows[-1]["ma5"] = 101.0  # ma5_diff = -0.5
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.NONE)
+        assert res["action"] == "OPEN_SHORT"
+        assert "斷頭式" in res["reason"]
+
+    def test_v_shape_up_open_long_when_none(self):
+        """無持倉遇真谷式急拉 (MA5 >= +75°) ➔ 直接市價開多"""
+        rows = _build_bearish_market(6)
+        rows[-2]["close"] = 99.0
+        rows[-2]["ma5"] = 98.5
+        rows[-1]["close"] = 100.0
+        rows[-1]["open"] = 98.5
+        rows[-1]["ma5"] = 99.0  # ma5_diff = +0.5
+        df = _make_df(rows)
+        res = evaluate_strategy(df, PositionState.NONE)
+        assert res["action"] == "OPEN_LONG"
+        assert "真谷式" in res["reason"]
+
 
 
 

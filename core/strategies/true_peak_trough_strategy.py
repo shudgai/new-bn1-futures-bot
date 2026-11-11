@@ -556,6 +556,421 @@ def evaluate_true_peak_trough_strategy(
     return strategy.evaluate(df, current_position=current_position, live_price=live_price)
 
 
+def evaluate_dual_strategy(
+    df: pd.DataFrame, current_position: PositionState = PositionState.NONE
+) -> dict:
+    """多空雙向 - 真峰谷起點開倉與波段鎖定策略 (Dual True Peak/Trough Strategy)
+
+    核心鐵律：
+      1. 震盪盤防護 (ADX < 20 或 帶幅過窄) ➔ 凍結所有交易。
+      2. 波段發動第一時間 ➔ 在谷底起漲點開多，在峰頂起跌點開空。
+      3. 強勢 K 線保護鎖 ➔ 大綠 K 暴漲中絕不平多；大紅 K 下砸中絕不平空！
+      4. 峰谷三點確理解鎖 ➔ 只有出現實體反轉跌破/突破前高低 (三點確立) 或 中軌破位，才允許平倉/翻倉。
+      5. 波段走向保護 ➔ 中軌方向未改變前，中間回踩/反彈一律無視 (HOLD)。
+    """
+    if df is None or len(df) < 3:
+        return {"action": "HOLD", "position": current_position.value if isinstance(current_position, PositionState) else str(current_position), "reason": "數據不足，維持現狀"}
+
+    if isinstance(current_position, str):
+        try:
+            current_position = PositionState(current_position.upper())
+        except ValueError:
+            current_position = PositionState.NONE
+
+    # ---------------------------------------------------------
+    # Step A: 數據與指標提取 (從 completed K 線獲取)
+    # ---------------------------------------------------------
+    c0 = float(df["close"].iloc[-1])
+    o0 = float(df["open"].iloc[-1])
+    h0 = float(df["high"].iloc[-1])
+    l0 = float(df["low"].iloc[-1])
+
+    c1 = float(df["close"].iloc[-2])
+    o1 = float(df["open"].iloc[-2])
+    h1 = float(df["high"].iloc[-2])
+    l1 = float(df["low"].iloc[-2])
+
+    kc_col = "kc_mid" if "kc_mid" in df.columns else ("kc_middle" if "kc_middle" in df.columns else "close")
+    kc_mid = float(df[kc_col].iloc[-1])
+    kc_mid_prev = float(df[kc_col].iloc[-2])
+
+    bb_upper = float(df["bb_upper"].iloc[-1]) if "bb_upper" in df.columns else (kc_mid * 1.02)
+    bb_lower = float(df["bb_lower"].iloc[-1]) if "bb_lower" in df.columns else (kc_mid * 0.98)
+
+    curr_adx = float(df["adx"].iloc[-1]) if "adx" in df.columns else 25.0
+    curr_bw = float(df["bandwidth"].iloc[-1]) if "bandwidth" in df.columns else 0.01
+
+    rsi0 = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+    rsi1 = float(df["rsi"].iloc[-2]) if "rsi" in df.columns and len(df) >= 2 else rsi0
+
+    # K 線形態與中軌趨勢判定
+    is_green_bar = c0 > o0  # 實體陽線 (大綠 K)
+    is_red_bar = c0 < o0  # 實體陰線 (大紅 K)
+    is_kc_mid_up = kc_mid > kc_mid_prev  # 中軌向上
+    is_kc_mid_down = kc_mid < kc_mid_prev  # 中軌向下
+
+    # 針對 MEME 幣 / 妖幣 (如 龍蝦/PEPE) 的彈性震盪帶幅門檻 (0.4%)
+    bw_threshold = 0.004
+
+    # ---------------------------------------------------------
+    # 關卡 1：震盪盤防禦 (帶幅極窄且 ADX 無波段動態時，凍結交易)
+    # ---------------------------------------------------------
+    is_choppy = (curr_bw < bw_threshold) and (curr_adx < 20)
+    if is_choppy:
+        return {
+            "action": "HOLD",
+            "position": current_position.value,
+            "reason": f"震盪盤保護中 (ADX={curr_adx:.1f}, BW={curr_bw:.4f}) - 凍結交易",
+        }
+
+    # ---------------------------------------------------------
+    # 關卡 2：真峰谷 (True Peak / Trough) 轉向條件判定
+    # ---------------------------------------------------------
+    # 🟢 真谷底起漲點 (低位區 + 實體陽線突破前高 / RSI 低位上彎)
+    # 低位區判定：當前或前根在 KC 中軌下方
+    is_trough_area = (c0 <= kc_mid) or (l1 <= kc_mid)
+    is_true_trough = is_trough_area and (
+        (is_green_bar and c0 > h1) or (rsi1 < 40 and rsi0 > rsi1)
+    )
+
+    # 🔴 真峰頂起跌點 (高位區 + 實體陰線跌破前低 / RSI 高位下彎)
+    # 高位區判定：當前或前根衝高在 KC 中軌上方
+    is_peak_area = (c0 >= kc_mid) or (h1 >= kc_mid)
+    is_true_peak = is_peak_area and (
+        (is_red_bar and c0 < l1) or (rsi1 > 60 and rsi0 < rsi1)
+    )
+
+    # ---------------------------------------------------------
+    # 關卡 3：多空對稱狀態機 (State Machine)
+    # ---------------------------------------------------------
+
+    # 🟢 情況 1：持有多單中 (LONG)
+    if current_position == PositionState.LONG:
+        # 1. 陽線保護鎖：大綠 K 暴漲中，100% 強行 HOLD，絕不平多！
+        if is_green_bar:
+            return {
+                "action": "HOLD",
+                "reason": "🚀 [多單] 強勢大綠 K 暴漲中，鎖定 HOLD 讓利潤奔跑！",
+            }
+
+        # 2. 只有在「峰頂三點確立 (陰線吞噬前低)」或「中軌轉向跌破」時才平多/翻空
+        if is_true_peak or ((not is_kc_mid_up) and c0 < kc_mid):
+            return {
+                "action": "FLIP_TO_SHORT",
+                "reason": "🎯 [多單] 到達真峰頂三點確立或跌破中軌，平多並瞬間翻空",
+            }
+
+        # 3. 中軌持續向上，中間小拉回/小紅 K 一律無視，繼續持多！
+        return {
+            "action": "HOLD",
+            "reason": "[多單] KC中軌持續向上，波段未變，無視短線拉回繼續持多",
+        }
+
+    # 🔴 情況 2：持有空單中 (SHORT)
+    elif current_position == PositionState.SHORT:
+        # 1. 陰線保護鎖：大紅 K 急跌中，100% 強行 HOLD，絕不平空！
+        if is_red_bar:
+            return {
+                "action": "HOLD",
+                "reason": "📉 [空單] 強勢大紅 K 下砸中，鎖定 HOLD 讓空頭利潤奔跑！",
+            }
+
+        # 2. 只有在「谷底三點確立 (陽線突破前高)」或「中軌轉向突破」時才平空/翻多
+        if is_true_trough or ((not is_kc_mid_down) and c0 > kc_mid):
+            return {
+                "action": "FLIP_TO_LONG",
+                "reason": "🎯 [空單] 到達真谷底三點確立或突破中軌，平空並瞬間翻多",
+            }
+
+        # 3. 中軌持續向下，中間小反彈/小綠 K 一律無視，繼續持空！
+        return {
+            "action": "HOLD",
+            "reason": "[空單] KC中軌持續向下，波段未變，無視短線反彈繼續持空",
+        }
+
+    # ⚪ 情況 3：完全無持倉 (NONE) —— 尋求波段起點進場或強勢補救買回
+    elif current_position == PositionState.NONE:
+        # 首選 1：波段發動第一時間 (谷底起漲開多)
+        if is_true_trough and c0 < bb_upper:
+            return {
+                "action": "OPEN_LONG",
+                "reason": "🚀 [無持倉] 第一時間捕捉到谷底波段起漲點，開多！",
+            }
+
+        # 首選 2：錯過谷底起點後的「強勢大綠 K 陽線補救開多 (Secondary Entry / 買回)」
+        # 只要：實體大綠 K (c0 > o0) 且 收盤站上 MA5 (c0 >= ma5) 且 KC 中軌向上，且價格未貼頂天花板 (c0 < bb_upper)
+        ma5_curr = float(df["ma5"].iloc[-1]) if "ma5" in df.columns else kc_mid
+        is_strong_green_breakout = is_green_bar and (c0 >= ma5_curr) and is_kc_mid_up
+        if is_strong_green_breakout and (c0 < bb_upper):
+            return {
+                "action": "OPEN_LONG",
+                "reason": "🚀 [無持倉] 錯過谷底，出現強勢大綠 K 陽線突破 MA5 且中軌向上，發動補救開多買回！",
+            }
+
+        # 🛑 【防追空鐵律】：嚴禁在 KC 中軌下方超賣區追空！只允許在高位衝頂轉折時開空
+        can_open_short_zone = (c0 > kc_mid) and (c0 > bb_lower)
+        if is_true_peak and can_open_short_zone:
+            return {
+                "action": "OPEN_SHORT",
+                "reason": "📉 [無持倉] 第一時間捕捉到峰頂波段起跌點，開空！",
+            }
+        elif is_true_peak and not can_open_short_zone:
+            return {
+                "action": "HOLD",
+                "reason": "🛑 [防追空保護] 價格已處於中軌下方低位/超賣區，絕對禁止在谷底開空！",
+            }
+
+        # 次選 1：錯過首波後的順勢補救開倉 (回踩 MA5 止跌/受阻)
+        is_ma5_retest_long = is_green_bar and (c0 >= ma5_curr)
+        is_ma5_retest_short = is_red_bar and (c0 <= ma5_curr)
+
+        if (c0 > kc_mid) and is_ma5_retest_long and (c0 < bb_upper):
+            return {
+                "action": "OPEN_LONG",
+                "reason": "➕ [無持倉] 錯過谷底，拉回回踩 MA5 止跌，補救開多",
+            }
+        # 補救開空同樣嚴格要求身處中軌上方高位受阻 (c0 > kc_mid)
+        if (c0 > kc_mid) and is_ma5_retest_short and (c0 > bb_lower) and is_kc_mid_down:
+            return {
+                "action": "OPEN_SHORT",
+                "reason": "➕ [無持倉] 錯過峰頂，反彈回踩 MA5 受阻，補救開空",
+            }
+
+    return {"action": "HOLD", "reason": "等待波段確切發動"}
+
+
+def evaluate_high_precision_strategy(
+    df: pd.DataFrame, current_position: PositionState = PositionState.NONE
+) -> dict:
+    """高精準度多空波段與峰谷轉折策略引擎 (四大實戰強化模組整合)
+
+    1. 震盪盤保護：帶幅收斂 + ADX 低迷 ➔ 凍結交易
+    2. 強勢 K 線保護：綠 K 暴漲中絕不平多，紅 K 急跌中絕不平空
+    3. 真峰谷三點吞噬：只在低位強陽突破開多/平空，高位強陰跌破開空/平多
+    4. K 線走完才發出指令：嚴格確保使用已收盤 K 線數據
+    """
+    if df is None or len(df) < 2:
+        return {"action": "HOLD", "reason": "數據不足"}
+
+    # 確保只使用已收盤 K 線 (Bar Completion)
+    if "is_closed" in df.columns:
+        closed_df = df[df["is_closed"] == True]
+        if len(closed_df) >= 2:
+            df = closed_df
+
+    if isinstance(current_position, str):
+        try:
+            current_position = PositionState(current_position.upper())
+        except ValueError:
+            current_position = PositionState.NONE
+
+    # 提取已收盤 K 線數據 (index -1 為當前剛收盤 K 線, -2 為上一根)
+    c0 = float(df["close"].iloc[-1])
+    o0 = float(df["open"].iloc[-1])
+    h0 = float(df["high"].iloc[-1])
+    l0 = float(df["low"].iloc[-1])
+
+    c1 = float(df["close"].iloc[-2])
+    o1 = float(df["open"].iloc[-2])
+    h1 = float(df["high"].iloc[-2])
+    l1 = float(df["low"].iloc[-2])
+
+    kc_col = "kc_mid" if "kc_mid" in df.columns else ("kc_middle" if "kc_middle" in df.columns else "close")
+    kc_mid = float(df[kc_col].iloc[-1])
+    kc_mid_prev = float(df[kc_col].iloc[-2])
+
+    bb_upper = float(df["bb_upper"].iloc[-1]) if "bb_upper" in df.columns else (
+        float(df["kc_upper"].iloc[-1]) if "kc_upper" in df.columns else (kc_mid * 1.02)
+    )
+    bb_lower = float(df["bb_lower"].iloc[-1]) if "bb_lower" in df.columns else (
+        float(df["kc_lower"].iloc[-1]) if "kc_lower" in df.columns else (kc_mid * 0.98)
+    )
+
+    adx = float(df["adx"].iloc[-1]) if "adx" in df.columns else 25.0
+    bw = float(df["bandwidth"].iloc[-1]) if "bandwidth" in df.columns else (
+        float(df["kc_width"].iloc[-1]) if "kc_width" in df.columns else 0.01
+    )
+    rsi0 = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+    rsi1 = float(df["rsi"].iloc[-2]) if "rsi" in df.columns and len(df) >= 2 else rsi0
+
+    ma5_val = float(df["ma5"].iloc[-1]) if "ma5" in df.columns else kc_mid
+
+    # K 線形態與趨勢方向判定
+    is_green_bar = c0 > o0  # 當前為實體陽線 (大綠 K)
+    is_red_bar = c0 < o0  # 當前為實體陰線 (大紅 K)
+    is_kc_mid_up = kc_mid > kc_mid_prev  # 中軌持續向上
+    is_kc_mid_down = kc_mid < kc_mid_prev  # 中軌持續向下
+
+    # =========================================================
+    # 關卡 1：震盪盤與防追高殺低門檻
+    # =========================================================
+    # 針對高波動小幣/妖幣放寬至 0.4%
+    if (bw < 0.004) and (adx < 20):
+        return {"action": "HOLD", "reason": "盤整區間帶幅收斂 - 凍結交易"}
+
+    # =========================================================
+    # 關卡 2：精準真峰谷反轉型態判定 (三點吞噬)
+    # =========================================================
+    # 🟢 真谷底起漲：價格在中軌下方/低位 + 實體大綠 K 突破前高 (或 RSI 低位上彎)
+    is_true_trough = (c0 <= kc_mid) and (
+        (is_green_bar and c0 > h1) or (rsi1 < 40 and rsi0 > rsi1)
+    )
+
+    # 🔴 真峰頂起跌：價格在中軌上方/高位 + 實體大紅 K 跌破前低 (或 RSI 高位下彎)
+    is_true_peak = (c0 >= kc_mid) and (
+        (is_red_bar and c0 < l1) or (rsi1 > 60 and rsi0 < rsi1)
+    )
+
+    # =========================================================
+    # 關卡 3：持倉狀態機精準決策
+    # =========================================================
+
+    # 🟢 1. 目前持有多單 (LONG)
+    if current_position == PositionState.LONG:
+        # 【保護鎖】大綠 K 暴漲中 ➔ 強行抱緊，絕不平多！
+        if is_green_bar:
+            return {
+                "action": "HOLD",
+                "reason": "🚀 強勢大綠 K 暴漲中，鎖定 HOLD 吃滿主升段！",
+            }
+
+        # 【平多/翻空】頂部三點吞噬確立 或 實體跌破中軌
+        if is_true_peak or ((not is_kc_mid_up) and c0 < kc_mid):
+            return {
+                "action": "FLIP_TO_SHORT",
+                "reason": "🎯 頂部出現陰線吞噬 (峰頂確立)，高位精準平多並翻空",
+            }
+
+        return {
+            "action": "HOLD",
+            "reason": "中軌向上，波段未變，無視微幅拉回繼續持多",
+        }
+
+    # 🔴 2. 目前持有空單 (SHORT)
+    elif current_position == PositionState.SHORT:
+        # 【保護鎖】大紅 K 下砸中 ➔ 強行抱緊，絕不平空！
+        if is_red_bar:
+            return {
+                "action": "HOLD",
+                "reason": "📉 強勢大紅 K 急跌中，鎖定 HOLD 吃滿主跌段！",
+            }
+
+        # 【平空/翻多】底部三點吞噬確立 或 實體突破中軌
+        if is_true_trough or ((not is_kc_mid_down) and c0 > kc_mid):
+            return {
+                "action": "FLIP_TO_LONG",
+                "reason": "🎯 底部出現陽線吞噬 (谷底確立)，低位精準平空並翻多",
+            }
+
+        return {
+            "action": "HOLD",
+            "reason": "中軌向下，波段未變，無視微幅反彈繼續持空",
+        }
+
+    # ⚪ 3. 無持倉 (NONE) ➔ 尋求精準起點進場
+    elif current_position == PositionState.NONE:
+        # 首選：波段起點 (谷底第一時間開多 / 峰頂第一時間開空)
+        if is_true_trough and c0 < bb_upper:
+            return {
+                "action": "OPEN_LONG",
+                "reason": "🚀 谷底三點吞噬確立，第一時間開多！",
+            }
+        if is_true_peak and c0 > bb_lower:
+            return {
+                "action": "OPEN_SHORT",
+                "reason": "📉 峰頂三點吞噬確立，第一時間開空！",
+            }
+
+        # 次選：錯過谷底後的順勢補救開多 (回踩 MA5 止跌)
+        if (
+            (c0 > kc_mid)
+            and is_green_bar
+            and (c0 >= ma5_val)
+            and (c0 < bb_upper)
+        ):
+            return {
+                "action": "OPEN_LONG",
+                "reason": "➕ 錯過谷底，強勢大綠 K 回踩 MA5 止跌，補救開多！",
+            }
+
+    return {"action": "HOLD", "reason": "無明確高勝率訊號"}
+
+
+def evaluate_precise_short_entry(
+    df: pd.DataFrame, current_position: PositionState = PositionState.NONE
+) -> dict:
+    """專治「空在最低點」的開空邏輯：
+
+    1. 峰頂第一時間開空 (高位 + 陰線吞噬/RSI下彎)
+    2. 高位回踩 MA5 補救開空
+    3. 鐵律：價格已處於中軌下方超賣區 (或觸及下軌)，100% 攔截禁止開空！
+    """
+    if df is None or len(df) < 2:
+        return {"action": "HOLD", "reason": "數據不足"}
+
+    if isinstance(current_position, str):
+        try:
+            current_position = PositionState(current_position.upper())
+        except ValueError:
+            current_position = PositionState.NONE
+
+    c0 = float(df["close"].iloc[-1])
+    o0 = float(df["open"].iloc[-1])
+    h0 = float(df["high"].iloc[-1])
+    l0 = float(df["low"].iloc[-1])
+    l1 = float(df["low"].iloc[-2])
+
+    kc_col = "kc_mid" if "kc_mid" in df.columns else ("kc_middle" if "kc_middle" in df.columns else "close")
+    kc_mid = float(df[kc_col].iloc[-1])
+    bb_upper = float(df["bb_upper"].iloc[-1]) if "bb_upper" in df.columns else (kc_mid * 1.02)
+    bb_lower = float(df["bb_lower"].iloc[-1]) if "bb_lower" in df.columns else (kc_mid * 0.98)
+
+    rsi0 = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+    rsi1 = float(df["rsi"].iloc[-2]) if "rsi" in df.columns and len(df) >= 2 else rsi0
+
+    is_red_bar = c0 < o0  # 當前收陰線 (紅 K)
+
+    # 🔴 只有在無持倉 (NONE) 時才尋求開空
+    if current_position == PositionState.NONE:
+
+        # 🛑 【防追空鐵律】：價格已經跌至 KC 中軌下方 或 觸及布林下軌 ➔ 嚴禁開空！
+        if c0 <= kc_mid or c0 <= bb_lower:
+            return {
+                "action": "HOLD",
+                "reason": "🛑 [防追空保護] 價格已處於低位/超賣區，絕對禁止在谷底開空！",
+            }
+
+        # 🎯 【開空模式 A：峰頂第一時間精準開空】
+        # 位置：價格處於 KC 中軌上方高位 (高於中軌或接近上軌)
+        # 條件：當前為實體陰線 且 跌破前一根低點 (c0 < l1)，或 RSI 自 >60 高位彎頭向下
+        is_high_zone = c0 > kc_mid
+        is_peak_engulf = is_red_bar and (c0 < l1)
+        is_rsi_peak_down = (rsi1 > 60) and (rsi0 < rsi1)
+
+        if is_high_zone and (is_peak_engulf or is_rsi_peak_down):
+            return {
+                "action": "OPEN_SHORT",
+                "reason": "📉 [高位精準開空] 捕捉到峰頂第一時間轉折，於最高區發動開空！",
+            }
+
+        # 🎯 【開空模式 B：高位反彈回踩 MA5 受阻補救開空】
+        # 中軌向下波段中，價格反彈觸及 MA5 均線但收盤收陰線受阻
+        ma5_curr = float(df["ma5"].iloc[-1]) if "ma5" in df.columns else kc_mid
+        is_ma5_retest_short = (
+            is_red_bar
+            and (c0 <= ma5_curr)
+            and (c0 > kc_mid)
+            and (c0 < bb_upper)
+        )
+        if is_ma5_retest_short:
+            return {
+                "action": "OPEN_SHORT",
+                "reason": "➕ [高位補救開空] 錯過最高點，於反彈回踩 MA5 受阻時補救開空",
+            }
+
+    return {"action": "HOLD", "reason": "未達精準開空條件"}
+
+
 def evaluate_true_peak_trough(
     df: pd.DataFrame,
     current_position: PositionState = PositionState.NONE,
@@ -757,21 +1172,35 @@ def evaluate_strategy(
             "reason": f"震盪盤保護中 (ADX={curr_adx:.1f}, BW={curr_bw:.4f}) - 凍結交易",
         }
 
-    # --- Step C: 關卡 2 - 真峰谷訊號判定 ---
-    # 🔴 真峰頂：高位區 + 陰線實體跌破前低 (或 RSI 下彎)
-    is_true_peak = (c0 >= kc_mid) and (
-        (c0 < o0 and c0 < l1) or (rsi1 > 60 and rsi0 < rsi1)
-    )
+    # --- Step C: 關卡 2 - 真峰谷訊號判定與 MA5 斜率角度 (斷頭 / 真谷判定) ---
+    # MA5 角度計算：arctan( (ma5_curr - ma5_prev) / close_prev * 1000 )
+    ma5_prev = float(df["ma5"].iloc[-2]) if ("ma5" in df.columns and len(df) >= 2) else ma5_val
+    ma5_diff = ma5_val - ma5_prev
+    ma5_angle = float(np.degrees(np.arctan((ma5_diff / (c1 if c1 > 0 else 1.0)) * 1000.0)))
 
-    # 🟢 真谷底：低位區 + 陽線實體突破前高 (或 RSI 上彎)
-    is_true_trough = (c0 <= kc_mid) and (
+    # 斷頭式急跌 (<= -75度) 與 真谷式急拉 (>= +75度)
+    v_shape_down = ma5_angle <= -75.0
+    v_shape_up = ma5_angle >= 75.0
+
+    # 🔴 真峰頂：高位區 + 陰線實體跌破前低 (或 RSI 下彎 或 斷頭式急砸)
+    is_true_peak = ((c0 >= kc_mid) and (
+        (c0 < o0 and c0 < l1) or (rsi1 > 60 and rsi0 < rsi1)
+    )) or v_shape_down
+
+    # 🟢 真谷底：低位區 + 陽線實體突破前高 (或 RSI 上彎 或 真谷式急拉)
+    is_true_trough = ((c0 <= kc_mid) and (
         (c0 > o0 and c0 > h1) or (rsi1 < 40 and rsi0 > rsi1)
-    )
+    )) or v_shape_up
 
     # --- Step D: 關卡 3 - 狀態機決策 (清乾淨的 if/elif 分流) ---
 
     # 情況 1：持有多單中
     if current_position == PositionState.LONG:
+        if v_shape_down:
+            return {
+                "action": "FLIP_TO_SHORT",
+                "reason": f"⚡ 遇斷頭式急砸 (MA5角度={ma5_angle:.1f}° <= -75°)，秒級平多並瞬間開空！",
+            }
         if is_true_peak:
             return {
                 "action": "FLIP_TO_SHORT",
@@ -781,6 +1210,11 @@ def evaluate_strategy(
 
     # 情況 2：持有空單中
     elif current_position == PositionState.SHORT:
+        if v_shape_up:
+            return {
+                "action": "FLIP_TO_LONG",
+                "reason": f"⚡ 遇真谷式急拉 (MA5角度={ma5_angle:.1f}° >= +75°)，秒級平空並瞬間開多！",
+            }
         if is_true_trough:
             return {
                 "action": "FLIP_TO_LONG",
@@ -790,6 +1224,18 @@ def evaluate_strategy(
 
     # 情況 3：完全無持倉 (尋求首波或補救進場)
     elif current_position == PositionState.NONE:
+        # 特殊極速觸發：斷頭式直接開空 / 真谷式直接開多
+        if v_shape_down:
+            return {
+                "action": "OPEN_SHORT",
+                "reason": f"⚡ 遇斷頭式急砸 (MA5角度={ma5_angle:.1f}° <= -75°)，直接市價開空！",
+            }
+        if v_shape_up:
+            return {
+                "action": "OPEN_LONG",
+                "reason": f"⚡ 遇真谷式急拉 (MA5角度={ma5_angle:.1f}° >= +75°)，直接市價開多！",
+            }
+
         # 首選：真峰谷第一時間
         if is_true_peak and c0 > bb_lower:
             return {"action": "OPEN_SHORT", "reason": "第一時間真峰頂開空"}
@@ -1138,6 +1584,43 @@ def check_wave_start_and_open(
             return {"action": "HOLD", "reason": "空頭波段走向未變，繼續持空讓利潤奔跑"}
 
     return {"action": "HOLD", "reason": "等待波段確立發動"}
+
+
+def evaluate_long_position_holding(
+    df: pd.DataFrame, current_position: PositionState = PositionState.LONG
+) -> dict:
+    """多單波段持倉保護與峰頂第 3 點平多邏輯"""
+    from core.services.smart_exit_evaluator import evaluate_long_position_holding as _eval_long_holding
+    return _eval_long_holding(df, current_position)
+
+
+def evaluate_long_exit_protection(
+    df: pd.DataFrame, current_position: PositionState = PositionState.LONG
+) -> dict:
+    """多單離場保護別名，指向強化版 evaluate_long_position_holding"""
+    from core.services.smart_exit_evaluator import evaluate_long_exit_protection as _eval_long
+    return _eval_long(df, current_position)
+
+
+def evaluate_short_position_holding(
+    df: pd.DataFrame, current_position: PositionState = PositionState.SHORT
+) -> dict:
+    """空單波段持倉保護與谷底第 3 點平空邏輯"""
+    from core.services.smart_exit_evaluator import evaluate_short_position_holding as _eval_short_holding
+    return _eval_short_holding(df, current_position)
+
+
+def evaluate_short_exit_protection(
+    df: pd.DataFrame, current_position: PositionState = PositionState.SHORT
+) -> dict:
+    """空單離場保護：
+
+    只要當前 K 線走完是紅 K (陰線急跌)，100% 強行 HOLD，絕不平空！
+    只有在出現綠 K (陽線) 且谷底三點確立時，才允許平空/翻多。
+    """
+    from core.services.smart_exit_evaluator import evaluate_short_exit_protection as _eval_short
+    return _eval_short(df, current_position)
+
 
 
 
