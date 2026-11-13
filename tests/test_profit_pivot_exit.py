@@ -12,7 +12,7 @@ from core.services.data_pipeline import DataPipeline
 from core.services.exits.authorized_position_exit import automated_position_exit_allowed
 from core.services.exits.strict_true_pivot import (
     PROFIT_PIVOT_PENDING_KEY, PROFIT_PIVOT_EXIT_POLICY,
-    profitable_true_pivot_exit, store_confirmed_pivot_exit,
+    evaluate_position_exit, profitable_true_pivot_exit, store_confirmed_pivot_exit,
 )
 from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON
 from core.services.math_execution_gate import validate_exit_at_execution
@@ -78,6 +78,78 @@ def test_profitable_pivot_requires_structure_at_every_boundary(symbol, side):
     snapshot.kc_upper, snapshot.kc_lower, snapshot.atr = 110.0, 90.0, 1.0
     allowed, reason, _ = ExitGate.evaluate(pos, snapshot)
     assert allowed and reason == pivot[0]
+
+
+@pytest.mark.parametrize(
+    ("side", "candidate_reason"),
+    [
+        ("LONG", "EXIT_LONG_CONSECUTIVE_BEAR_CANDLES_PIVOT_TURN"),
+        ("SHORT", "EXIT_SHORT_CONSECUTIVE_BULL_CANDLES_PIVOT_TURN"),
+    ],
+)
+def test_confirmed_pivot_is_authorized_before_kc_middle_break_and_keeps_profit_floor(
+    side, candidate_reason,
+):
+    frame = pivot_frame(side)
+    pos = position(side, frame)
+    pos["symbol"] = "龙虾/USDT"
+    quote = float(frame.iloc[-1]["close"])
+    sign = 1 if side == "LONG" else -1
+    last, previous = frame.index[-1], frame.index[-2]
+    frame.loc[last, "kc_middle"] = quote + sign * 0.25
+    frame.loc[previous, "kc_middle"] = frame.loc[last, "kc_middle"] - sign * 0.01
+
+    assert evaluate_position_exit(pos, frame)[1] == f"VETO_HOLD_{side}_050_ATR_BUFFER"
+    pivot = profitable_true_pivot_exit(pos, frame, quote=quote)
+    assert pivot is not None
+
+    account = SimpleNamespace(
+        position_meta={},
+        _channel_exit_frames={"龙虾/USDT": frame},
+    )
+    allowed, code, details = validate_exit_at_execution(
+        account,
+        "龙虾/USDT",
+        pos,
+        quote,
+        f"ExitGate:{candidate_reason}",
+    )
+
+    assert allowed
+    assert code == "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
+    assert details["exit_policy"] == PROFIT_PIVOT_EXIT_POLICY
+    assert details["holding_structure"]["kc_middle_break_required"] is False
+
+
+@pytest.mark.parametrize(
+    ("side", "candidate_reason"),
+    [
+        ("LONG", "EXIT_LONG_CONSECUTIVE_BEAR_CANDLES_PIVOT_TURN"),
+        ("SHORT", "EXIT_SHORT_CONSECUTIVE_BULL_CANDLES_PIVOT_TURN"),
+    ],
+)
+def test_confirmed_pivot_gate_still_blocks_below_one_atr(
+    side, candidate_reason,
+):
+    frame = pivot_frame(side, profit_offset=0.0)
+    pos = position(side, frame)
+    pos["symbol"] = "龙虾/USDT"
+    quote = float(frame.iloc[-1]["close"])
+    account = SimpleNamespace(
+        position_meta={},
+        _channel_exit_frames={"龙虾/USDT": frame},
+    )
+
+    allowed, code, _ = validate_exit_at_execution(
+        account,
+        "龙虾/USDT",
+        pos,
+        quote,
+        f"ExitGate:{candidate_reason}",
+    )
+
+    assert not allowed
+    assert code == "VETO_PIVOT_CONFIRMATION_OR_1ATR_NET_PROFIT"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

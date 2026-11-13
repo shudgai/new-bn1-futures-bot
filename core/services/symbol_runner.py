@@ -504,6 +504,7 @@ async def _process_wild_swing_symbol(
     # 同步獲取 15M 大週期 K 棒 (frame_15m)，提供宏觀大趨勢判定，徹底杜絕單看 1M 雜訊開錯邊！
     # ══════════════════════════════════════════════════════════════════════
     frame_15m = None
+    frame_5m = None
     if hasattr(engine, "fetch_klines"):
         try:
             frame_15m = await engine.fetch_klines(symbol, timeframe="15m", limit=50, keep_live=True)
@@ -511,6 +512,12 @@ async def _process_wild_swing_symbol(
                 frame_15m = engine.strategy.compute_indicators(frame_15m.copy())
         except Exception as e:
             logger.debug(f"[{symbol}] fetch 15m klines exception: {e}")
+        try:
+            frame_5m = await engine.fetch_klines(symbol, timeframe="5m", limit=50, keep_live=True)
+            if frame_5m is not None and not frame_5m.empty:
+                frame_5m = engine.strategy.compute_indicators(frame_5m.copy())
+        except Exception as e:
+            logger.debug(f"[{symbol}] fetch 5m klines exception: {e}")
 
     from core.services.execution_manager import ExecutionManager
     await ExecutionManager.process_symbol_pipeline(
@@ -519,6 +526,7 @@ async def _process_wild_swing_symbol(
         klines_df=frame,
         quote=quote,
         frame_15m=frame_15m,
+        frame_5m=frame_5m,
     )
     # 依使用者重構指示：三層流水線為唯一通道，嚴禁任何舊規則 (WildSwingStrategy / MemePeakHunter) 介入或掉落舊分支偷平倉！
     return [], []

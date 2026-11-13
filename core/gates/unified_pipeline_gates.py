@@ -104,6 +104,9 @@ class ExitGate:
     ABSOLUTE_SAFETY_REASONS = frozenset({
         "ACCOUNT_HARD_STOP",
         "ACCOUNT_CIRCUIT_BREAKER",
+        "CIRCUIT_BREAKER_HARD_SL",
+        "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
+        "HARD_STOP_LOSS",
         "帳戶硬止損",
         "MARGIN_LOSS",
         "LIQUIDATION",
@@ -120,6 +123,12 @@ class ExitGate:
         "FAIL_SAFE_EMERGENCY_EXIT",
         "EXIT_LONG_TREND_REVERSAL",
         "EXIT_SHORT_TREND_REVERSAL",
+        "EXIT_LONG_SHARP_REVERSAL_15ATR",
+        "EXIT_SHORT_SHARP_REVERSAL_15ATR",
+        "EXIT_LONG_MA5_75_DEGREE_REVERSAL",
+        "EXIT_SHORT_MA5_75_DEGREE_REVERSAL",
+        "EXIT_LONG_KC_MIDDLE_SLOPE_DOWN",
+        "EXIT_SHORT_KC_MIDDLE_SLOPE_UP",
         "EXIT_BY_TREND_REVERSAL",
     })
     PROFIT_LOCK_EXIT_REASONS = frozenset({
@@ -175,6 +184,42 @@ class ExitGate:
         kc_slope: Optional[float] = None,
         account: Optional[Any] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
+        """順勢K棒保護鎖外層：多單遇綠K、空單遇紅K不平倉，讓該分鐘走完。
+
+        僅大瀑布/異常K、硬風控等絕對安全出口可無視K棒顏色。
+        """
+        result = ExitGate._evaluate_unguarded(
+            pos, market_data, current_price, atr, kc_slope, account,
+        )
+        should_exit, reason, meta = result
+        if not should_exit:
+            return result
+        from core.gates.holding_protection_gate import bar_color_exit_block
+        frame = (
+            market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("raw_df") if isinstance(market_data, dict) else None
+        )
+        if not isinstance(frame, pd.DataFrame):
+            return result
+        block = bar_color_exit_block(pos.get("side"), frame, reason)
+        if block is None:
+            return result
+        return False, ExitGate.GENERAL_EXIT_VETO_REASON, {
+            **(meta or {}),
+            "suppressed_exit_reason": reason,
+            "bar_color_guard": block,
+            "cause": "順勢K棒保護鎖：多單遇綠K/空單遇紅K，讓該分鐘走完，非大瀑布異常K不平倉。",
+        }
+
+    @staticmethod
+    def _evaluate_unguarded(
+        pos: Dict[str, Any],
+        market_data: Union[MarketDataSnapshot, Dict[str, Any]],
+        current_price: Optional[float] = None,
+        atr: Optional[float] = None,
+        kc_slope: Optional[float] = None,
+        account: Optional[Any] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
         """Hold through pullbacks until a profitable confirmed pivot or emergency."""
         from core.services.exits.authorized_position_exit import strategy_exit_bar_block_reason
         from core.symbol_aliases import is_meme_breakout_symbol
@@ -207,10 +252,11 @@ class ExitGate:
             market_data.symbol if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("symbol", "")
         )
-        if (priority_result[0] and (
-            priority_result[1] in ExitGate.ABSOLUTE_SAFETY_REASONS
-            or priority_result[1] in ExitGate.PIVOT_EXIT_REASONS
-        ) and not meme_strategy_disaster_disabled(symbol, priority_result[1])):
+        if (
+            priority_result[0]
+            and priority_result[1] in ExitGate.ABSOLUTE_SAFETY_REASONS
+            and not meme_strategy_disaster_disabled(symbol, priority_result[1])
+        ):
             return priority_result
         frame = (
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
@@ -786,6 +832,29 @@ class ExitGate:
                     }
 
         # ══════════════════════════════════════════════════════════════════
+        # 🟢 【核心鐵律：強勢主升段陽線保護鎖 / 主跌段陰線保護鎖】
+        # 1. 多單持倉中：若當前 K 棒為實體陽線 (close > open，大綠 K 暴漲中)，
+        #    絕對禁止平多！無視短線目標價或微幅獲利回吐，強制鎖定 HOLD，吃滿主升段！
+        # 2. 空單持倉中：若當前 K 棒為實體陰線 (close < open，大紅 K 暴跌中)，
+        #    絕對禁止平空！強制鎖定 HOLD，吃滿主跌段！
+        # ══════════════════════════════════════════════════════════════════
+        if has_candle_history and c_curr is not None:
+            c_open_v = float(c_curr["open"])
+            c_close_v = float(c_curr["close"])
+            if side == "LONG" and c_close_v > c_open_v:
+                return False, "VETO_HOLD", {
+                    **meta,
+                    "green_bar_protection": True,
+                    "cause": f"🚀 強勢陽線 (大綠K) 暴漲拉升中 (close={c_close_v:.6f} > open={c_open_v:.6f})，100% 強制鎖定 HOLD，絕不平倉以吃滿主升段！",
+                }
+            elif side == "SHORT" and c_close_v < c_open_v:
+                return False, "VETO_HOLD", {
+                    **meta,
+                    "red_bar_protection": True,
+                    "cause": f"🔻 強勢陰線 (大紅K) 暴跌下殺中 (close={c_close_v:.6f} < open={c_open_v:.6f})，100% 強制鎖定 HOLD，絕不平空以吃滿主跌段！",
+                }
+
+        # ══════════════════════════════════════════════════════════════════
         # 第二級：淨 ROE 階梯鎖利（獲利了結出口，不受一般趨勢續抱 VETO 阻擋）
         # 首次達 +10% 啟動鎖利 (Tier 1: 鎖 70%)，達 +20% 升級 (Tier 2: 鎖 85%)，不可降級
         # 🎯 方案 1 結合 MA3/MA15 趨勢濾網：縱使浮盈回吐，若 MA3 仍未反轉，一票否決鎖利強制續抱！
@@ -996,19 +1065,27 @@ class ExitGate:
                     curr_bar_high = float(c_curr.get("high", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "high", quote))
                     not_making_new_high = (quote < float(peak["high"])) and (curr_bar_high <= float(peak["high"]))
 
+                    # 峰頂型態判定 (三點峰頂確立)：
+                    # 1. 峰頂高於左棒，且未再創新高
+                    # 2. 第三棒收陰，且收盤跌破中間棒實體中點 或 收盤跌破前棒最低價 (c0 < l1)
+                    # 3. 獲利已展開 (peak_move >= 0.5 ATR 或 peak_roe >= 5%，方案A波段獲利過濾)
+                    breaks_prior_low = float(confirm["close"]) < float(peak["low"])
+                    breaks_midpoint = float(confirm["close"]) < peak_mid
+                    is_exhaustion_close = breaks_prior_low or breaks_midpoint
+
                     strong_peak_reversal = (
                         is_peak_prominent
                         and not_making_new_high
-                        and float(peak["high"]) > float(confirm["high"])
+                        and float(peak["high"]) >= float(confirm["high"])
                         and float(confirm["close"]) < float(confirm["open"])
-                        and float(confirm["close"]) < peak_mid
+                        and is_exhaustion_close
                         and confirm_body >= 0.15 * atr_val
                         and (peak_move >= 0.5 * atr_val or peak_roe >= 0.05)
                         and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
                     )
 
                     # 🛑 2026-10-22/2026-11-06 核心修正：方案 A 真峰頂獲利了結
-                    # 只要中間棒確認為局部峰頂、第三棒收黑跌破實體中軸，且已脫離成本區 (peak_move >= 0.5 ATR 或 peak_roe >= 5%)，
+                    # 只要中間棒確認為局部峰頂、第三棒收黑跌破實體中軸或前低，且已脫離成本區 (peak_move >= 0.5 ATR 或 peak_roe >= 5%)，
                     # 立即獲利了結平多，嚴禁因價格仍在 KC 中軌或 MA15 上方而強行續抱把利潤吐光！
                     if strong_peak_reversal:
                         return True, "EARLY_PIVOT_PEAK_EXIT", {
@@ -1157,28 +1234,39 @@ class ExitGate:
                         }
 
                 # ── 趨勢衰退確認平多：收線確認跌破 MA15 且 MA5 轉為走平或向下，且大週期均線死叉或大週期轉空 ──
+                # 智慧平倉鐵律：若 KC 中軌維持向上 (slope > 0)，價格跌破 MA5/MA15 視為波段回踩洗盤，絕不平倉！
+                # 只有在中軌轉向走平/向下 (slope <= 0) 且大週期轉弱時才允許均線衰退平多。
                 if (
-                    float(c_curr["close"]) < ma15
+                    slope <= 0.0
+                    and float(c_curr["close"]) < ma15
                     and ma5_curr <= ma5_prev
                     and (ema_fast < ema_slow or macro_trend == "BEARISH")
                 ):
                     return True, "LONG_EXIT_MA15_BREAK_AND_MA5_DECAY", {
                         **meta,
-                        "cause": f"多單均線實質轉折平倉: 收線跌破MA15 (close={float(c_curr['close']):.6f} < ma15={ma15:.6f})，MA5走平或向下 (curr={ma5_curr:.6f} <= prev={ma5_prev:.6f}) 且大週期均線死叉轉弱，趨勢實質衰退平多離場！",
+                        "cause": f"多單均線實質轉折平倉: KC中軌已轉平/向下 (slope={slope:.6f})，收線跌破MA15 (close={float(c_curr['close']):.6f} < ma15={ma15:.6f})，MA5走平或向下 (curr={ma5_curr:.6f} <= prev={ma5_prev:.6f}) 且大週期均線死叉轉弱，趨勢實質衰退平多離場！",
                     }
 
-                # ── 觸發器 0-C：均線死叉且實質跌破KC中軌平多 ──
-                if ema_fast < ema_slow and (c_curr["close"] < kc_mid or quote < kc_mid):
+                # ── 觸發器 0-C：中軌轉弱且均線死叉實質跌破KC中軌平多 ──
+                if slope <= 0.0 and ema_fast < ema_slow and (c_curr["close"] < kc_mid or quote < kc_mid):
                     return True, "LONG_EXIT_ON_EMA_CROSS", {
                         **meta,
-                        "cause": f"EMA15向下死叉EMA40且跌破KC中軌 (quote={quote:.6f} < kc_mid={kc_mid:.6f})，波段反轉立即平多！",
+                        "cause": f"KC中軌轉弱 (slope={slope:.6f})，EMA15向下死叉EMA40且跌破KC中軌 (quote={quote:.6f} < kc_mid={kc_mid:.6f})，波段反轉立即平多！",
                     }
 
                 # ── 觸發器 0-D：跌破 KC 中軌平多 (LONG_EXIT_KC_MID_BREACH) ──
-                if ema_fast < ema_slow and (c_curr["close"] < kc_mid or quote < kc_mid) and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
+                if slope <= 0.0 and ema_fast < ema_slow and (c_curr["close"] < kc_mid or quote < kc_mid) and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
                     return True, "LONG_EXIT_KC_MID_BREACH", {
                         **meta,
-                        "cause": f"多單均線轉弱且跌破KC中軌 (close={c_curr['close']:.4f} < kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平多！",
+                        "cause": f"KC中軌轉弱 (slope={slope:.6f})，多單均線轉弱且跌破KC中軌 (close={c_curr['close']:.4f} < kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平多！",
+                    }
+
+                # 智慧平倉鐵律 (evaluate_smart_exit)：KC 中軌持續向上 (slope > 0)，無視短線回踩 MA5/MA15，大趨勢未變一票否決平多 (VETO_HOLD)！
+                if slope > 0.0:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "kc_middle_slope_shield": True,
+                        "cause": f"智慧平倉鐵律: KC中軌持續向上 (slope={slope:.6f} > 0)，波段生命線完好，無視短線回踩MA5/MA15，一票否決平多，繼續死抱多單！",
                     }
 
                 # 趨勢不變續抱：大週期多頭 (ema_fast >= ema_slow) 維持續抱！
@@ -1259,12 +1347,20 @@ class ExitGate:
                     curr_bar_low = float(c_curr.get("low", quote)) if isinstance(c_curr, dict) else float(getattr(c_curr, "low", quote))
                     not_making_new_low = (quote > float(valley["low"])) and (curr_bar_low >= float(valley["low"]))
 
+                    # 谷底型態判定 (三點谷底確立)：
+                    # 1. 谷底低於左棒，且未再創新低
+                    # 2. 第三棒收陽，且收盤突破中間棒實體中點 或 收盤突破前棒最高價 (c0 > h1)
+                    # 3. 獲利已展開 (valley_move >= 0.5 ATR 或 peak_roe >= 5%，方案A波段獲利過濾)
+                    breaks_prior_high = float(confirm["close"]) > float(valley["high"])
+                    breaks_valley_mid = float(confirm["close"]) > valley_mid
+                    is_exhaustion_close_s = breaks_prior_high or breaks_valley_mid
+
                     strong_valley_reversal = (
                         is_valley_prominent
                         and not_making_new_low
-                        and float(valley["low"]) < float(confirm["low"])
+                        and float(valley["low"]) <= float(confirm["low"])
                         and float(confirm["close"]) > float(confirm["open"])
-                        and float(confirm["close"]) > valley_mid
+                        and is_exhaustion_close_s
                         and confirm_body >= 0.15 * atr_val
                         and (valley_move >= 0.5 * atr_val or peak_roe >= 0.05)
                         and (unrealized_pct >= 0.003 or peak_roe >= 0.05)
@@ -1415,29 +1511,40 @@ class ExitGate:
                         }
 
                 # ── 趨勢衰退確認平空：收線確認突破 MA15 且 MA5 轉為走平或向上，且大週期均線金叉或大週期轉多 ──
+                # 智慧平倉鐵律：若 KC 中軌維持向下 (slope < 0)，價格突破 MA5/MA15 視為波段反抽洗盤，絕不平空！
+                # 只有在中軌轉向走平/向上 (slope >= 0) 且大週期轉弱時才允許均線衰退平空。
                 if (
-                    float(c_curr["close"]) > ma15
+                    slope >= 0.0
+                    and float(c_curr["close"]) > ma15
                     and ma5_curr >= ma5_prev
                     and (ema_fast > ema_slow or macro_trend == "BULLISH")
                 ):
                     return True, "SHORT_EXIT_MA15_BREAK_AND_MA5_DECAY", {
                         **meta,
-                        "cause": f"空單均線實質轉折平倉: 收線突破MA15 (close={float(c_curr['close']):.6f} > ma15={ma15:.6f})，MA5走平或向上 (curr={ma5_curr:.6f} >= prev={ma5_prev:.6f}) 且大週期均線金叉轉弱，趨勢實質衰退平空離場！",
+                        "cause": f"空單均線實質轉折平倉: KC中軌已轉平/向上 (slope={slope:.6f})，收線突破MA15 (close={float(c_curr['close']):.6f} > ma15={ma15:.6f})，MA5走平或向上 (curr={ma5_curr:.6f} >= prev={ma5_prev:.6f}) 且大週期均線金叉轉弱，趨勢實質衰退平空離場！",
                     }
 
-                # ── 觸發器 2-C：均線金叉且實質突破KC中軌平空 ──
+                # ── 觸發器 2-C：中軌轉弱且均線金叉實質突破KC中軌平空 ──
                 middle_reclaimed_by_body = _short_midline_body_reclaim_confirmed(raw_df, kc_mid)
-                if ema_fast > ema_slow and middle_reclaimed_by_body:
+                if slope >= 0.0 and ema_fast > ema_slow and middle_reclaimed_by_body:
                     return True, "SHORT_EXIT_ON_EMA_CROSS", {
                         **meta,
-                        "cause": f"EMA15向上金叉EMA40且已收線實體收復KC中軌 (close={float(short_closed.iloc[-1]['close']):.6f} > kc_mid={kc_mid:.6f})，波段反轉平空！",
+                        "cause": f"KC中軌轉強/向上 (slope={slope:.6f})，EMA15向上金叉EMA40且已收線實體收復KC中軌 (close={float(short_closed.iloc[-1]['close']):.6f} > kc_mid={kc_mid:.6f})，波段反轉平空！",
                     }
 
                 # ── 觸發器 2-D：收復突破 KC 中軌平空 (SHORT_EXIT_KC_MID_BREACH) ──
-                if ema_fast > ema_slow and middle_reclaimed_by_body and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
+                if slope >= 0.0 and ema_fast > ema_slow and middle_reclaimed_by_body and (peak_roe >= max(0.6 * atr_pct, 0.004) and unrealized_pct <= peak_roe * 0.60):
                     return True, "SHORT_EXIT_KC_MID_BREACH", {
                         **meta,
-                        "cause": f"空單均線轉弱且已收線實體收復KC中軌 (close={float(short_closed.iloc[-1]['close']):.4f} > kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平空！",
+                        "cause": f"KC中軌轉強/向上 (slope={slope:.6f})，空單均線轉弱且已收線實體收復KC中軌 (close={float(short_closed.iloc[-1]['close']):.4f} > kc_mid={kc_mid:.4f})，波段回吐利潤鎖定平空！",
+                    }
+
+                # 智慧平倉鐵律 (evaluate_smart_exit)：KC 中軌持續向下 (slope < 0)，無視短線反抽 MA5/MA15，大趨勢未變一票否決平空 (VETO_HOLD)！
+                if slope < 0.0:
+                    return False, "VETO_HOLD", {
+                        **meta,
+                        "kc_middle_slope_shield": True,
+                        "cause": f"智慧平倉鐵律: KC中軌持續向下 (slope={slope:.6f} < 0)，空頭生命線完好，無視短線反抽MA5/MA15，一票否決平空，繼續死抱空單！",
                     }
 
                 # 趨勢不變續抱：大週期空頭 (ema_fast <= ema_slow) 維持續抱！

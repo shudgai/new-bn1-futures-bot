@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import pandas as pd
 import pytest
@@ -15,6 +16,7 @@ from core.services.exits.strict_true_pivot import (
 
 def _frame(rows, live_bar_ms):
     frame = pd.DataFrame(rows)
+    frame["atr"] = 1.0
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["snapshot_ms"] = live_bar_ms + 2_000
     return frame
@@ -64,7 +66,8 @@ def _long_peak_frame(live_bar_ms, *, ma5_turning_down, bearish_confirm):
                 "open": confirm_open, "high": 14.2 if bearish_confirm else 14.5,
                 "low": confirm_low, "close": confirm_close,
                 "ma5": 13.8 if ma5_turning_down else 14.2,
-                "ma15": 13.0, "kc_middle": 13.0, "is_closed": True,
+                "ma15": 14.0 if ma5_turning_down else 13.0,
+                "kc_middle": 13.0, "is_closed": True,
             },
             {
                 "timestamp": live_bar_ms,
@@ -82,11 +85,11 @@ def _long_position(live_bar_ms):
         "side": "LONG",
         "entry_price": 12.0,
         "qty": 1.0,
-        "open_timestamp": (live_bar_ms - 299_000) / 1_000,
+        "open_timestamp": (live_bar_ms - 359_000) / 1_000,
     }
 
 
-def _short_valley_frame(live_bar_ms):
+def _short_valley_frame(live_bar_ms, *, ma5_turning_up=False):
     return _frame(
         [
             *[
@@ -125,7 +128,9 @@ def _short_valley_frame(live_bar_ms):
             {
                 "timestamp": live_bar_ms - 60_000,
                 "open": 8.4, "high": 10.9, "low": 8.0, "close": 10.6,
-                "ma5": 10.2, "ma15": 11.0, "kc_middle": 11.2,
+                "ma5": 10.2,
+                "ma15": 10.0 if ma5_turning_up else 11.0,
+                "kc_middle": 11.2,
                 "is_closed": True,
             },
             {
@@ -197,7 +202,8 @@ def test_confirm_bar_must_be_closed_before_pivot_exit():
 def test_confirmed_valley_exits_without_waiting_for_kc_middle():
     live_bar_ms = 1_800_000_000_000
     decision = confirmed_true_pivot_exit(
-        _short_position(live_bar_ms), _short_valley_frame(live_bar_ms),
+        _short_position(live_bar_ms),
+        _short_valley_frame(live_bar_ms, ma5_turning_up=True),
     )
 
     assert decision is not None
@@ -207,12 +213,18 @@ def test_confirmed_valley_exits_without_waiting_for_kc_middle():
     )
 
 
-def test_three_point_valley_uses_authorized_kc_exit_ticket():
+def test_three_point_valley_uses_authorized_kc_exit_ticket(monkeypatch):
+    from core.services.exits import authorized_position_exit
     from core.services.exits.kc_true_extreme_exit import (
         evaluate_kc_true_extreme_exit,
     )
 
-    live_bar_ms = 1_800_000_000_000
+    live_bar_ms = int(time.time() * 1000 // 60_000 * 60_000)
+    monkeypatch.setattr(
+        authorized_position_exit.time,
+        "time",
+        lambda: (live_bar_ms + 2_000) / 1_000,
+    )
     position = _short_position(live_bar_ms)
     frame = _short_valley_frame(live_bar_ms)
 
@@ -337,7 +349,7 @@ def test_three_point_peak_authorizes_realtime_exit(monkeypatch):
 
     assert closed is True
     assert len(account.closed) == 1
-    assert "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL" in account.closed[0][0][2]
+    assert "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT" in account.closed[0][0][2]
 
 
 def test_three_point_valley_authorizes_realtime_exit(monkeypatch):
@@ -372,7 +384,9 @@ def test_three_point_valley_authorizes_realtime_exit(monkeypatch):
     engine = Engine()
     engine.account = account
     engine._channel_exit_frames = {
-        "LOBSTER/USDT": _short_valley_frame(live_bar_ms),
+        "LOBSTER/USDT": _short_valley_frame(
+            live_bar_ms, ma5_turning_up=True,
+        ),
     }
     monkeypatch.setattr(
         realtime_profit_exit,
@@ -408,7 +422,7 @@ def test_three_point_valley_authorizes_realtime_exit(monkeypatch):
 
     assert closed is True
     assert len(account.closed) == 1
-    assert "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL" in account.closed[0][0][2]
+    assert "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT" in account.closed[0][0][2]
 
 
 def test_wild_swing_exit_replays_kc_reversal_after_json_restore(monkeypatch):
@@ -453,7 +467,7 @@ def test_wild_swing_exit_replays_kc_reversal_after_json_restore(monkeypatch):
     )
 
     assert first_decision is not None
-    assert first_decision["reason"] == "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
+    assert first_decision["reason"] == "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
     restored_position = json.loads(json.dumps(position))
 
     retry_decision = strategy.evaluate_exit(

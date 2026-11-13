@@ -107,13 +107,18 @@ def evaluate_market_blacklist(
         width = (values["kc_upper"] - values["kc_lower"]) / mid
         checks: dict[str, Any] = {}
 
+        adx = _num(current, "adx")
+        dead_chop_adx = adx is not None and adx < 15.0
+
         # Rapid MA5/KC-midline traversals, only counting low-amplitude crossings.
         delta = ma5 - mid
         signs = np.sign(delta).replace(0, np.nan).ffill()
         cross = (signs * signs.shift(1) < 0)
         low_amp = pd.concat([delta.abs(), delta.shift(1).abs()], axis=1).max(axis=1) < 0.5 * atr
         checks["ma5_midline_crossings"] = int((cross & low_amp).tail(MIDLINE_LOOKBACK).sum())
-        if not meme_policy and not is_breakout and checks["ma5_midline_crossings"] >= MAX_MIDLINE_CROSSINGS:
+        if checks["ma5_midline_crossings"] >= MAX_MIDLINE_CROSSINGS and (
+            (not meme_policy and not is_breakout) or dead_chop_adx
+        ):
             return True, "VETO_MA5_KC_MIDLINE_CHOP", checks
 
         # Rule A: Flat short-term mean (MA3 / MA5) or channel basis (KC middle).
@@ -144,7 +149,14 @@ def evaluate_market_blacklist(
         checks["ma3_ma15_recent_crossings"] = recent_crossings_ma3
         checks["ma5_ma15_crossings"] = total_crossings
         checks["ma5_ma15_recent_crossings"] = recent_crossings
-        if (meme_policy and recent_crossings >= 3) or (
+        if (
+            meme_policy
+            and (
+                recent_crossings >= 3
+                or total_crossings >= 5
+                or (dead_chop_adx and recent_crossings >= 2)
+            )
+        ) or (
             not meme_policy and not is_breakout and (recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4)
         ):
             return True, "VETO_MA5_MA15_CHOP", checks
@@ -162,7 +174,6 @@ def evaluate_market_blacklist(
             float(current["close"]) <= float(range_history["high"].max())
             and float(current["close"]) >= float(range_history["low"].min())
         )
-        adx = _num(current, "adx")
         atr_pct = float(atr.iloc[-1] / max(close.iloc[-1], 1e-12))
         checks.update(inside_donchian_box=inside_box, adx=adx, atr_pct=atr_pct)
         # Low ATR alone is common on 1m meme-coin charts even during a strong
@@ -179,8 +190,9 @@ def evaluate_market_blacklist(
                 or expansion and signal_body_atr >= MEME_STRUCTURAL_BODY_ATR - 1e-12
             )
         )
-        # Meme impulse bar (same-side body >= 0.6 ATR, or authorized MEME_GATE_ENTRY >= 0.25 ATR) starts a move from inside the box.
-        meme_impulse = meme_policy and (
+        # Meme impulse bar (same-side body >= 0.6 ATR, or authorized MEME_GATE_ENTRY >= 0.25 ATR) starts a move from inside the box,
+        # except in dead chop (ADX < 15.0) where bars trapped inside the Donchian box must not bypass range veto.
+        meme_impulse = meme_policy and not dead_chop_adx and (
             signal_body_atr >= MEME_IMPULSE_BODY_ATR - 1e-12
             or (meme_structural_trigger and signal_body_atr >= 0.25 - 1e-12)
         )

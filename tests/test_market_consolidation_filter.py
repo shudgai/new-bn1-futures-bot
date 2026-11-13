@@ -303,3 +303,33 @@ def test_zero_trust_entry_gate_rules_a_to_h_and_check_entry_signal():
     assert res_h["reason"] == "VETO_TRADE_COOLDOWN"
     assert res_h["details"]["bars_since_exit"] == 1
 
+
+def test_meme_dead_chop_adx_with_midline_and_ma_crossings_blocked():
+    """回歸測試：1000PEPE/USDT ADX < 15 死魚盤整期間即便觸發 meme_structural_entry，中軌與均線反覆交錯仍須攔截。"""
+    df = _base_frame()
+    df["adx"] = 13.38
+    # 1. 中軌穿刺 >= 3 次 + ADX < 15 -> 必須觸發 VETO_MA5_KC_MIDLINE_CHOP（含 breakout/meme 通道）
+    mid_chop = df.copy()
+    mid_offsets = np.array([0.05, -0.05, 0.05, -0.05, 0.05, -0.05, 0.05, 0.08, 0.10, 0.12])
+    mid_chop.loc[mid_chop.index[-10:], "ma5"] = (
+        mid_chop.loc[mid_chop.index[-10:], "kc_middle"].to_numpy() + mid_offsets
+    )
+    blocked_mid, reason_mid, _ = evaluate_market_blacklist(
+        mid_chop, -1, side="LONG", meme_policy=True, is_breakout=True, meme_structural_entry=True,
+    )
+    assert blocked_mid is True
+    assert reason_mid == "VETO_MA5_KC_MIDLINE_CHOP"
+
+    # 2. 近 8 根均線交錯 >= 2 次且 ADX < 15（或 20 根累計 >= 5 次）-> 必須觸發 VETO_MA5_MA15_CHOP
+    ma_chop = df.copy()
+    ma_chop["ma3"] = ma_chop["ma5"]
+    wave_offsets = np.array([0.12, -0.12, 0.12, -0.12, 0.12, 0.14, 0.16, 0.18])
+    ma_chop.loc[ma_chop.index[-8:], "ma3"] = (
+        ma_chop.loc[ma_chop.index[-8:], "ma15"].to_numpy() + wave_offsets
+    )
+    blocked_ma, reason_ma, _ = evaluate_market_blacklist(
+        ma_chop, -1, side="LONG", meme_policy=True, is_breakout=True, meme_structural_entry=True,
+    )
+    assert blocked_ma is True
+    assert reason_ma == "VETO_MA5_MA15_CHOP"
+

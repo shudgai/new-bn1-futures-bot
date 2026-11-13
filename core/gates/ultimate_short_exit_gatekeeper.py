@@ -61,6 +61,21 @@ TRUE_OUTER_PIVOT_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_TRUE_VALLEY_BOTTOM",
     "LONG": "EXIT_LONG_TRUE_PEAK_TOP",
 }
+SHARP_REVERSAL_EXIT_REASONS = {
+    "LONG": "EXIT_LONG_SHARP_REVERSAL_15ATR",
+    "SHORT": "EXIT_SHORT_SHARP_REVERSAL_15ATR",
+}
+SHARP_REVERSAL_BODY_ATR = 1.5
+MA5_ANGLE_REVERSAL_DEGREES = 75.0
+MA5_ANGLE_SCALE = 1000.0
+MA5_ANGLE_REVERSAL_EXIT_REASONS = {
+    "LONG": "EXIT_LONG_MA5_75_DEGREE_REVERSAL",
+    "SHORT": "EXIT_SHORT_MA5_75_DEGREE_REVERSAL",
+}
+KC_MIDDLE_SLOPE_EXIT_REASONS = {
+    "LONG": "EXIT_LONG_KC_MIDDLE_SLOPE_DOWN",
+    "SHORT": "EXIT_SHORT_KC_MIDDLE_SLOPE_UP",
+}
 FAST_TOP_EXIT_REASONS = {
     "SHORT": "EXIT_SHORT_FAST_BOTTOM_BREAK_MA15_MID",
     "LONG": "EXIT_LONG_FAST_TOP_BREAK_MA15_MID",
@@ -106,9 +121,148 @@ def _float(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _normalized_exit_reason(reason: Any) -> str:
+    normalized = str(reason or "").strip().upper()
+    prefix = "EXITGATE:"
+    while normalized.startswith(prefix):
+        normalized = normalized[len(prefix):].strip()
+    return normalized
+
+
 def _minute(value: float) -> int:
     seconds = value / 1000.0 if value >= 1e11 else value
     return int(seconds // 60)
+
+
+def _ma5_angle_signal(frame: Any, quote: float, current_time: float) -> Optional[dict]:
+    if not isinstance(frame, pd.DataFrame) or len(frame) < 2:
+        return None
+    current, previous = frame.iloc[-1], frame.iloc[-2]
+    if current.get("is_closed") is not False and not (
+        type(current.get("is_closed")).__name__ == "bool_" and not bool(current.get("is_closed"))
+    ):
+        return None
+    try:
+        closed = closed_entry_candles(frame)
+    except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError):
+        return None
+    if len(closed) < 1:
+        return None
+
+    ma5_current = _float(current.get("ma5"))
+    ma5_previous = _float(previous.get("ma5"))
+    current_close = _float(current.get("close"))
+    previous_close = _float(previous.get("close"))
+    timestamp = _float(current.get("timestamp"))
+    quote_value = _float(quote)
+    timeframe_ms = _float(getattr(frame, "attrs", {}).get("timeframe_ms"))
+    snapshot_ms = _float(getattr(frame, "attrs", {}).get("snapshot_ms"))
+    if any(value is None or value <= 0 for value in (
+        ma5_current, ma5_previous, current_close, previous_close,
+        timestamp, quote_value, timeframe_ms, snapshot_ms,
+    )):
+        return None
+    if timeframe_ms not in (60_000.0, 60.0):
+        return None
+    interval_seconds = timeframe_ms / 1000.0 if timeframe_ms >= 1000 else timeframe_ms
+    timestamp_seconds = timestamp / 1000.0 if timestamp >= 1e11 else timestamp
+    snapshot_seconds = snapshot_ms / 1000.0 if snapshot_ms >= 1e11 else snapshot_ms
+    previous_timestamp = _float(previous.get("timestamp"))
+    if previous_timestamp is None:
+        return None
+    timestamp_delta = timestamp - previous_timestamp
+    if timestamp_delta not in (timeframe_ms, interval_seconds):
+        return None
+    if (
+        int(timestamp_seconds // interval_seconds) != int(current_time // interval_seconds)
+        or snapshot_seconds < timestamp_seconds
+        or snapshot_seconds >= timestamp_seconds + interval_seconds
+        or snapshot_seconds > current_time + 2.0
+    ):
+        return None
+
+    live_ma5 = ma5_current + (quote_value - current_close) / 5.0
+    if not math.isfinite(live_ma5) or live_ma5 <= 0:
+        return None
+    angle = math.degrees(math.atan(
+        (live_ma5 - ma5_previous) / previous_close * MA5_ANGLE_SCALE,
+    ))
+    if angle >= MA5_ANGLE_REVERSAL_DEGREES:
+        side = "LONG"
+    elif angle <= -MA5_ANGLE_REVERSAL_DEGREES:
+        side = "SHORT"
+    else:
+        return None
+    if side:
+        return {
+            "side": side,
+            "angle": angle,
+            "timestamp": timestamp,
+            "ma5": live_ma5,
+            "previous_ma5": ma5_previous,
+            "candle_timestamp_ms": int(timestamp_seconds * 1000),
+        }
+
+
+def _sharp_reversal_signal(side: str, closed: pd.DataFrame) -> Optional[dict]:
+    if side not in ("LONG", "SHORT") or closed is None or len(closed) < 2:
+        return None
+    current, previous = closed.iloc[-1], closed.iloc[-2]
+    required = (
+        "timestamp", "open", "high", "low", "close", "ma5", "ma15", "kc_middle",
+    )
+    values = {key: _float(current.get(key)) for key in required}
+    previous_values = {
+        key: _float(previous.get(key))
+        for key in ("timestamp", "atr", "ma5", "ma15", "kc_middle")
+    }
+    if any(value is None or value <= 0 for value in values.values()):
+        return None
+    if any(value is None or value <= 0 for value in previous_values.values()):
+        return None
+
+    opened, high, low, close = (
+        values["open"], values["high"], values["low"], values["close"],
+    )
+    if high < max(opened, close, low) or low > min(opened, close, high) or high <= low:
+        return None
+    body = (opened - close) if side == "LONG" else (close - opened)
+    threshold = SHARP_REVERSAL_BODY_ATR * previous_values["atr"]
+    if body <= 0 or (body < threshold and not math.isclose(
+        body, threshold, rel_tol=1e-12, abs_tol=0,
+    )):
+        return None
+
+    ma5, ma15, middle = values["ma5"], values["ma15"], values["kc_middle"]
+    ma5_prev, ma15_prev = previous_values["ma5"], previous_values["ma15"]
+    middle_prev = previous_values["kc_middle"]
+    if side == "LONG":
+        confirmed = (
+            close < ma5
+            and ma5 < ma5_prev
+            and close < ma15
+            and ma5 < ma15
+            and close < middle
+            and middle <= middle_prev
+        )
+    else:
+        confirmed = (
+            close > ma5
+            and ma5 > ma5_prev
+            and close > ma15
+            and ma5 > ma15
+            and close > middle
+            and middle >= middle_prev
+        )
+    if not confirmed:
+        return None
+    return {
+        "side": side,
+        "body": body,
+        "atr": previous_values["atr"],
+        "timestamp": values["timestamp"],
+        "close": close,
+    }
 
 
 OWN_STRUCTURE_REASONS = frozenset(
@@ -119,11 +273,28 @@ OWN_STRUCTURE_REASONS = frozenset(
      *(r.upper() for r in FAST_TOP_EXIT_REASONS.values()),
      *(r.upper() for r in BOTTOM_REVERSAL_EXIT_REASONS.values()),
      *(r.upper() for r in TREND_REVERSAL_EXIT_REASONS.values()),
+     *(r.upper() for r in SHARP_REVERSAL_EXIT_REASONS.values()),
+     *(r.upper() for r in MA5_ANGLE_REVERSAL_EXIT_REASONS.values()),
+     *(r.upper() for r in KC_MIDDLE_SLOPE_EXIT_REASONS.values()),
+     "EXIT_LONG_CONSECUTIVE_BEAR_CANDLES_PIVOT_TURN",
+     "EXIT_SHORT_CONSECUTIVE_BULL_CANDLES_PIVOT_TURN",
      "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
      "EXIT_BY_STAGED_PROFIT_LOCK_TIER2",
      "EXIT_BY_SCHEME1_PROFIT_LOCK_MA3_MA15",
      "PROFIT_LOCK"}
 )
+STRICT_TRUE_PIVOT_EXIT_CANDIDATES = {
+    "LONG": frozenset({
+        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT",
+        "EXIT_LONG_CONSECUTIVE_BEAR_CANDLES_PIVOT_TURN",
+        TRUE_OUTER_PIVOT_EXIT_REASONS["LONG"],
+    }),
+    "SHORT": frozenset({
+        "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
+        "EXIT_SHORT_CONSECUTIVE_BULL_CANDLES_PIVOT_TURN",
+        TRUE_OUTER_PIVOT_EXIT_REASONS["SHORT"],
+    }),
+}
 WATERFALL_EXIT_TOKENS = (
     "EXIT_BY_EXTREME_WATERFALL", "WATERFALL_DROP", "LIVE_ADVERSE_WATERFALL",
 )
@@ -440,7 +611,7 @@ class UltimateShortExitGatekeeper:
     ) -> ExitVerdict:
         from core.symbol_aliases import is_meme_breakout_symbol
 
-        normalized = str(reason or "").strip().upper()
+        normalized = _normalized_exit_reason(reason)
         if not is_meme_breakout_symbol(symbol):
             return ExitVerdict(DEFER, "NOT_MEME_SYMBOL", {})
         if str(reason or "").strip() == "手動平倉":
@@ -449,6 +620,8 @@ class UltimateShortExitGatekeeper:
             return ExitVerdict(DEFER, "ACCOUNT_LEVEL_EXIT", {})
         if "VIRTUAL_PROFIT_LOCK" in normalized:
             return ExitVerdict(DEFER, "VIRTUAL_PROFIT_LOCK_EXIT", {})
+        if "ACTIVE_EXIT_PV_" in normalized or "ACTIVE_EXIT_KC_" in normalized:
+            return ExitVerdict(DEFER, "PEAK_VALLEY_LOW_LATENCY_EXIT", {})
         side = str(position.get("side") or "").upper()
         evidence: dict = {"symbol": symbol, "side": side, "reason": reason}
 
@@ -537,6 +710,25 @@ class UltimateShortExitGatekeeper:
 
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
+        if normalized in STRICT_TRUE_PIVOT_EXIT_CANDIDATES[side]:
+            from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
+
+            pivot = profitable_true_pivot_exit(
+                {**position, "symbol": symbol},
+                frame,
+                dict(metadata or {}),
+                quote=quote,
+            )
+            if pivot is None:
+                return hold("VETO_PIVOT_CONFIRMATION_OR_1ATR_NET_PROFIT")
+            evidence.update(pivot[1])
+            evidence["candidate_reason"] = reason
+            code = "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
+            logger.warning(
+                "[ULTIMATE_EXIT_ALLOW] symbol=%s side=%s code=%s candidate_reason=%s",
+                symbol, side, code, reason,
+            )
+            return ExitVerdict(ALLOW, code, evidence)
         current, previous = closed.iloc[-1], closed.iloc[-2]
         fields = {}
         for key in ("timestamp", "open", "high", "low", "close", "ma5", "ma15",
@@ -565,15 +757,68 @@ class UltimateShortExitGatekeeper:
             or (type(closed_flag).__name__ == "bool_" and bool(closed_flag))
             or frame_finality
         )
-        if is_bar_closed is False or not (is_bar_closed is True or explicitly_closed):
-            return hold("VETO_EXIT_BAR_NOT_CLOSED")
         current_time = time.time() if now is None else float(now)
         bar_minute = _minute(fields["timestamp"])
+        angle_reason = MA5_ANGLE_REVERSAL_EXIT_REASONS.get(side)
+        if normalized == angle_reason:
+            signal = _ma5_angle_signal(frame, quote, current_time)
+            expected_side = "SHORT" if side == "LONG" else "LONG"
+            if (
+                signal is not None
+                and signal["side"] == expected_side
+                and _minute(signal["timestamp"]) > _minute(opened)
+            ):
+                evidence.update(signal)
+                evidence["threshold_degrees"] = MA5_ANGLE_REVERSAL_DEGREES
+                return allow(angle_reason)
+            return hold("VETO_MA5_ANGLE_REVERSAL_NOT_CONFIRMED")
+
+        if is_bar_closed is False or not (is_bar_closed is True or explicitly_closed):
+            return hold("VETO_EXIT_BAR_NOT_CLOSED")
         if bar_minute != int(current_time // 60) - 1:
             # Only the freshly completed 1m bar can authorize a trend exit.
             return hold("VETO_EXIT_BAR_NOT_CLOSED")
 
         close, kc_mid = fields["close"], fields["kc_middle"]
+        sharp_reason = SHARP_REVERSAL_EXIT_REASONS.get(side)
+        if normalized == sharp_reason:
+            signal = _sharp_reversal_signal(side, closed)
+            if (
+                signal is not None
+                and bar_minute > _minute(opened)
+            ):
+                evidence.update(signal)
+                evidence["threshold_atr"] = SHARP_REVERSAL_BODY_ATR
+                return allow(sharp_reason)
+            return hold("VETO_SHARP_REVERSAL_NOT_CONFIRMED")
+
+        slope_reason = KC_MIDDLE_SLOPE_EXIT_REASONS.get(side)
+        if normalized == slope_reason:
+            current_middle = _float(current.get("kc_middle"))
+            previous_middle = _float(previous.get("kc_middle"))
+            slope = (
+                current_middle - previous_middle
+                if current_middle is not None and previous_middle is not None
+                else None
+            )
+            min_slope = 0.05 * atr if (atr is not None and atr > 0) else 0.0
+            is_rebound_or_break = (
+                (side == "LONG" and (close > fields["open"] or close < current_middle))
+                or (side == "SHORT" and (close < fields["open"] or close > current_middle))
+            )
+            confirms = (
+                slope is not None
+                and ((side == "LONG" and slope < 0) or (side == "SHORT" and slope > 0))
+                and (abs(slope) >= min_slope or math.isclose(abs(slope), min_slope, rel_tol=1e-9))
+                and is_rebound_or_break
+                and bar_minute > _minute(opened)
+            )
+            if confirms:
+                evidence["kc_middle_slope"] = slope
+                evidence["min_kc_slope"] = min_slope
+                return allow(slope_reason)
+            return hold("VETO_KC_MIDDLE_SLOPE_EXIT_NOT_CONFIRMED")
+
         # Exits are only authorized on a fresh, opposite-signal bar. A position-direction
         # completed bar is a hard hold even when the quote is near the entry.
         if side == "SHORT" and close <= fields["open"]:
@@ -644,27 +889,38 @@ class UltimateShortExitGatekeeper:
         )
 
         # ──【通道 T：結構性趨勢反轉平倉與反手機制 (Trend Reversal Exit Gate)】──
-        # 依據最新授權：若持有多單時，行情出現「KC 中軌明確向下 + MA5/15 死叉跌破中軌」，
+        # 依據最新授權：若持有多單時，行情出現「KC 中軌明確向下 + MA5/15 死叉跌破中軌 + 峰頂第3點確立 (大陰線跌破前低 c0 < l1)」，
         # 判定多頭結構已徹底破壞，允許及時認錯平多，並無縫切換為空頭審查！
-        # 空單同理：若持空單時，行情出現「KC 中軌明確向上 + MA5/15 金叉突破中軌」，及時認錯平空！
+        # 空單同理：若持空單時，行情出現「KC 中軌明確向上 + MA5/15 金叉突破中軌 + 谷底第3點確立 (大陽線突破前高 c0 > h1)」，及時認錯平空！
         # 🛡️ 成本保護盾：在成本區間 (< 0.50 ATR 且未實質開展波段) 嚴禁因微小晃動誤判為趨勢反轉平倉！
+        # 🚨【非峰頂一票否決平多】：若未形成峰頂吞噬（未跌破前一根低點 c0 < l1 或實體比例 < 55%），嚴禁因微幅跌破中軌誤殺多單！
         bars_held_reversal = bar_minute - _minute(opened)
         close_loss_atr_val = -sign * (close - entry) / (disaster_atr if disaster_atr > 0 else 1.0)
         in_cost_zone = abs(loss_atr) <= 0.50 or abs(close_loss_atr_val) <= 0.50
+        prev_low = _float(previous.get("low"))
+        prev_high = _float(previous.get("high"))
+        candle_range = float(current.get("high", 0.0)) - float(current.get("low", 0.0))
+        body_size = abs(close - float(current.get("open", 0.0)))
+        is_solid_candle = (body_size / candle_range >= 0.55) if candle_range > 0 else False
+
         if bars_held_reversal >= 1 and not in_cost_zone:
             if side == "LONG":
                 is_kc_down = (fields["kc_middle"] < fields["kc_middle_prev"]) or (str(fields.get("macro_trend", "")).upper() == "BEARISH")
                 is_ma_bearish = (fields["ma5"] < fields["ma15"])
                 is_below_mid = (close < fields["kc_middle"])
                 is_momentum_bearish = (close < fields["ma5"]) or (fields["ma5"] < fields["ma5_prev"]) or (close < fields["open"])
-                if is_kc_down and is_ma_bearish and is_below_mid and is_momentum_bearish:
+                # 峰頂第 3 點確認：收陰線且收盤價實體跌破前一根最低價 (c0 < l1) 且實體比例 >= 55%
+                is_peak_engulf = (close < float(current.get("open", 0.0))) and (prev_low is not None and close < prev_low) and is_solid_candle
+                if is_kc_down and is_ma_bearish and is_below_mid and is_momentum_bearish and is_peak_engulf:
                     return allow(TREND_REVERSAL_EXIT_REASONS[side])
             elif side == "SHORT":
                 is_kc_up = (fields["kc_middle"] > fields["kc_middle_prev"]) or (str(fields.get("macro_trend", "")).upper() == "BULLISH")
                 is_ma_bullish = (fields["ma5"] > fields["ma15"])
                 is_above_mid = (close > fields["kc_middle"])
                 is_momentum_bullish = (close > fields["ma5"]) or (fields["ma5"] > fields["ma5_prev"]) or (close > fields["open"])
-                if is_kc_up and is_ma_bullish and is_above_mid and is_momentum_bullish:
+                # 谷底第 3 點確認：收陽線且收盤價實體突破前一根最高價 (c0 > h1) 且實體比例 >= 55%
+                is_trough_engulf = (close > float(current.get("open", 0.0))) and (prev_high is not None and close > prev_high) and is_solid_candle
+                if is_kc_up and is_ma_bullish and is_above_mid and is_momentum_bullish and is_trough_engulf:
                     return allow(TREND_REVERSAL_EXIT_REASONS[side])
 
         # 1. 【真谷底確診 ➔ 100% 瞬間平空 (True Bottom Exit)】：
@@ -995,6 +1251,102 @@ class UltimateShortExitGatekeeper:
         verdict = cls.evaluate(symbol, position, metadata, "STRUCTURE_EXIT_PROBE", price,
                                frame=frame, now=now)
         return verdict.code if verdict.allowed else None
+
+    @classmethod
+    def sharp_reversal_exit_candidate(cls, position, frame, metadata=None, *, now=None):
+        """Return a close reason for a fresh, completed 1m reversal body of at least 1.5 ATR."""
+        try:
+            closed = closed_entry_candles(frame)
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError):
+            return None
+        if len(closed) < 2:
+            return None
+        current_time = time.time() if now is None else float(now)
+        signal = _sharp_reversal_signal(
+            str((position or {}).get("side") or "").upper(), closed,
+        )
+        opened = _float((position or {}).get("open_timestamp"))
+        if opened is None:
+            opened = _float((metadata or {}).get("open_timestamp"))
+        stamp = _float(closed.iloc[-1].get("timestamp"))
+        if signal is None or opened is None or stamp is None:
+            return None
+        bar_minute = _minute(stamp)
+        if (
+            bar_minute != int(current_time // 60) - 1
+            or bar_minute <= _minute(opened)
+        ):
+            return None
+        return SHARP_REVERSAL_EXIT_REASONS[signal["side"]]
+
+    @classmethod
+    def ma5_angle_entry_candidate(cls, frame, quote, *, now=None):
+        """Return the side, angle and candle identity for a fresh live 1m MA5 impulse."""
+        current_time = time.time() if now is None else float(now)
+        signal = _ma5_angle_signal(frame, quote, current_time)
+        if signal is None:
+            return None
+        return signal["side"], signal["angle"], signal["candle_timestamp_ms"]
+
+    @classmethod
+    def ma5_angle_exit_candidate(cls, position, frame, metadata=None, *, quote, now=None):
+        """Return an opposite-side MA5 angle exit only after the position opened."""
+        angle_candidate = cls.ma5_angle_entry_candidate(frame, quote, now=now)
+        if angle_candidate is None:
+            return None
+        opened = _float((position or {}).get("open_timestamp"))
+        if opened is None:
+            opened = _float((metadata or {}).get("open_timestamp"))
+        stamp = _float(frame.iloc[-1].get("timestamp")) if isinstance(frame, pd.DataFrame) and len(frame) else None
+        if opened is None or stamp is None or _minute(stamp) <= _minute(opened):
+            return None
+        side = str((position or {}).get("side") or "").upper()
+        if angle_candidate[0] == ("SHORT" if side == "LONG" else "LONG"):
+            return MA5_ANGLE_REVERSAL_EXIT_REASONS.get(side)
+        return None
+
+    @classmethod
+    def kc_middle_slope_exit_candidate(cls, position, frame, metadata=None, *, now=None):
+        """Return a slope-reversal exit candidate based on the latest two closed KC values."""
+        try:
+            closed = closed_entry_candles(frame)
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError):
+            return None
+        if len(closed) < 2:
+            return None
+        current_time = time.time() if now is None else float(now)
+        current, previous = closed.iloc[-1], closed.iloc[-2]
+        stamp = _float(current.get("timestamp"))
+        middle = _float(current.get("kc_middle"))
+        previous_middle = _float(previous.get("kc_middle"))
+        close_px = _float(current.get("close"))
+        open_px = _float(current.get("open"))
+        atr_val = _float(previous.get("atr")) or _float(current.get("atr")) or 0.0
+        opened = _float((position or {}).get("open_timestamp"))
+        if opened is None:
+            opened = _float((metadata or {}).get("open_timestamp"))
+        if (
+            stamp is None or middle is None or previous_middle is None or opened is None
+            or close_px is None or open_px is None
+            or _minute(stamp) != int(current_time // 60) - 1
+            or _minute(stamp) <= _minute(opened)
+        ):
+            return None
+        side = str((position or {}).get("side") or "").upper()
+        slope = middle - previous_middle
+        min_slope = 0.05 * atr_val if atr_val > 0 else 0.0
+        if abs(slope) < min_slope and not math.isclose(abs(slope), min_slope, rel_tol=1e-9):
+            return None
+        if side == "LONG" and slope < 0 and (close_px > open_px or close_px < middle):
+            return KC_MIDDLE_SLOPE_EXIT_REASONS["LONG"]
+        if side == "SHORT" and slope > 0 and (close_px < open_px or close_px > middle):
+            return KC_MIDDLE_SLOPE_EXIT_REASONS["SHORT"]
+        return None
+
+    @classmethod
+    def ma5_angle_opportunity(cls, frame, quote, *, now=None):
+        """Return a fresh live-bar direction/angle candidate for the shared entry funnel."""
+        return cls.ma5_angle_entry_candidate(frame, quote, now=now)
 
     @classmethod
     def evaluate_two_point_pivot_flip(

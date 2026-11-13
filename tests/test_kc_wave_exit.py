@@ -9,6 +9,11 @@ import pytest
 from core.services.exits.authorized_position_exit import automated_position_exit_allowed
 from core.services.exits.trend_lock import KC_WAVE_EXIT_REASON, confirmed_kc_wave_exit
 from core.services.math_execution_gate import validate_exit_at_execution
+from core.gates.ultimate_short_exit_gatekeeper import (
+    KC_MIDDLE_SLOPE_EXIT_REASONS,
+    MA5_ANGLE_REVERSAL_EXIT_REASONS,
+    SHARP_REVERSAL_EXIT_REASONS,
+)
 
 
 def wave_frame(side, *, reversed_direction=True, live=False):
@@ -164,10 +169,75 @@ def test_pipeline_closes_true_pivot_and_holds_plain_wave(
     assert close.await_args.kwargs["reason"] in (
         profitable_true_pivot_exit(pos, frame)[0],
         "EXIT_LONG_STRUCTURE_BREAK_050ATR", "EXIT_SHORT_STRUCTURE_BREAK_050ATR",
+        *SHARP_REVERSAL_EXIT_REASONS.values(),
+        *MA5_ANGLE_REVERSAL_EXIT_REASONS.values(),
+        *KC_MIDDLE_SLOPE_EXIT_REASONS.values(),
         # Inside the cost shield a KC-middle flip with a close across it exits first.
         "EXIT_LONG_KC_FLIP_CLOSED_BELOW_MIDDLE", "EXIT_SHORT_KC_FLIP_CLOSED_ABOVE_MIDDLE",
     )
     assert close.await_args.kwargs["price"] == quote
+
+
+def test_hold_path_still_checks_emergency_waterfall(monkeypatch):
+    from core.gates.unified_pipeline_gates import ExitGate
+    from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+    from core.services.data_pipeline import DataPipeline
+    from core.services.execution_manager import ExecutionManager
+    from core.services import candle_data
+    from core.services.exits import trend_lock
+    from core.strategies import true_peak_trough_strategy
+
+    frame = wave_frame("LONG", live=True)
+    frame.loc[frame.index[-2], "kc_middle"] = frame.iloc[-3]["kc_middle"] - 0.01
+    frame.loc[frame.index[-1], "kc_middle"] = frame.iloc[-2]["kc_middle"] - 0.01
+    frame.attrs["macro_trend"] = "BEARISH"
+    quote = 100.2
+    pos = position("LONG", frame)
+    snapshot = DataPipeline.calculate_snapshot("CAP/USDT", frame, current_price=quote, position=pos)
+    assert snapshot is not None
+    snapshot.raw_df = frame
+    snapshot.curr_k = frame.iloc[-1].to_dict()
+    snapshot.prev_k = frame.iloc[-2].to_dict()
+    snapshot.kc_middle = float(frame.iloc[-1]["kc_middle"])
+    snapshot.kc_middle_slope = -0.01
+    snapshot.macro_trend = "BEARISH"
+
+    monkeypatch.setattr(DataPipeline, "calculate_snapshot", staticmethod(lambda *args, **kwargs: snapshot))
+    monkeypatch.setattr(candle_data, "confirmed_kc_midline_slope", lambda *_args, **_kwargs: -0.01)
+    monkeypatch.setattr(trend_lock, "update_trend_lock_state", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        true_peak_trough_strategy,
+        "evaluate_exit_with_trend_lock",
+        lambda **_kwargs: {"action": "HOLD", "reason": "test hold"},
+    )
+    monkeypatch.setattr(
+        UltimateShortExitGatekeeper,
+        "structure_exit_candidate",
+        classmethod(lambda cls, *_args, **_kwargs: None),
+    )
+    waterfall_checked = []
+    monkeypatch.setattr(
+        UltimateShortExitGatekeeper,
+        "check_waterfall_emergency_exit",
+        classmethod(lambda cls, *_args, **_kwargs: (waterfall_checked.append(True) or False, "", {})),
+    )
+    monkeypatch.setattr(
+        ExitGate,
+        "evaluate",
+        staticmethod(lambda *_args, **_kwargs: (False, "HOLD", {})),
+    )
+    account = SimpleNamespace(
+        positions={"CAP/USDT": pos},
+        position_meta={},
+        save_state=lambda **_kwargs: None,
+    )
+
+    result = asyncio.run(ExecutionManager.process_symbol_pipeline(
+        "CAP/USDT", account, klines_df=frame, quote=quote,
+    ))
+
+    assert waterfall_checked == [True], result
+    assert result["status"] == "HOLD"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

@@ -260,6 +260,11 @@ class MacroCandleStructureGate:
             and confirmation == CONTINUATION_OUTSIDE_KC
             and structure_confirmed
         )
+        midline_momentum = (
+            mode == "CONTINUATION"
+            and confirmation == "KC_MIDLINE_MOMENTUM"
+            and structure_confirmed
+        )
         outer_pivot_ma_cross = (
             structure_confirmed
             and confirmation == "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS"
@@ -444,7 +449,7 @@ class MacroCandleStructureGate:
                 if close <= kc_upper:
                     return False, "VETO_BREAKOUT_LONG: 收盤未有效突破 KC 上軌"
             elif mode == "CONTINUATION":
-                if not outside_kc_continuation and kc_pos < 0.35:
+                if not outside_kc_continuation and not midline_momentum and kc_pos < 0.35:
                     return False, f"VETO_CONTINUATION_LONG: KC_Pos {kc_pos:.2f} 低於回踩區"
             elif mode == "CROSSOVER":
                 outer_pivot_cross = (
@@ -519,7 +524,7 @@ class MacroCandleStructureGate:
                 if close >= kc_lower:
                     return False, "VETO_BREAKOUT_SHORT: 收盤未有效跌破 KC 下軌"
             elif mode == "CONTINUATION":
-                if not outside_kc_continuation and kc_pos > 0.65:
+                if not outside_kc_continuation and not midline_momentum and kc_pos > 0.65:
                     return False, f"VETO_CONTINUATION_SHORT: KC_Pos {kc_pos:.2f} 高於回踩區"
             elif mode == "CROSSOVER":
                 outer_pivot_cross = (

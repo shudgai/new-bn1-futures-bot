@@ -48,6 +48,8 @@ class MarketDataSnapshot:
     kc_trend: str = "NEUTRAL"         # Latest two completed KC basis values only
     ema200: float = 0.0               # EMA 200 大趨勢基底
     volume_ma20: float = 0.0          # 成交量 20 期均量
+    zlema5: float = 0.0               # Zero-Lag EMA 5
+    zlema5_slope: float = 0.0         # ZLEMA 5 斜率
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -83,6 +85,8 @@ class MarketDataSnapshot:
             "bandwidth": self.bandwidth,
             "ema200": self.ema200,
             "volume_ma20": self.volume_ma20,
+            "zlema5": self.zlema5,
+            "zlema5_slope": self.zlema5_slope,
         }
 
 
@@ -131,8 +135,9 @@ class DataPipeline:
         ma5_series = close.rolling(window=5).mean()
         ma15_series = close.rolling(window=15).mean()
 
-        # EMA5 (極限動能線) 與 EMA13 (防守線)
-        ema5_series = close.ewm(span=5, adjust=False).mean()
+        # EMA5 (極限動能線)、ZLEMA5 (零滯後快線) 與 EMA13 (防守線)
+        from core.services.low_latency_entry import compute_ema5_and_zlema5
+        ema5_series, zlema5_series = compute_ema5_and_zlema5(close)
         ema13_series = close.ewm(span=13, adjust=False).mean()
 
         # EMA 15 (快線) 與 EMA 40 (慢線)
@@ -177,6 +182,7 @@ class DataPipeline:
         closed_df_with_ind["ma5"] = ma5_series
         closed_df_with_ind["ma15"] = ma15_series
         closed_df_with_ind["ema5"] = ema5_series
+        closed_df_with_ind["zlema5"] = zlema5_series
         closed_df_with_ind["ema13"] = ema13_series
         closed_df_with_ind["ema_fast"] = ema_fast_series
         closed_df_with_ind["ema_slow"] = ema_slow_series
@@ -264,6 +270,9 @@ class DataPipeline:
         zoomed_out_bullish = (ema60_slope_10 > 0 and (closed_price > ema60_early or ema_slow > ema60_early)) or (kc_slope_10 > 0 and closed_price > ema60_early)
 
         ema5_val = float(ema5_series.iloc[-1]) if not pd.isna(ema5_series.iloc[-1]) else curr_k["close"]
+        zlema5_val = float(zlema5_series.iloc[-1]) if not pd.isna(zlema5_series.iloc[-1]) else curr_k["close"]
+        prev_zlema5 = float(zlema5_series.iloc[-2]) if len(zlema5_series) > 1 and not pd.isna(zlema5_series.iloc[-2]) else zlema5_val
+        zlema5_slope_val = zlema5_val - prev_zlema5
         ema13_val = float(ema13_series.iloc[-1]) if not pd.isna(ema13_series.iloc[-1]) else curr_k["close"]
         prev_ema5 = float(ema5_series.iloc[-2]) if len(ema5_series) > 1 and not pd.isna(ema5_series.iloc[-2]) else ema5_val
         prev_ema13 = float(ema13_series.iloc[-2]) if len(ema13_series) > 1 and not pd.isna(ema13_series.iloc[-2]) else ema13_val
@@ -273,6 +282,7 @@ class DataPipeline:
         curr_k["ma5"] = ma5
         curr_k["ma15"] = ma15
         curr_k["ema5"] = ema5_val
+        curr_k["zlema5"] = zlema5_val
         curr_k["ema13"] = ema13_val
         curr_k["kc_middle"] = kc_mid
         curr_k["kc_upper"] = kc_up
@@ -431,5 +441,7 @@ class DataPipeline:
             ema13=ema13_val,
             ema200=ema200_val,
             volume_ma20=vol_ma20_val,
+            zlema5=zlema5_val,
+            zlema5_slope=zlema5_slope_val,
             raw_df=df_calc,
         )

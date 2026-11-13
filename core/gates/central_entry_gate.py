@@ -63,6 +63,7 @@ class CentralEntryGate:
     KC_SLOPE_MIN_ATR: float = 0.10
     MAX_BAND_EXTENSION_ATR: float = 2.50
     MAX_MA5_EXTENSION_ATR: float = 3.00
+    MAX_MA15_BIAS_ATR: float = 1.20
     MIN_KC_BANDWIDTH_PCT: float = 0.0035
     MIN_KC_SQUEEZE_WIDTH_RATIO: float = 0.015  # 通道頻寬比率門檻 1.5% (SQUEEZE_LOCK)
     MIN_ATR_VOLATILITY_RATIO: float = 0.70     # 當前 ATR 相對 20 根平均 ATR 門檻 0.7 倍
@@ -172,9 +173,47 @@ class CentralEntryGate:
 
         atr = float(parsed["atr"])
         curr_price = float(price or parsed["current_price"])
+        peak_valley_requested = bool(
+            "PEAK_VALLEY_INFLECTION" in source_upper
+            or "PEAK_VALLEY_FLIP" in source_upper
+            or (isinstance(klines_or_snapshot, dict) and (klines_or_snapshot.get("is_peak_valley_inflection") or klines_or_snapshot.get("is_pv_flip")))
+            or (isinstance(klines_or_snapshot, pd.DataFrame) and (klines_or_snapshot.attrs.get("is_peak_valley_inflection") or klines_or_snapshot.attrs.get("is_pv_flip")))
+        )
+        peak_valley_verified = False
+        pv_flip_verified = False
+        if peak_valley_requested:
+            pv_frame = (
+                klines_or_snapshot if isinstance(klines_or_snapshot, pd.DataFrame)
+                else (
+                    klines_or_snapshot.get("raw_df") or klines_or_snapshot.get("frame")
+                    if isinstance(klines_or_snapshot, dict)
+                    else getattr(klines_or_snapshot, "raw_df", None)
+                )
+            )
+            if isinstance(pv_frame, pd.DataFrame) and len(pv_frame) >= 15:
+                from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+                pv_res = evaluate_peak_valley_inflection_entry(
+                    pv_frame, live_price=curr_price, symbol=symbol, require_directional_candle=True,
+                )
+                peak_valley_verified = (pv_res.get("action") == f"OPEN_{side}" and not pv_res.get("is_consolidation"))
+                if not peak_valley_verified:
+                    from core.services.low_latency_exit import verify_pv_flip_entry_authority
+                    pv_ctx = (
+                        klines_or_snapshot if isinstance(klines_or_snapshot, dict)
+                        else getattr(pv_frame, "attrs", {})
+                    )
+                    pv_flip_verified = verify_pv_flip_entry_authority(
+                        pv_frame, side=side, live_price=curr_price, context=pv_ctx, symbol=symbol,
+                    )
+                    if pv_flip_verified:
+                        peak_valley_verified = True
+
         from core.symbol_aliases import is_meme_breakout_symbol
-        meme_policy = is_meme_breakout_symbol(symbol) and source_upper != "WAIT_1M" and (
-            source_upper != "MANUAL" or has_entry_method_context
+        meme_policy = (
+            not peak_valley_verified
+            and is_meme_breakout_symbol(symbol)
+            and source_upper != "WAIT_1M"
+            and (source_upper != "MANUAL" or has_entry_method_context)
         )
         meme_expansion = False
         meme_lagging_kc_override = False
@@ -243,6 +282,7 @@ class CentralEntryGate:
             (isinstance(klines_or_snapshot, dict) and klines_or_snapshot.get("direction_override"))
             or (isinstance(klines_or_snapshot, pd.DataFrame) and klines_or_snapshot.attrs.get("direction_override"))
             or is_swing_pivot
+            or peak_valley_verified
             or ("AGILE" in src_upper)
             or ("OVERRIDE" in src_upper)
         )
@@ -296,10 +336,47 @@ class CentralEntryGate:
         ma15_c = float(parsed.get("ma15_curr", parsed.get("ma15", kc_mid_val)))
         c_close = float(parsed.get("close", curr_price))
         c_open = float(parsed.get("open", curr_price))
+        ma15_bias_atr = abs(curr_price - ma15_c) / atr
+        checks["ma15_bias"] = {
+            "status": "PASS" if (
+                ma15_bias_atr < cls.MAX_MA15_BIAS_ATR
+                or math.isclose(
+                    ma15_bias_atr,
+                    cls.MAX_MA15_BIAS_ATR,
+                    rel_tol=1e-12,
+                    abs_tol=0,
+                )
+            ) else "FAIL",
+            "bias_atr": ma15_bias_atr,
+            "max_bias_atr": cls.MAX_MA15_BIAS_ATR,
+        }
+        if checks["ma15_bias"]["status"] == "FAIL":
+            return GateCheckResult(
+                passed=False,
+                reason="VETO_MA15_BIAS_EXTENSION",
+                signal_id=sig_id,
+                details={
+                    "bias_atr": ma15_bias_atr,
+                    "max_bias_atr": cls.MAX_MA15_BIAS_ATR,
+                    "price": curr_price,
+                    "ma15": ma15_c,
+                    "atr": atr,
+                },
+                checks=checks,
+            )
 
         # 🚨 2026-11-07 順勢鐵律：KC 中軌往下走空頭嚴禁開多單、KC 中軌往上走多頭嚴禁開空單！
-        # 對龍蝦 (龙虾/USDT)、1000PEPE/USDT 等妖幣必須中軌明確同向 (> 0 開多 / < 0 開空)，且全域任何標的絕不允許逆中軌方向開倉！
-        if is_meme_breakout_symbol(symbol):
+        # 對龍蝦 (龙虾/USDT)、1000PEPE/USDT 等妖幣必須中軌明確同向 (> 0 開多 / < 0 開空)，但已驗證之雙向峰谷轉向 (peak_valley_verified) 解除此單向鎖定。
+        if peak_valley_verified:
+            checks["kc_middle_direction"] = {
+                "status": "PASS",
+                "reason": "VERIFIED_PEAK_VALLEY_INFLECTION",
+                "kc_middle": kc_mid_val,
+                "kc_middle_prev": kc_mid_prev_val,
+                "kc_middle_slope": kc_mid_slope_val,
+                "side": side,
+            }
+        elif is_meme_breakout_symbol(symbol):
             if side == "LONG" and (kc_mid_slope_val <= 0.0 or kc_mid_val <= kc_mid_prev_val):
                 checks["kc_middle_direction"] = {
                     "status": "FAIL",
@@ -393,7 +470,24 @@ class CentralEntryGate:
             checks["direction_master_lock"].update(
                 status="PASS", reason="VERIFIED_KC_OUTER_PIVOT_DIRECTION_AUTHORITY",
             )
-        if not dir_ok and (not outer_pivot_authorized or is_candle_violating) and (not meme_authorized or is_candle_violating):
+        pv_lag_only_exempt = pv_flip_verified or (peak_valley_verified and dir_reason in {
+            "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID",
+            "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID",
+            "BLOCKED_DIRECTION_LOCK_LONG_MA5_BELOW_SLOW",
+            "BLOCKED_DIRECTION_LOCK_SHORT_MA5_ABOVE_SLOW",
+            "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+            "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
+        })
+        if pv_lag_only_exempt:
+            checks["direction_master_lock"].update(
+                status="PASS", reason="VERIFIED_PEAK_VALLEY_INFLECTION_AUTHORITY",
+            )
+        if (
+            not dir_ok
+            and (not outer_pivot_authorized or is_candle_violating)
+            and (not meme_authorized or is_candle_violating)
+            and not pv_lag_only_exempt
+        ):
             veto_reason = dir_reason
             if dir_reason == "BLOCKED_DIRECTION_LOCK_LONG_NOT_BULLISH_CANDLE":
                 veto_reason = "VETO_BEARISH_CANDLE_FOR_LONG"
@@ -464,12 +558,13 @@ class CentralEntryGate:
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
-                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override,
+                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified,
                     meme_policy=meme_policy, expansion=meme_expansion,
                     meme_structural_entry=meme_structural_entry,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
                 if raw_blocked and raw_reason in (
+                    "VETO_MA5_KC_MIDLINE_CHOP",
                     "VETO_MA5_MA15_CHOP",
                     "VETO_FLAT_MA5_OR_KC_MIDLINE",
                     "VETO_NARROW_SQUEEZE_RANGE",
@@ -495,11 +590,23 @@ class CentralEntryGate:
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
-                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override,
+                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified,
                     meme_policy=meme_policy, expansion=meme_expansion,
                     meme_structural_entry=meme_structural_entry,
                 )
         blocked, block_reason, block_evidence = blacklist
+        if (
+            peak_valley_verified
+            and blocked
+            and block_reason == "VETO_FLAT_MA5_OR_KC_MIDLINE"
+        ):
+            blocked = False
+            block_evidence = {
+                "soft_market_blacklist": "BYPASSED_FOR_PEAK_VALLEY_INFLECTION",
+                "underlying_blacklist_reason": block_reason,
+                "underlying_evidence": block_evidence,
+            }
+            block_reason = "PASS_VERIFIED_PEAK_VALLEY"
         checks["market_blacklist"] = {
             "status": "FAIL" if blocked else "PASS",
             "reason": block_reason,
@@ -513,6 +620,38 @@ class CentralEntryGate:
                 details={"market_blacklist": block_evidence},
                 checks=checks,
             )
+
+        # 🛑 2026-11-10 防追空保護鎖 (Prevent Chasing Short at the Bottom)：
+        # 嚴禁在未授權破軌/延續的情況下盲目追空。
+        # 突破開倉 (BREAKOUT/CONTINUATION/REENTRY) 允許在下軌外開空，一般追空則禁止低於中軌。
+        is_breakout_or_reentry = (
+            has_entry_method_context
+            and entry_method_context.get("entry_method_authority") in {
+                "KC_TWO_BAR_BREAKOUT",
+                "KC_SINGLE_BAR_BREAKOUT",
+                "POST_CLOSE_KC_REENTRY",
+                "MEME_GATE_ENTRY",
+            }
+        )
+        if side == "SHORT" and is_meme_breakout_symbol(symbol) and not is_breakout_or_reentry:
+            bb_lower_v = float(parsed.get("bb_lower", parsed.get("kc_lower", kc_mid_val * 0.98)))
+            # 一般追空 (如普通均線弱勢追單) 嚴禁在遠離中軌的極度超賣區追空
+            if c_close < bb_lower_v - 0.5 * float(parsed.get("atr", 1.0)):
+                checks["anti_chase_short"] = {
+                    "status": "FAIL",
+                    "reason": "VETO_CHASING_SHORT_BELOW_MIDLINE",
+                    "close": c_close,
+                    "price": curr_price,
+                    "kc_middle": kc_mid_val,
+                    "bb_lower": bb_lower_v,
+                }
+                return GateCheckResult(
+                    passed=False,
+                    reason="VETO_CHASING_SHORT_BELOW_MIDLINE",
+                    signal_id=sig_id,
+                    details={"close": c_close, "kc_middle": kc_mid_val, "bb_lower": bb_lower_v},
+                    checks=checks,
+                )
 
         if has_entry_method_context:
             from core.services.entry_methods import revalidate_entry_method
@@ -592,7 +731,7 @@ class CentralEntryGate:
             (side == "LONG" and is_v_shape_recovery)
             or (side == "SHORT" and is_v_shape_breakdown)
         )
-        if is_swing_pivot or direction_override:
+        if is_swing_pivot or direction_override or peak_valley_verified:
             # Pivot & Agile direction override entries are explicitly authorized against a lagging KC slope.
             slope_pass = True
             req_target = "OVERRIDE"
@@ -639,7 +778,7 @@ class CentralEntryGate:
         # 條件 2.5：中軌正向側防線 (做多必須在中軌之上，做空必須在中軌之下；轉折特例放行)
         # -------------------------------------------------------------
         kc_mid = float(parsed["kc_middle"])
-        if not (is_swing_pivot or direction_override):
+        if not (is_swing_pivot or direction_override or peak_valley_verified):
             if side == "LONG" and curr_price < kc_mid:
                 checks["midline_side"] = {"status": "FAIL", "price": curr_price, "kc_middle": kc_mid}
                 return GateCheckResult(
@@ -837,7 +976,11 @@ class CentralEntryGate:
                 or (side == "SHORT" and c_close < kc_mid and c_close < c_open and ma5_c < ma5_p and ma5_curr <= ma5_prev)
             )
         )
-        is_squeeze_unlocked = is_breakout_expansion_unlocked or is_cross_mid_ambush_unlocked
+        is_squeeze_unlocked = (
+            is_breakout_expansion_unlocked
+            or is_cross_mid_ambush_unlocked
+            or peak_valley_verified
+        )
 
         checks["kc_squeeze_gate"] = {
             "status": "PASS" if (not is_market_squeeze or is_squeeze_unlocked) else "FAIL",
@@ -878,7 +1021,7 @@ class CentralEntryGate:
             "atr": atr,
             "min_required": cls.MIN_KC_BANDWIDTH_PCT,
         }
-        if not bw_pass and not is_swing_pivot:
+        if not bw_pass and not is_swing_pivot and not peak_valley_verified:
             return GateCheckResult(
                 passed=False,
                 reason="VETO_KC_BANDWIDTH_TOO_NARROW",
@@ -890,14 +1033,14 @@ class CentralEntryGate:
         # 20 根已收線最大寬度作為 squeeze 參考；歷史不足時 fail closed。
         curr_width = kc_width
         max_prev_width = parsed.get("max_prev_width")
-        if (not (is_swing_pivot or direction_override) and (max_prev_width is None
+        if (not (is_swing_pivot or direction_override or peak_valley_verified) and (max_prev_width is None
                 or not math.isfinite(float(max_prev_width)) or float(max_prev_width) <= 0)):
             return GateCheckResult(
                 passed=False, reason="VETO_KC_SQUEEZE_HISTORY_INVALID",
                 signal_id=sig_id, details={"max_prev_width": max_prev_width}, checks=checks,
             )
         max_prev_width = float(max_prev_width) if max_prev_width is not None else curr_width
-        if not (is_swing_pivot or direction_override) and curr_width <= cls.MAX_SQUEEZE_RATIO * max_prev_width:
+        if not (is_swing_pivot or direction_override or peak_valley_verified) and curr_width <= cls.MAX_SQUEEZE_RATIO * max_prev_width:
             return GateCheckResult(
                 passed=False, reason="VETO_KC_SQUEEZE_AT_OR_BELOW_25_PERCENT",
                 signal_id=sig_id,
@@ -916,7 +1059,7 @@ class CentralEntryGate:
             abs(ma5_curr - ma15_curr) < min_spacing
             or (not is_breakout_or_cont and abs(ma5_curr - target_band) < min_spacing)
         )
-        if not (is_swing_pivot or direction_override or is_side_v_shape) and ma_spacing_insufficient:
+        if not (is_swing_pivot or direction_override or is_side_v_shape or peak_valley_verified) and ma_spacing_insufficient:
             return GateCheckResult(
                 passed=False, reason="VETO_MA_SPACING_BELOW_25_PERCENT_KC_WIDTH",
                 signal_id=sig_id,
@@ -945,7 +1088,7 @@ class CentralEntryGate:
             "is_cross_mid": is_cross_mid,
             "is_continuation": is_continuation,
         }
-        if not exp_pass and not (is_swing_pivot or direction_override or is_side_v_shape):
+        if not exp_pass and not (is_swing_pivot or direction_override or is_side_v_shape or peak_valley_verified):
             return GateCheckResult(
                 passed=False,
                 reason="VETO_KC_NOT_EXPANDING",
@@ -959,7 +1102,7 @@ class CentralEntryGate:
         # -------------------------------------------------------------
         vol_curr = float(parsed.get("volume", 0.0))
         vol_avg = float(parsed.get("volume_avg", 0.0))
-        if enforce_volume and not (is_swing_pivot or direction_override):
+        if enforce_volume and not (is_swing_pivot or direction_override or peak_valley_verified):
             if vol_curr <= 0 or vol_avg <= 0:
                 return GateCheckResult(
                     passed=False, reason="VETO_VOLUME_DATA_UNAVAILABLE",
@@ -1001,7 +1144,7 @@ class CentralEntryGate:
             prev_body = abs(float(prev_row.get("close", c_close)) - float(prev_row.get("open", c_open)))
 
         # 實體最小動能 (敏捷轉折/延續模式支援盤中動能或前一根已收線動能)
-        req_body_atr = 0.08 if (is_cross_mid or direction_override) else cls.MIN_BODY_ATR
+        req_body_atr = 0.08 if (is_cross_mid or direction_override or peak_valley_verified) else cls.MIN_BODY_ATR
         eff_body = max(c_body, prev_body) if direction_override else c_body
         if eff_body < req_body_atr * atr:
             checks["candle_body"] = {

@@ -175,6 +175,11 @@ ENTRY_CONTEXT_KEYS = (
     "entry_source",
     "entry_method_authority", "entry_method_signal", "entry_method_bar_id",
     "entry_method_event_id", "entry_method_last_exit_timestamp",
+    "is_peak_valley_inflection", "entry_swing_low", "entry_swing_high",
+    "entry_kc_width_pct", "pv_peak_price", "pv_trough_price",
+    "pv_peak_profit_pct", "pv_trailing_armed",
+    "pv_touched_kc_upper", "pv_touched_kc_lower",
+    "is_pv_flip", "pv_flip_bar_id", "pv_flip_origin_exit_reason",
 )
 
 
@@ -657,8 +662,15 @@ class PaperAccount:
                         or entry_context.get("_entry_method_validated")
                     )
 
-                    # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷)
-                    if kc_m_p is not None and math.isfinite(kc_m_p):
+                    # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷；已驗證之雙向峰谷轉向與條件式反手例外放行)
+                    pv_override = bool(entry_context.get("is_peak_valley_inflection"))
+                    pv_flip_verified = False
+                    if entry_context.get("is_pv_flip"):
+                        from core.services.low_latency_exit import verify_pv_flip_entry_authority
+                        pv_flip_verified = verify_pv_flip_entry_authority(
+                            eval_frame, side=side_up, live_price=price, context=entry_context, symbol=symbol,
+                        )
+                    if kc_m_p is not None and math.isfinite(kc_m_p) and not pv_override and not pv_flip_verified:
                         if not entry_context.get("_entry_method_validated") and side_up == "SHORT" and kc_m >= kc_m_p:
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向上 (kc_mid={kc_m:.6f} >= prev={kc_m_p:.6f})，未明確向下 100% 嚴禁開空！"
                             self.log(err_msg, "CRITICAL")
@@ -672,7 +684,9 @@ class PaperAccount:
                                 raise RuntimeError(err_msg)
                             return False
 
-                    if is_override:
+                    if pv_flip_verified:
+                        pass  # 已通過條件式反手獨立數學複驗（含 KC 極值反轉提前拐頭情境）
+                    elif is_override:
                         # 特例轉折放行：豁免中軌位置，但 MA5 斜率必須嚴格同向拐頭
                         if side_up == "SHORT" and m5_c >= m5_p:
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開空但 MA5 未向下拐頭 (ma5_curr={m5_c:.6f} >= ma5_prev={m5_p:.6f})，強制攔截！"
@@ -708,9 +722,10 @@ class PaperAccount:
                             return False
 
                 if isinstance(eval_frame, pd.DataFrame):
-                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_v_shape_recovery", "is_v_shape_breakdown"):
+                    from core.services.low_latency_exit import wrap_frame_ref as _wrap_frame_ref
+                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_v_shape_recovery", "is_v_shape_breakdown", "is_peak_valley_inflection", "is_pv_flip", "pv_flip_bar_id", "pv_flip_origin_exit_reason", "pv_flip_watch_state", "frame_5m"):
                         if k in entry_context:
-                            eval_frame.attrs[k] = entry_context[k]
+                            eval_frame.attrs[k] = _wrap_frame_ref(entry_context[k]) if k == "frame_5m" else entry_context[k]
 
                     # 微觀動能突破 (Momentum Override) 豁免機制
                     try:
@@ -908,12 +923,14 @@ class PaperAccount:
                 swing_pivot_override = bool(
                     direction_override
                     and (
-                        'PIVOT' in str(entry_context.get('entry_type') or '').upper()
+                        entry_context.get('is_peak_valley_inflection')
+                        or 'PIVOT' in str(entry_context.get('entry_type') or '').upper()
+                        or 'INFLECTION' in str(entry_context.get('entry_type') or '').upper()
                         or 'FLIP' in str(entry_context.get('entry_type') or '').upper()
                         or 'CROSS' in str(entry_context.get('entry_type') or '').upper()
                         or 'SWING' in str(entry_context.get('entry_type') or '').upper()
-                        or any(k in str(reason).upper() for k in ('PIVOT', 'FLIP', 'CROSS', 'SWING'))
-                        or any(k in str(entry_context.get('candidate_signal_type') or '').upper() for k in ('PIVOT', 'FLIP', 'CROSS', 'SWING'))
+                        or any(k in str(reason).upper() for k in ('PIVOT', 'INFLECTION', 'FLIP', 'CROSS', 'SWING'))
+                        or any(k in str(entry_context.get('candidate_signal_type') or '').upper() for k in ('PIVOT', 'INFLECTION', 'FLIP', 'CROSS', 'SWING'))
                     )
                 )
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━
@@ -1001,7 +1018,12 @@ class PaperAccount:
             # Manual orders skip strategy-signal validation but still require
             # the hard MA entry gates and the normal account safety checks.
             entry_decision = {}
-        from core.services.entry_methods import KC_EARLY_MIDLINE_BREAK, KC_TWO_BAR_BREAKOUT
+        from core.services.entry_methods import (
+            KC_EARLY_MIDLINE_BREAK,
+            KC_MIDLINE_MOMENTUM,
+            KC_SINGLE_BAR_BREAKOUT,
+            KC_TWO_BAR_BREAKOUT,
+        )
         from core.symbol_aliases import is_meme_breakout_symbol
         strategy_meme_entry = is_meme_breakout_symbol(symbol) and (
             "UNIFIED_PIPELINE" in str(entry_context.get("source") or "")
@@ -1009,6 +1031,7 @@ class PaperAccount:
         )
         if not is_manual or strategy_meme_entry or entry_context.get("entry_method_authority") in (
             KC_EARLY_MIDLINE_BREAK, KC_TWO_BAR_BREAKOUT,
+            KC_SINGLE_BAR_BREAKOUT, KC_MIDLINE_MOMENTUM,
         ):
             from core.services.entry_firewall import validate_account_entry
             entry_decision = await validate_account_entry(self, symbol, side, entry_context)
@@ -1097,6 +1120,33 @@ class PaperAccount:
             except ValueError as exc:
                 self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
                 return False
+
+        # ──【下單前最終物理防呆鎖 (Pre-Order Guard)】──
+        # 在送出開倉下單邏輯前的最後一刻，重新比對最新報價與當前 K 棒開盤價
+        _guard_frame = entry_context.get("frame")
+        if _guard_frame is None:
+            _guard_frame = entry_context.get("entry_gate_frame")
+        if _guard_frame is None:
+            _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+
+        if _guard_frame is not None and isinstance(_guard_frame, pd.DataFrame) and len(_guard_frame) > 0:
+            try:
+                _latest_bar = _guard_frame.iloc[-1]
+                _current_open = float(_latest_bar.get("open", 0.0))
+                _ticker_price = float(price)
+                if _current_open > 0 and math.isfinite(_ticker_price):
+                    if side.upper() == "LONG" and _ticker_price <= _current_open:
+                        msg = f"[防呆攔截] 準備開多但當前非綠K (現價 <= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} <= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+                    elif side.upper() == "SHORT" and _ticker_price >= _current_open:
+                        msg = f"[防呆攔截] 準備開空但當前非紅K (現價 >= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} >= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+            except Exception as _guard_exc:
+                pass
 
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score) if signal_score is not None else get_leverage(symbol)
@@ -1433,6 +1483,33 @@ class PaperAccount:
                         "WARNING",
                     )
                     return False
+
+        # ──【下單前最終物理防呆鎖 (Pre-Order Guard)】──
+        # 在送出開倉下單邏輯前的最後一刻，重新比對最新報價與當前 K 棒開盤價
+        _guard_frame = entry_context.get("frame")
+        if _guard_frame is None:
+            _guard_frame = entry_context.get("entry_gate_frame")
+        if _guard_frame is None:
+            _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+
+        if _guard_frame is not None and isinstance(_guard_frame, pd.DataFrame) and len(_guard_frame) > 0:
+            try:
+                _latest_bar = _guard_frame.iloc[-1]
+                _current_open = float(_latest_bar.get("open", 0.0))
+                _ticker_price = float(price)
+                if _current_open > 0 and math.isfinite(_ticker_price):
+                    if side.upper() == "LONG" and _ticker_price <= _current_open:
+                        msg = f"[防呆攔截] 準備開多但當前非綠K (現價 <= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} <= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+                    elif side.upper() == "SHORT" and _ticker_price >= _current_open:
+                        msg = f"[防呆攔截] 準備開空但當前非紅K (現價 >= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} >= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+            except Exception as _guard_exc:
+                pass
 
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score)
@@ -1817,8 +1894,10 @@ class PaperAccount:
             self.position_meta.get(symbol, {}).get("profit_lock_usdt_armed")
             and close_reason == "觸發移動止利 (Trailing Take-Profit)"
         )
+        pv_exit_approved = (math_reason == "PEAK_VALLEY_LOW_LATENCY_EXIT_APPROVED")
         if (DISABLE_STOP_LOSS and not is_manual and not profit_lock_close and not emergency_exit
-                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
+                and not pv_exit_approved):
             reject_key = (symbol, close_reason)
             now_ts = time.time()
             if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
@@ -1826,7 +1905,8 @@ class PaperAccount:
                 self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
         if (not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit
-                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
+                and not pv_exit_approved):
             pos = self.positions[symbol]
             side = pos["side"]
             entry_price = pos["entry_price"]

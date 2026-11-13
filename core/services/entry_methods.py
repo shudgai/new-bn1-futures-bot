@@ -25,6 +25,8 @@ POST_CLOSE_KC_REENTRY = "POST_CLOSE_KC_REENTRY"
 THREE_BAR_PIVOT_REVERSAL = "THREE_BAR_PIVOT_REVERSAL"
 KC_OUTER_PIVOT_REVERSAL = "KC_OUTER_PIVOT_REVERSAL"
 MA5_MA15_CROSS = "MA5_MA15_CROSS"
+KC_SINGLE_BAR_BREAKOUT = "KC_SINGLE_BAR_BREAKOUT"
+KC_MIDLINE_MOMENTUM = "KC_MIDLINE_MOMENTUM"
 # Import compatibility only; persisted literal MA3 authorities are not accepted.
 MA3_MA15_CROSS = MA5_MA15_CROSS
 
@@ -36,6 +38,8 @@ ENTRY_METHODS = frozenset({
     THREE_BAR_PIVOT_REVERSAL,
     KC_OUTER_PIVOT_REVERSAL,
     MA5_MA15_CROSS,
+    KC_SINGLE_BAR_BREAKOUT,
+    KC_MIDLINE_MOMENTUM,
 })
 
 _METHOD_RULES = {
@@ -50,6 +54,8 @@ _METHOD_RULES = {
         "REVERSAL", "CONFIRMED_THREE_BAR_PIVOT_REVERSAL",
     ),
     MA5_MA15_CROSS: ("CROSSOVER", "MA_CROSSOVER"),
+    KC_SINGLE_BAR_BREAKOUT: ("BREAKOUT", "KC_OUTER_BREAKOUT"),
+    KC_MIDLINE_MOMENTUM: ("CONTINUATION", "KC_MIDLINE_MOMENTUM"),
 }
 
 _REQUIRED_COLUMNS = (
@@ -414,6 +420,48 @@ def evaluate_entry_method(
                     KC_TWO_BAR_BREAKOUT, side, bars,
                 ))
 
+    if len(bars) >= 2 and expected_method in (None, KC_SINGLE_BAR_BREAKOUT):
+        previous, current = bars[-2], bars[-1]
+        for side in ("LONG", "SHORT"):
+            sign = 1 if side == "LONG" else -1
+            edge = "kc_upper" if side == "LONG" else "kc_lower"
+            close = float(current["close"])
+            ma5 = float(current["ma5"])
+            ma5_slope = ma5 - float(previous["ma5"])
+            if (
+                sign * (close - float(current[edge])) > 0
+                and sign * (current_quote - float(current[edge])) > 0
+                and sign * (close - float(current["open"])) > 0
+                and sign * ma5_slope > 0
+                and sign * (close - ma5) > 0
+            ):
+                candidates.append(_new_signal(
+                    KC_SINGLE_BAR_BREAKOUT, side, bars,
+                ))
+
+    if len(bars) >= 2 and expected_method in (None, KC_MIDLINE_MOMENTUM):
+        previous, current = bars[-2], bars[-1]
+        previous_close = float(previous["close"])
+        current_ma5 = float(current["ma5"])
+        angle = math.degrees(math.atan(
+            (current_ma5 - float(previous["ma5"])) / previous_close * 1000.0,
+        ))
+        for side in ("LONG", "SHORT"):
+            sign = 1 if side == "LONG" else -1
+            aligned = (
+                angle > 30.0
+                if side == "LONG" else angle < -30.0
+            )
+            if (
+                aligned
+                and sign * (float(current["kc_middle"]) - float(previous["kc_middle"])) > 0
+                and sign * (float(current["close"]) - current_ma5) > 0
+                and sign * (current_quote - current_ma5) > 0
+            ):
+                candidates.append(_new_signal(
+                    KC_MIDLINE_MOMENTUM, side, bars,
+                ))
+
     if (
         last_exit_timestamp is not None
         and len(bars) >= 2
@@ -427,6 +475,10 @@ def evaluate_entry_method(
                 previous, current = bars[-2], bars[-1]
                 for side in ("LONG", "SHORT"):
                     edge = "kc_upper" if side == "LONG" else "kc_lower"
+                    atr_val = float(previous.get("atr") or current.get("atr") or 0.0)
+                    body_size = abs(float(current["close"]) - float(current["open"]))
+                    if atr_val > 0 and body_size > 1.5 * atr_val:
+                        continue
                     outside = (
                         float(current["close"]) > float(current[edge])
                         and current_quote > float(current[edge])
@@ -485,19 +537,45 @@ def evaluate_entry_method(
                 candidates.append(_new_signal(THREE_BAR_PIVOT_REVERSAL, side, bars))
 
     if len(bars) >= 2 and expected_method in (None, MA5_MA15_CROSS):
-        previous, current = bars[-2], bars[-1]
-        if (
-            float(previous["ma5"]) <= float(previous["ma15"])
-            and float(current["ma5"]) > float(current["ma15"])
-            and float(current["kc_middle"]) > float(previous["kc_middle"])
-        ):
-            candidates.append(_new_signal(MA5_MA15_CROSS, "LONG", bars))
-        if (
-            float(previous["ma5"]) >= float(previous["ma15"])
-            and float(current["ma5"]) < float(current["ma15"])
-            and float(current["kc_middle"]) < float(previous["kc_middle"])
-        ):
-            candidates.append(_new_signal(MA5_MA15_CROSS, "SHORT", bars))
+        current = bars[-1]
+        latest_cross = None
+        for index in range(1, len(bars)):
+            previous_cross, current_cross = bars[index - 1], bars[index]
+            prior_spread = float(previous_cross["ma5"]) - float(previous_cross["ma15"])
+            spread = float(current_cross["ma5"]) - float(current_cross["ma15"])
+            if prior_spread <= 0 < spread:
+                latest_cross = (index, "LONG")
+            elif prior_spread >= 0 > spread:
+                latest_cross = (index, "SHORT")
+
+        if latest_cross is not None:
+            cross_index, cross_side = latest_cross
+            cross_age = len(bars) - 1 - cross_index
+            sign = 1 if cross_side == "LONG" else -1
+            current_spread = float(current["ma5"]) - float(current["ma15"])
+            current_mid_slope = (
+                float(current["kc_middle"]) - float(bars[-2]["kc_middle"])
+            )
+            delayed_price_aligned = (
+                sign * (float(current["close"]) - float(current["ma5"])) > 0
+                and sign * (current_quote - float(current["ma5"])) > 0
+            )
+            if (
+                cross_age <= 2
+                and cross_side == "LONG"
+                and current_spread > 0
+                and current_mid_slope > 0
+                and (cross_age == 0 or delayed_price_aligned)
+            ):
+                candidates.append(_new_signal(MA5_MA15_CROSS, "LONG", bars))
+            elif (
+                cross_age <= 2
+                and cross_side == "SHORT"
+                and current_spread < 0
+                and current_mid_slope < 0
+                and (cross_age == 0 or delayed_price_aligned)
+            ):
+                candidates.append(_new_signal(MA5_MA15_CROSS, "SHORT", bars))
 
     if is_meme_breakout_symbol(symbol):
         from core.gates.master_gate_funnel import evaluate_meme_entry_frame
@@ -517,7 +595,9 @@ def evaluate_entry_method(
         KC_EARLY_MIDLINE_BREAK,
         POST_CLOSE_KC_REENTRY,
         KC_TWO_BAR_BREAKOUT,
+        KC_SINGLE_BAR_BREAKOUT,
         THREE_BAR_PIVOT_REVERSAL,
+        KC_MIDLINE_MOMENTUM,
         MA5_MA15_CROSS,
     )
     for method in priority:
@@ -605,6 +685,17 @@ def revalidate_entry_method(
             return False, live_candle_veto
 
     if method == MEME_GATE_ENTRY:
+        closed_meme = closed_entry_candles(frame)
+        if len(closed_meme) >= 2:
+            cur_bar = closed_meme.iloc[-1]
+            prev_bar = closed_meme.iloc[-2]
+            bar_atr = float(prev_bar.get("atr") or cur_bar.get("atr") or 0.0)
+            bar_body = abs(float(cur_bar["close"]) - float(cur_bar["open"]))
+            band_key = "kc_upper" if str(side).upper() == "LONG" else "kc_lower"
+            band_val = float(cur_bar.get(band_key) or 0.0)
+            sign = 1 if str(side).upper() == "LONG" else -1
+            if bar_atr > 0 and bar_body > 1.5 * bar_atr and band_val > 0 and sign * (float(cur_bar["close"]) - band_val) > 0:
+                return False, "BLOCKED_ENTRY_METHOD_EXHAUSTED_SPIKE_CHASE"
         return True, "ENTRY_METHOD_REVALIDATED:" + method
 
     from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
@@ -641,11 +732,19 @@ def revalidate_entry_method(
     kc_width = indicators["kc_upper"] - indicators["kc_lower"]
     close = candle["close"]
     kc_position = (close - indicators["kc_lower"]) / kc_width
+    if method == KC_SINGLE_BAR_BREAKOUT and (
+        (side == "LONG" and kc_position > 0.35)
+        or (side == "SHORT" and kc_position < 0.65)
+    ):
+        return False, "BLOCKED_SINGLE_BAR_BREAKOUT_MACRO_LOCATION"
     bias_atr = abs(close - indicators["ma15"]) / indicators["atr"]
     body = abs(close - candle["open"])
     upper_wick = candle["high"] - max(candle["open"], close)
     lower_wick = min(candle["open"], close) - candle["low"]
-    if method in (KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY):
+    if method in (
+        KC_TWO_BAR_BREAKOUT, KC_SINGLE_BAR_BREAKOUT,
+        KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY,
+    ):
         ma5 = _number(current, "ma5")
         if ma5 is None or ma5 <= 0:
             return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_INVALID"
@@ -667,7 +766,9 @@ def revalidate_entry_method(
     relaxed = uses_relaxed_entry_limits(symbol)
     if not relaxed and bias_atr > 1.2:
         return False, "BLOCKED_ENTRY_METHOD_MACRO_MA15_BIAS"
-    relaxed_outer = relaxed and method in {KC_TWO_BAR_BREAKOUT, POST_CLOSE_KC_REENTRY}
+    relaxed_outer = relaxed and method in {
+        KC_TWO_BAR_BREAKOUT, KC_SINGLE_BAR_BREAKOUT, POST_CLOSE_KC_REENTRY,
+    }
     if relaxed_outer:
         ma5 = _number(current, "ma5")
         if ma5 is None or ma5 <= 0:

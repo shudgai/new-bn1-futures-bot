@@ -697,6 +697,59 @@ def intrabar_spike_rebound_evidence(position, frame, side, quote):
         return None
 
 
+BAR_COLOR_GUARD_BYPASS_MARKERS = (
+    'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
+    'EMERGENCY', 'WATERFALL', 'CATASTROPHIC', 'MEME_ADVERSE_STOP',
+    'TWO_CLOSED_ADVERSE_ABNORMAL', 'OPPOSITE_KC_BAND_BREACH',
+    'LIQUIDATION', 'MARGIN_LOSS', 'DATA_OUTAGE',
+)
+
+
+def bar_color_exit_block(side, frame, reason):
+    """順勢K棒顏色保護鎖（多空對稱，唯大瀑布/異常K與硬風控例外）。
+
+    - 多單：盤中當根為綠K（close > open）或最近已收線K為綠K → 禁止平多，
+      讓該分鐘走完；只有紅K（陰線）才可能放行平倉。
+    - 空單：盤中當根為紅K 或最近已收線K為紅K → 禁止平空。
+    回傳阻擋原因字串；允許平倉則回傳 None。
+    """
+    side = str(side or '').upper()
+    if side not in ('LONG', 'SHORT') or frame is None or len(frame) == 0:
+        return None
+    reason_u = str(reason or '').upper()
+    if any(marker in reason_u for marker in BAR_COLOR_GUARD_BYPASS_MARKERS):
+        return None
+    try:
+        last = frame.iloc[-1]
+        if 'is_closed' in frame.columns:
+            last_closed_flag = last.get('is_closed', False)
+            last_is_closed = (
+                last_closed_flag is True
+                or (type(last_closed_flag).__name__ == 'bool_' and bool(last_closed_flag))
+            )
+        else:
+            # 無收線標記：依 ExitGate 慣例，最後一列視為盤中棒。
+            last_is_closed = False
+        live = None if last_is_closed else last
+        closed_idx = -1 if last_is_closed else -2
+        closed = frame.iloc[closed_idx] if len(frame) >= abs(closed_idx) else None
+
+        def _body(row):
+            if row is None:
+                return 0.0
+            return float(row['close']) - float(row['open'])
+
+        live_body = _body(live)
+        closed_body = _body(closed)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if side == 'LONG' and (live_body > 0 or closed_body > 0):
+        return 'VETO_HOLD_GREEN_BAR_LONG'
+    if side == 'SHORT' and (live_body < 0 or closed_body < 0):
+        return 'VETO_HOLD_RED_BAR_SHORT'
+    return None
+
+
 def _current_bar_is_closed(frame):
     if frame is None or frame.empty:
         return False
@@ -1450,6 +1503,12 @@ class HoldingProtectionExitGate:
         'EMERGENCY_DUMP_EXIT',
         'EXIT_LONG_TREND_REVERSAL',
         'EXIT_SHORT_TREND_REVERSAL',
+        'EXIT_LONG_SHARP_REVERSAL_15ATR',
+        'EXIT_SHORT_SHARP_REVERSAL_15ATR',
+        'EXIT_LONG_MA5_75_DEGREE_REVERSAL',
+        'EXIT_SHORT_MA5_75_DEGREE_REVERSAL',
+        'EXIT_LONG_KC_MIDDLE_SLOPE_DOWN',
+        'EXIT_SHORT_KC_MIDDLE_SLOPE_UP',
         'EXIT_BY_TREND_REVERSAL',
         'TWO_BAR_DOJI_REVERSAL_EXIT',
         'EMERGENCY_EXTREME_ADVERSE_BAR',
@@ -1778,6 +1837,12 @@ class HoldingProtectionExitGate:
 
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        # 順勢K棒保護鎖：多單遇綠K、空單遇紅K，一律讓該分鐘走完不平倉（大瀑布/異常K例外）。
+        color_block = bar_color_exit_block(side, frame, clean_reason)
+        if color_block is not None:
+            details.update(bar_color_guard=color_block)
+            return _reject(reason=color_block)
 
         # Profit locks are not emergency exits.  They may preserve gains only
         # after the position's post-entry true peak/valley has closed and

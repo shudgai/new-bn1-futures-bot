@@ -2660,9 +2660,10 @@ class BinanceTestnetAccount:
             if eval_frame is not None:
                 import pandas as pd
                 if isinstance(eval_frame, pd.DataFrame):
-                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_v_shape_recovery", "is_v_shape_breakdown"):
+                    from core.services.low_latency_exit import wrap_frame_ref as _wrap_frame_ref
+                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_v_shape_recovery", "is_v_shape_breakdown", "is_peak_valley_inflection", "is_pv_flip", "pv_flip_bar_id", "pv_flip_origin_exit_reason", "pv_flip_watch_state", "frame_5m"):
                         if k in entry_context:
-                            eval_frame.attrs[k] = entry_context[k]
+                            eval_frame.attrs[k] = _wrap_frame_ref(entry_context[k]) if k == "frame_5m" else entry_context[k]
 
                     # 微觀動能突破 (Momentum Override) 豁免機制
                     try:
@@ -2836,8 +2837,15 @@ class BinanceTestnetAccount:
                     kc_m_p = metrics.get("kc_middle_prev")
                     side_up = side.upper()
 
-                    # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷)
-                    if kc_m_p is not None and math.isfinite(kc_m_p) and not outer_pivot_authorized:
+                    # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷；已驗證之峰谷轉向與條件式反手例外放行)
+                    pv_override = bool(entry_context.get("is_peak_valley_inflection"))
+                    pv_flip_verified = False
+                    if entry_context.get("is_pv_flip"):
+                        from core.services.low_latency_exit import verify_pv_flip_entry_authority
+                        pv_flip_verified = verify_pv_flip_entry_authority(
+                            check_frame, side=side_up, live_price=price, context=entry_context, symbol=symbol,
+                        )
+                    if kc_m_p is not None and math.isfinite(kc_m_p) and not outer_pivot_authorized and not pv_override and not pv_flip_verified:
                         if side_up == "SHORT" and kc_m >= kc_m_p:
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向上 (kc_mid={kc_m:.6f} >= prev={kc_m_p:.6f})，未明確向下 100% 嚴禁開空！"
                             self.log(err_msg, "CRITICAL")
@@ -2855,12 +2863,16 @@ class BinanceTestnetAccount:
                     is_override = bool(
                         entry_context.get("direction_override")
                         or outer_pivot_authorized
+                        or pv_override
+                        or pv_flip_verified
                         or entry_context.get("is_swing_pivot")
                         or entry_context.get("allow_kc_internal")
                         or is_meme_contract
                     )
 
-                    if is_override:
+                    if pv_flip_verified:
+                        pass  # 條件式反手已通過獨立數學複驗
+                    elif is_override:
                         # 特例轉折放行：豁免中軌位置，但 MA5 斜率必須嚴格同向拐頭
                         if side_up == "SHORT" and m5_c >= m5_p:
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} 轉折開空但 MA5 未向下拐頭 (ma5_curr={m5_c:.6f} >= ma5_prev={m5_p:.6f})，強制攔截！"
@@ -3242,6 +3254,33 @@ class BinanceTestnetAccount:
                 "submission_timestamp": time.time(),
             }
             self.save_state()
+
+        # ──【下單前最終物理防呆鎖 (Pre-Order Guard)】──
+        # 在送出市價單至交易所前的最後一刻，重新比對最新報價與當前 K 棒開盤價
+        _guard_frame = entry_context.get("frame")
+        if _guard_frame is None:
+            _guard_frame = entry_context.get("entry_gate_frame")
+        if _guard_frame is None:
+            _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+
+        if _guard_frame is not None and isinstance(_guard_frame, pd.DataFrame) and len(_guard_frame) > 0:
+            try:
+                _latest_bar = _guard_frame.iloc[-1]
+                _current_open = float(_latest_bar.get("open", 0.0))
+                _ticker_price = float(price)
+                if _current_open > 0 and math.isfinite(_ticker_price):
+                    if side.upper() == "LONG" and _ticker_price <= _current_open:
+                        msg = f"[防呆攔截] 準備開多但當前非綠K (現價 <= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} <= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+                    elif side.upper() == "SHORT" and _ticker_price >= _current_open:
+                        msg = f"[防呆攔截] 準備開空但當前非紅K (現價 >= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} >= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+            except Exception as _guard_exc:
+                pass
 
         try:
             await self._prepare_leverage(symbol, leverage)
@@ -3794,6 +3833,33 @@ class BinanceTestnetAccount:
         # （實測曾在 _prepare_leverage 逾時時觸發 UnboundLocalError，把
         # 整個主迴圈拖垮）。
         price_str = self._price_to_precision(symbol, target_price)
+        # ──【下單前最終物理防呆鎖 (Pre-Order Guard)】──
+        # 在送出市價單至交易所前的最後一刻，重新比對最新報價與當前 K 棒開盤價
+        _guard_frame = entry_context.get("frame")
+        if _guard_frame is None:
+            _guard_frame = entry_context.get("entry_gate_frame")
+        if _guard_frame is None:
+            _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+
+        if _guard_frame is not None and isinstance(_guard_frame, pd.DataFrame) and len(_guard_frame) > 0:
+            try:
+                _latest_bar = _guard_frame.iloc[-1]
+                _current_open = float(_latest_bar.get("open", 0.0))
+                _ticker_price = float(price)
+                if _current_open > 0 and math.isfinite(_ticker_price):
+                    if side.upper() == "LONG" and _ticker_price <= _current_open:
+                        msg = f"[防呆攔截] 準備開多但當前非綠K (現價 <= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} <= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+                    elif side.upper() == "SHORT" and _ticker_price >= _current_open:
+                        msg = f"[防呆攔截] 準備開空但當前非紅K (現價 >= 開盤價)，取消下單"
+                        print(f"🛑 {msg} (現價={_ticker_price:.6f} >= 開盤價={_current_open:.6f})", flush=True)
+                        self.log(f"🛑 {msg} ({symbol})", "CRITICAL")
+                        return False
+            except Exception as _guard_exc:
+                pass
+
         try:
             await self._prepare_leverage(symbol, leverage)
             order_params = {"timeInForce": "GTX" if post_only else "GTC"}
@@ -4458,9 +4524,11 @@ class BinanceTestnetAccount:
             if closed:
                 await self.refresh(force=True)
             return closed
+        pv_exit_approved = (math_reason == "PEAK_VALLEY_LOW_LATENCY_EXIT_APPROVED")
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
         if (DISABLE_STOP_LOSS and not is_manual and not emergency_exit
-                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
+                and not pv_exit_approved):
             reject_key = (symbol, close_reason)
             now_ts = time.time()
             if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
@@ -4468,7 +4536,8 @@ class BinanceTestnetAccount:
                 self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
         if (not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit
-                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"):
+                and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
+                and not pv_exit_approved):
             position = self.positions[symbol]
             side = position["side"]
             entry_price = position["entry_price"]
@@ -4559,6 +4628,32 @@ class BinanceTestnetAccount:
                         f"Ratchet close fill not confirmed: "
                         f"{order.get('error', 'UNKNOWN')}"
                     )
+            elif pv_exit_approved and not is_limit:
+                # 峰谷低延遲與條件式反手平倉：先直接送出 reduceOnly 市價平倉單，確認完全成交歸零後才允許反手開倉
+                self.log(
+                    f"⚡ [PV_MARKET_CLOSE] {symbol} {close_side} 送出低延遲市價平倉單 ({close_reason})",
+                    "INFO",
+                )
+                order = await self._send_order(
+                    symbol,
+                    "market",
+                    close_side,
+                    float(position["qty"]),
+                    None,
+                    {"reduceOnly": True, "newOrderRespType": "RESULT"},
+                )
+                order_status = str((order or {}).get("status") or "").lower()
+                order_id = (order or {}).get("id") or (order or {}).get("orderId")
+                if order_id and order_status not in ("closed", "filled"):
+                    deadline = time.monotonic() + 2.0
+                    while time.monotonic() < deadline:
+                        fetched = await self.exchange.fetch_order(str(order_id), symbol)
+                        if isinstance(fetched, dict):
+                            order = fetched
+                            st = str(order.get("status") or "").lower()
+                            if st in ("closed", "filled", "canceled", "cancelled", "expired", "rejected"):
+                                break
+                        await asyncio.sleep(0.15)
             else:
                 from core.gates.trend_riding_strategy import AntiSlippageOrderExecutor
                 self.log(

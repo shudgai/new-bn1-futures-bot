@@ -433,7 +433,6 @@ def evaluate_kc_true_extreme_exit(
         confirmed_pivot = confirmed_true_pivot_exit(position, frame)
         if (
             confirmed_pivot is not None
-            and side != "SHORT"
             and not bearish_kc_trend
         ):
             pivot_reason, pivot_details = confirmed_pivot

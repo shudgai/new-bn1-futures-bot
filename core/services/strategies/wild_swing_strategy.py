@@ -1131,6 +1131,22 @@ class WildSwingStrategy:
         if side not in ("LONG", "SHORT"):
             return None
         current_price = float(quote) if quote is not None else 0.0
+        from core.services.exits.strict_true_pivot import pending_confirmed_pivot_exit
+
+        pending_pivot = pending_confirmed_pivot_exit(position)
+        if pending_pivot is not None and current_price > 0:
+            reason, details = pending_pivot
+            return {
+                "action": f"CLOSE_{side}",
+                "type": reason,
+                "side": side,
+                "reason": reason,
+                "bar_id": details.get("confirm_bar_id"),
+                "close": current_price,
+                "entry_mode": "WILD_SWING",
+                "kc_exit": details,
+                "kc_exit_state_key": "CONFIRMED_PIVOT_PENDING_KEY",
+            }
         if current_price <= 0 and frame is not None and not frame.empty:
             try:
                 current_price = float(frame.iloc[-1]["close"])

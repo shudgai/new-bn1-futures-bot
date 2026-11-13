@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 
 from core.services.entry_methods import (
+    KC_MIDLINE_MOMENTUM,
+    KC_SINGLE_BAR_BREAKOUT,
     KC_TWO_BAR_BREAKOUT,
     MA5_MA15_CROSS,
     POST_CLOSE_KC_REENTRY,
@@ -199,6 +201,146 @@ def test_short_ma_ma15_cross_uses_two_closed_bars_without_extra_confirmation(
     )
     assert signal is not None
     assert signal["side"] == side
+
+
+@pytest.mark.parametrize(
+    "side,rows,quote",
+    [
+        (
+            "LONG",
+            [
+                candle(60_000, opened=100, high=101, low=99, close=100,
+                       upper=102, lower=98, middle=100, short_ma=99.5, ma15=100,
+                       atr=2),
+                candle(120_000, opened=100.2, high=103, low=100, close=102.5,
+                       upper=102, lower=98, middle=100.2, short_ma=101.5, ma15=100.5,
+                       atr=2),
+            ],
+            102.6,
+        ),
+        (
+            "SHORT",
+            [
+                candle(60_000, opened=100, high=101, low=99, close=100,
+                       upper=102, lower=98, middle=100, short_ma=100.5, ma15=100,
+                       atr=2),
+                candle(120_000, opened=99.8, high=100, low=97, close=97.5,
+                       upper=102, lower=98, middle=99.8, short_ma=98.5, ma15=99.5,
+                       atr=2),
+            ],
+            97.4,
+        ),
+    ],
+)
+def test_single_closed_outer_breakout_is_an_entry_candidate(side, rows, quote):
+    market = frame(rows)
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=KC_SINGLE_BAR_BREAKOUT,
+    )
+    assert signal is not None
+    assert signal["method"] == KC_SINGLE_BAR_BREAKOUT
+    assert signal["side"] == side
+    allowed, reason = revalidate_entry_method(
+        market, symbol="BTC/USDT", side=side, quote=quote,
+        context=method_context(signal),
+    )
+    assert not allowed
+    assert reason == "BLOCKED_SINGLE_BAR_BREAKOUT_MACRO_LOCATION"
+
+    edge = "kc_upper" if side == "LONG" else "kc_lower"
+    assert evaluate_entry_method(
+        market, quote=float(market.iloc[-1][edge]), symbol="BTC/USDT",
+        expected_method=KC_SINGLE_BAR_BREAKOUT,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "side,rows,quote",
+    [
+        (
+            "LONG",
+            [
+                candle(60_000, opened=99.0, high=99.2, low=98.8, close=99.0,
+                       upper=102, lower=98, middle=99.0, short_ma=99.0, ma15=99.0),
+                candle(120_000, opened=99.1, high=99.4, low=99.0, close=99.3,
+                       upper=102, lower=98, middle=99.1, short_ma=99.1, ma15=99.0),
+            ],
+            99.4,
+        ),
+        (
+            "SHORT",
+            [
+                candle(60_000, opened=101.0, high=101.2, low=100.8, close=101.0,
+                       upper=102, lower=98, middle=101.0, short_ma=101.0, ma15=101.0),
+                candle(120_000, opened=100.9, high=101.0, low=100.6, close=100.7,
+                       upper=102, lower=98, middle=100.9, short_ma=100.9, ma15=101.0),
+            ],
+            100.6,
+        ),
+    ],
+)
+def test_kc_midline_momentum_uses_directional_ma5_angle(side, rows, quote):
+    market = frame(rows)
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=KC_MIDLINE_MOMENTUM,
+    )
+    assert signal is not None
+    assert signal["method"] == KC_MIDLINE_MOMENTUM
+    assert signal["side"] == side
+    allowed, reason = revalidate_entry_method(
+        market, symbol="BTC/USDT", side=side, quote=quote,
+        context=method_context(signal),
+    )
+    assert allowed, reason
+
+    market.loc[market.index[-1], "ma5"] = market.iloc[-2]["ma5"] + (
+        0.01 if side == "LONG" else -0.01
+    )
+    assert evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=KC_MIDLINE_MOMENTUM,
+    ) is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_ma5_ma15_cross_can_trigger_when_kc_midline_turns_next_bar(side):
+    sign = 1 if side == "LONG" else -1
+    cross_before = 100.0 - sign * 1.0
+    cross_after = 100.0 + sign * 1.0
+    final_ma5 = cross_after + sign * 0.2
+    final_close = final_ma5 + sign * 0.1
+    final_open = final_close - sign * 0.4
+    final_middle = 100.0 + sign * 0.1
+    lower, upper = (99.5, 107.5) if side == "LONG" else (92.0, 102.0)
+    rows = [
+        candle(60_000, opened=100, high=101, low=99, close=100,
+               upper=upper, lower=lower, middle=100, short_ma=cross_before, ma15=100,
+               atr=2),
+        candle(120_000, opened=100, high=101.2, low=99, close=100.8,
+               upper=upper, lower=lower, middle=100, short_ma=cross_after, ma15=100,
+               atr=2),
+        candle(180_000, opened=final_open,
+               high=max(final_open, final_close) + 0.1,
+               low=min(final_open, final_close) - 0.1, close=final_close,
+               upper=upper, lower=lower, middle=final_middle,
+               short_ma=final_ma5, ma15=100, atr=2),
+    ]
+    market = frame(rows)
+    quote = final_close + sign * 0.1
+    signal = evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=MA5_MA15_CROSS,
+    )
+    assert signal is not None
+    assert signal["side"] == side
+    assert signal["method"] == MA5_MA15_CROSS
+    allowed, reason = revalidate_entry_method(
+        market, symbol="BTC/USDT", side=side, quote=quote,
+        context=method_context(signal),
+    )
+    assert allowed, reason
 
 
 def test_post_close_reentry_uses_only_a_new_closed_bar_and_directional_short_ma():

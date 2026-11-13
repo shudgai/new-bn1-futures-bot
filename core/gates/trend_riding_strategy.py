@@ -320,6 +320,11 @@ def can_open_position(
         if close_p < ma5_curr or current_tick_price < ma5_curr:
             return veto_return(f"VETO_LONG_PRICE_BELOW_MA5 (close={close_p:.4f}, tick={current_tick_price:.4f} < ma5={ma5_curr:.4f})")
 
+        # ── 針對「錯過谷底之強勢大綠 K 補救開多 (買回)」或「谷底轉折開多」的授權豁免破軌 ──
+        if "SECONDARY_RECOVERY" in entry_confirmation or "VALLEY_REVERSAL" in entry_confirmation or "DIP_SNIPER" in entry_confirmation:
+            if close_p > open_p and close_p >= ma5_curr:
+                return True, f"PASS: {entry_confirmation}_AUTHORIZED", details
+
         # 1. 第一根必須收盤破上軌
         long_bar1_break = (prev_kc_up > 0) and (prev_close > prev_kc_up)
         # 2. 第二根必須為陽線 (同色)
@@ -368,6 +373,11 @@ def can_open_position(
         # 禁令七：價格站上 MA5 之上時，100% 禁止開空
         if close_p > ma5_curr or current_tick_price > ma5_curr:
             return veto_return(f"VETO_SHORT_PRICE_ABOVE_MA5 (close={close_p:.4f}, tick={current_tick_price:.4f} > ma5={ma5_curr:.4f})")
+
+        # ── 針對「峰頂起跌轉折開空 (PEAK_REVERSAL)」的授權豁免破下軌 ──
+        if "PEAK_REVERSAL" in entry_confirmation or "TOP_WATERFALL" in entry_confirmation:
+            if close_p < open_p and close_p <= ma5_curr:
+                return True, f"PASS: {entry_confirmation}_AUTHORIZED", details
 
         # 1. 第一根必須收盤破下軌
         short_bar1_break = (prev_kc_low > 0) and (prev_close < prev_kc_low)

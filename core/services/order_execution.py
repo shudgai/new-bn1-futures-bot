@@ -92,3 +92,75 @@ class OrderExecutionService:
                 "SUCCESS" if success else "ERROR",
             )
             return success
+
+    @staticmethod
+    async def execute_bottom_reversal_flip(engine, symbol, frame, quote, position,
+                                           exit_reason, details):
+        """Coordinate a bottom valley reversal without opening before close fill."""
+        locks = getattr(engine, "_atomic_flip_locks", None)
+        if locks is None:
+            locks = engine._atomic_flip_locks = {}
+        async with locks.setdefault(symbol, asyncio.Lock()):
+            account = engine.account
+            if (account.positions.get(symbol) is not position
+                    or str(position.get("side", "")).upper() != "SHORT"
+                    or not isinstance(details, dict)
+                    or details.get("authorized_action") not in ("ACTION_FLIP_SHORT_TO_LONG", "FLIP_TO_LONG")):
+                return False
+
+            from core.gates.holding_protection_gate import HoldingProtectionExitGate
+            allowed, authorized_reason, verified = HoldingProtectionExitGate.validate_exit(
+                position, frame, quote, exit_reason, details,
+            )
+            if not allowed:
+                account.log(
+                    f"ATOMIC_FLIP_ABORT symbol={symbol} stage=EXIT_VALIDATION reason={authorized_reason}",
+                    "WARNING",
+                )
+                return False
+
+            close_reason = f"Channel Swing Valley Reversal Flip {authorized_reason}"
+            daily_loss_limit = getattr(account, "daily_loss_limit_hit", None)
+            daily_halt = False
+            if callable(daily_loss_limit):
+                try:
+                    result = daily_loss_limit()
+                    daily_halt = bool(result[0] if isinstance(result, (tuple, list)) else result)
+                except Exception:
+                    daily_halt = True
+            account.log(
+                f"ATOMIC_FLIP_BEGIN symbol={symbol} from=SHORT to=LONG quote={quote}",
+                "WARNING",
+            )
+            closed = await account.close_position(
+                symbol, quote, close_reason, is_manual=True,
+            )
+            if not closed or symbol in account.positions:
+                account.log(
+                    f"ATOMIC_FLIP_ABORT symbol={symbol} stage=CLOSE fill_confirmed={bool(closed)}",
+                    "ERROR",
+                )
+                return False
+
+            if daily_halt:
+                account.log(
+                    f"ATOMIC_FLIP_ABORT symbol={symbol} stage=DAILY_RISK close_filled=True long_opened=False",
+                    "WARNING",
+                )
+                return False
+
+            opened = await engine._execute_confirmed_channel_break(
+                symbol, frame, quote, "LONG", daily_halt=daily_halt,
+                v8_reason="AUTHORIZED_BY_VALLEY_REVERSAL_FLIP_LONG",
+            )
+            final_position = account.positions.get(symbol)
+            success = bool(
+                opened and final_position
+                and str(final_position.get("side", "")).upper() == "LONG"
+            )
+            account.log(
+                f"ATOMIC_FLIP_{'FILLED' if success else 'PARTIAL'} "
+                f"symbol={symbol} close_filled=True long_opened={success}",
+                "SUCCESS" if success else "ERROR",
+            )
+            return success

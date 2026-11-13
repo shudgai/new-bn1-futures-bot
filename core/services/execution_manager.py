@@ -19,6 +19,12 @@ import pandas as pd
 
 from core.services.data_pipeline import DataPipeline, MarketDataSnapshot
 from core.gates.unified_pipeline_gates import ExitGate, EntryGate
+from core.gates.ultimate_short_exit_gatekeeper import (
+    KC_MIDDLE_SLOPE_EXIT_REASONS,
+    MA5_ANGLE_REVERSAL_EXIT_REASONS,
+    SHARP_REVERSAL_EXIT_REASONS,
+    UltimateShortExitGatekeeper,
+)
 from core.services.demon_coin_defense import DemonCoinDefenseController
 from core.services.scalping_state_machine import ScalpingStateMachine
 from core.services.market_structure_break import (
@@ -419,6 +425,10 @@ class ExecutionManager:
     _symbol_macro_trend: Dict[str, str] = {}
     _symbol_key_pivot: Dict[str, float] = {}
     _position_flip_locks: Dict[str, asyncio.Lock] = {}
+    _ma5_angle_locks: Dict[str, asyncio.Lock] = {}
+    _pv_exit_records: Dict[str, Dict[str, Any]] = {}
+    _pv_flip_records: Dict[str, Dict[str, Any]] = {}
+    _pv_flip_watch_records: Dict[str, Dict[str, Any]] = {}
 
     @classmethod
     async def _evaluate_closed_entry_methods(
@@ -431,6 +441,7 @@ class ExecutionManager:
         quote: float,
         macro_trend: str,
         only_method: Optional[str] = None,
+        exclude_methods: Optional[set[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             return None
@@ -441,6 +452,8 @@ class ExecutionManager:
             MEME_GATE_ENTRY,
             KC_OUTER_PIVOT_REVERSAL,
             MA5_MA15_CROSS,
+            KC_SINGLE_BAR_BREAKOUT,
+            KC_MIDLINE_MOMENTUM,
             POST_CLOSE_KC_REENTRY,
             THREE_BAR_PIVOT_REVERSAL,
             evaluate_entry_method,
@@ -459,13 +472,18 @@ class ExecutionManager:
         # 多空對稱：只要冷卻期滿且出現結構反轉訊號，允許所有核心方法（含普通破軌、峰谷轉折與交叉）
         methods = (
             (only_method,) if only_method is not None else
-            (
-                MEME_GATE_ENTRY,
-                KC_OUTER_PIVOT_REVERSAL,
-                KC_TWO_BAR_BREAKOUT,
-                THREE_BAR_PIVOT_REVERSAL,
-                MA5_MA15_CROSS,
-                POST_CLOSE_KC_REENTRY,
+            tuple(
+                m for m in (
+                    MEME_GATE_ENTRY,
+                    KC_OUTER_PIVOT_REVERSAL,
+                    KC_TWO_BAR_BREAKOUT,
+                    THREE_BAR_PIVOT_REVERSAL,
+                    MA5_MA15_CROSS,
+                    KC_SINGLE_BAR_BREAKOUT,
+                    KC_MIDLINE_MOMENTUM,
+                    POST_CLOSE_KC_REENTRY,
+                )
+                if not exclude_methods or m not in exclude_methods
             )
         )
 
@@ -626,9 +644,13 @@ class ExecutionManager:
             meta=meta,
         )
         open_error = cls._last_open_error.pop(symbol, "")
-        if not success and any(marker in open_error for marker in TRANSIENT_ENTRY_DATA_ERRORS):
-            # Transient data unavailability is not an attempted trade; free the
-            # bar so the next quote in the same minute can retry.
+        if not success and (
+            method == MEME_GATE_ENTRY
+            or any(marker in open_error for marker in TRANSIENT_ENTRY_DATA_ERRORS)
+        ):
+            # MEME_GATE_ENTRY vetoes (e.g. extension/revalidation) and transient data
+            # unavailability did not place an order; free the bar claim so valid
+            # channels or retries on the same bar are not wrongly locked out.
             if persisted.get(symbol) == bar_id:
                 if previous_persisted_claim is None:
                     persisted.pop(symbol, None)
@@ -667,6 +689,7 @@ class ExecutionManager:
         klines_df: Optional[pd.DataFrame] = None,
         quote: Optional[float] = None,
         frame_15m: Optional[pd.DataFrame] = None,
+        frame_5m: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """
         單一幣種的標準流水線處理循環 (Thread-safe, Single-Pipeline)
@@ -1009,13 +1032,163 @@ class ExecutionManager:
                 tier1_drawback_pct=0.20,
             )
 
+            gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
+                pos=current_position,
+                market_data=market_data,
+                account=account,
+            )
+            from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
+            if gate_should_exit and gate_reason in PROFIT_PIVOT_REASONS:
+                success = await cls.close_position(
+                    account=account,
+                    symbol=symbol,
+                    price=curr_quote,
+                    reason=gate_reason,
+                    meta={**gate_meta, "raw_df": raw_df},
+                )
+                return {
+                    "status": "EXIT_EXECUTED" if success else "HOLD",
+                    "symbol": symbol,
+                    "reason": gate_reason if success else "EXIT_BLOCKED_HOLD:" + gate_reason,
+                    "success": success,
+                }
+
+            # 🎯 峰谷轉向低延遲即時平倉與條件式即時反手引擎（統一接管所有持倉，含舊通道開的單）
+            pv_pos_meta = getattr(account, "position_meta", {}).get(symbol, {})
+            if isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+                from core.services.low_latency_exit import (
+                    evaluate_peak_valley_exit,
+                    execute_peak_valley_exit_and_conditional_flip,
+                )
+
+                acc_key_pv = cls._get_account_key(account, symbol)
+                cls._pv_flip_watch_records.pop(acc_key_pv, None)
+                last_flip_rec = cls._pv_flip_records.get(acc_key_pv) or {}
+                pv_exit = evaluate_peak_valley_exit(
+                    raw_df,
+                    position=current_position,
+                    live_price=curr_quote,
+                    metadata=pv_pos_meta if isinstance(pv_pos_meta, dict) else None,
+                    last_flip_bar_id=last_flip_rec.get("flip_bar_id"),
+                    symbol=symbol,
+                )
+                for state_k, state_v in (pv_exit.get("state_updates") or {}).items():
+                    current_position[state_k] = state_v
+                    if isinstance(pv_pos_meta, dict):
+                        pv_pos_meta[state_k] = state_v
+
+                if pv_exit.get("reason") == "HOLD_SAME_BAR_FLIP_EXIT_LOCKED":
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "HOLD_SAME_BAR_FLIP_EXIT_LOCKED",
+                        "trigger_level": "LOCKED",
+                        "anti_whipsaw": pv_exit.get("anti_whipsaw"),
+                        "should_flip": False,
+                        "flipped": False,
+                        "success": False,
+                    }
+
+                if pv_exit.get("should_exit"):
+                    flip_lock = cls._position_flip_locks.setdefault(symbol, asyncio.Lock())
+                    async with flip_lock:
+                        return await execute_peak_valley_exit_and_conditional_flip(
+                            account=account,
+                            engine_or_account=engine_or_account,
+                            symbol=symbol,
+                            df=raw_df,
+                            live_price=curr_quote,
+                            pv_exit=pv_exit,
+                            closed_side=pos_side,
+                            close_fn=cls.close_position,
+                            open_fn=cls.open_position,
+                            flip_bar_registry=cls._pv_flip_records,
+                            exit_record_registry=cls._pv_exit_records,
+                            flip_watch_registry=cls._pv_flip_watch_records,
+                            account_key=acc_key_pv,
+                            macro_trend=macro_trend,
+                            atr=atr_v,
+                        )
+
+                # 🛡️ KC 三層出場主控權鎖定：未觸及第一層硬止損 / 第三層移動止損 / 第二層收盤確認中軌緩衝或反轉時，
+                # 一律明確 HOLD，禁止回落舊版快線 MA5 觸碰或無緩衝中軌微動邏輯造成盤中洗出場！
+                if pv_exit.get("exit_policy") == "KC_LAYERED_3TIER_V1":
+                    wf_hit, wf_reason, wf_meta = (
+                        UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
+                            symbol,
+                            current_position,
+                            pv_pos_meta if isinstance(pv_pos_meta, dict) else {},
+                            curr_quote,
+                            frame=raw_df,
+                        )
+                    )
+                    if wf_hit:
+                        success = await cls.close_position(
+                            account=account,
+                            symbol=symbol,
+                            price=curr_quote,
+                            reason=wf_reason,
+                            meta={**wf_meta, "raw_df": raw_df},
+                        )
+                        return {
+                            "status": "EXIT_EXECUTED" if success else "HOLD",
+                            "symbol": symbol,
+                            "reason": wf_reason if success else "EXIT_BLOCKED_HOLD:" + wf_reason,
+                            "success": success,
+                        }
+                    trailing_stop_p = float(current_position.get("trailing_stop_price", 0.0) or 0.0)
+                    if trailing_stop_p > 0 and account is not None:
+                        from core.services.ExchangeOrderManager import ExchangeOrderManager
+                        try:
+                            asyncio.create_task(
+                                ExchangeOrderManager.place_or_update_native_stop_order(
+                                    account=account,
+                                    symbol=symbol,
+                                    position=current_position,
+                                    target_stop_price=trailing_stop_p,
+                                    atr=atr_v,
+                                )
+                            )
+                        except Exception as err:
+                            logger.warning(f"⚠️ [NATIVE_STOP_TRIGGER_ERR] {symbol}: {err}")
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": pv_exit.get("reason", "HOLD_KC_TREND_INTACT"),
+                        "trigger_level": pv_exit.get("trigger_level", "NONE"),
+                        "exit_policy": "KC_LAYERED_3TIER_V1",
+                        "metrics": pv_exit.get("metrics"),
+                        "should_flip": False,
+                        "flipped": False,
+                        "success": False,
+                    }
+
             # 🛡️ 妖幣平倉唯一結構出口：波段方向鎖定（KC中軌未轉向不平倉）/ 完整結構破壞 / 緊急斷路器
             from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
             if _is_meme_exit_symbol(symbol):
                 # 🚀 優先評估波段方向鎖平倉機制 (evaluate_exit_with_trend_lock: 中軌方向沒變一律不平倉，跌破中軌或極端風控才離場)
                 from core.strategies.true_peak_trough_strategy import evaluate_exit_with_trend_lock, PositionState as _TruePosState
+                position_meta = getattr(account, "position_meta", {}).get(symbol, {})
+                structure_reason = UltimateShortExitGatekeeper.sharp_reversal_exit_candidate(
+                    current_position,
+                    raw_df,
+                    position_meta,
+                )
+                if not structure_reason:
+                    structure_reason = UltimateShortExitGatekeeper.ma5_angle_exit_candidate(
+                        current_position, raw_df, position_meta, quote=curr_quote,
+                    )
+                if not structure_reason:
+                    structure_reason = UltimateShortExitGatekeeper.kc_middle_slope_exit_candidate(
+                        current_position, raw_df, position_meta,
+                    )
                 _active_exit_res = None
-                if raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 5:
+                if (
+                    not structure_reason
+                    and raw_df is not None
+                    and isinstance(raw_df, pd.DataFrame)
+                    and len(raw_df) >= 5
+                ):
                     try:
                         _active_exit_res = evaluate_exit_with_trend_lock(
                             df=raw_df,
@@ -1026,7 +1199,12 @@ class ExecutionManager:
                         logger.warning(f"[evaluate_exit_with_trend_lock] error: {_ex}")
                         _active_exit_res = None
 
-                if _active_exit_res and _active_exit_res.get("action") in ("CLOSE_LONG", "CLOSE_SHORT", "FLIP_TO_LONG", "FLIP_TO_SHORT", "EMERGENCY_CLOSE"):
+                if structure_reason:
+                    logger.info(
+                        "STRUCTURE_EXIT_TRIGGERED symbol=%s side=%s reason=%s",
+                        symbol, pos_side, structure_reason,
+                    )
+                elif _active_exit_res and _active_exit_res.get("action") in ("CLOSE_LONG", "CLOSE_SHORT", "FLIP_TO_LONG", "FLIP_TO_SHORT", "EMERGENCY_CLOSE"):
                     structure_reason = f"ACTIVE_EXIT_{_active_exit_res['action']}|{_active_exit_res.get('reason', '')}"
                     logger.info(f"⚡ [ACTIVE_EXIT_TRIGGERED] {symbol} {pos_side} 觸發波段反轉/風控平倉: {structure_reason}")
                 elif _active_exit_res and _active_exit_res.get("action") == "HOLD":
@@ -1034,7 +1212,6 @@ class ExecutionManager:
                     structure_reason = None
                     logger.info(f"🛡️ [TREND_LOCK_HOLD] {symbol} {pos_side} {_active_exit_res.get('reason', '')}，阻斷任何普通平倉！")
                 else:
-                    from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
                     structure_reason = UltimateShortExitGatekeeper.structure_exit_candidate(
                         symbol, current_position,
                         getattr(account, "position_meta", {}).get(symbol, {}),
@@ -1065,7 +1242,7 @@ class ExecutionManager:
                     is_closed_flag = not (
                         structure_reason in ("EXIT_LONG_EMERGENCY_WATERFALL", "EXIT_SHORT_EMERGENCY_SURGE")
                         and is_emerg_bar_open
-                    )
+                    ) and structure_reason not in MA5_ANGLE_REVERSAL_EXIT_REASONS.values()
                     success = await cls.close_position(
                         account=account, symbol=symbol, price=curr_quote,
                         reason=structure_reason, meta={"raw_df": raw_df, "is_bar_closed": is_closed_flag},
@@ -1076,15 +1253,32 @@ class ExecutionManager:
                         cls._last_exit_record.pop(acc_key, None)
                         cls._last_exit_record.pop(symbol, None)
                         cls._last_trade_bar_time.pop(symbol, None)
-                        flip = await cls._try_structure_position_flip(
-                            account=account,
-                            symbol=symbol,
-                            position_side=pos_side,
-                            frame=raw_df,
-                            quote=curr_quote,
-                            macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
-                            exit_reason=structure_reason,
-                        )
+                        if structure_reason in MA5_ANGLE_REVERSAL_EXIT_REASONS.values():
+                            angle_signal = UltimateShortExitGatekeeper.ma5_angle_opportunity(
+                                raw_df, curr_quote,
+                            )
+                            if angle_signal and await cls._claim_ma5_angle_latch(
+                                account, symbol, angle_signal[0], angle_signal[2],
+                            ):
+                                flip = await cls._try_structure_position_flip(
+                                    account=account,
+                                    symbol=symbol,
+                                    position_side=pos_side,
+                                    frame=raw_df,
+                                    quote=curr_quote,
+                                    macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
+                                    exit_reason=structure_reason,
+                                )
+                        else:
+                            flip = await cls._try_structure_position_flip(
+                                account=account,
+                                symbol=symbol,
+                                position_side=pos_side,
+                                frame=raw_df,
+                                quote=curr_quote,
+                                macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
+                                exit_reason=structure_reason,
+                            )
                     if flip and flip.get("success"):
                         return {
                             "status": "SUCCESS_FLIP",
@@ -1105,12 +1299,6 @@ class ExecutionManager:
                     }
 
             # 審查 ExitGate 是否觸發鎖利 (Profit Lock)、大瀑布 (Extreme Waterfall)、市場熔斷 (Circuit Breaker)
-            gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
-                pos=current_position,
-                market_data=market_data,
-                account=account,
-            )
-            from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
             if gate_should_exit and (
                 gate_reason in PROFIT_PIVOT_REASONS
                 or (
@@ -2184,6 +2372,209 @@ class ExecutionManager:
         # =========================================================================
         method_rejection: Optional[Dict[str, Any]] = None
         if not has_position:
+            acc_key_watch = cls._get_account_key(account, symbol)
+            active_watch = cls._pv_flip_watch_records.get(acc_key_watch)
+            if active_watch and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
+                from core.services.low_latency_exit import (
+                    build_live_flip_frame,
+                    evaluate_flip_watch_entry,
+                    extract_entry_structure_context,
+                    resolve_peak_valley_exit_config,
+                )
+
+                watch_df_5m = frame_5m
+                if watch_df_5m is None and hasattr(engine_or_account, "fetch_klines"):
+                    try:
+                        watch_df_5m = await engine_or_account.fetch_klines(
+                            symbol, timeframe="5m", limit=50, keep_live=True,
+                        )
+                    except Exception:
+                        watch_df_5m = None
+
+                watch_cfg = resolve_peak_valley_exit_config(symbol)
+                watch_eval = evaluate_flip_watch_entry(
+                    raw_df,
+                    watch_state=active_watch,
+                    live_price=curr_quote,
+                    df_5m=watch_df_5m,
+                    symbol=symbol,
+                    config=watch_cfg,
+                )
+                if watch_eval.get("expired"):
+                    cls._pv_flip_watch_records.pop(acc_key_watch, None)
+                    logger.info(
+                        "⌛ [PV_FLIP_WATCH_EXPIRED] %s side=%s reason=%s elapsed=%s/%s",
+                        symbol,
+                        watch_eval.get("side"),
+                        watch_eval.get("reason"),
+                        watch_eval.get("elapsed_bars"),
+                        watch_eval.get("window_bars"),
+                    )
+                elif watch_eval.get("should_enter") and watch_eval.get("side") in ("LONG", "SHORT"):
+                    flip_side = str(watch_eval["side"]).upper()
+                    live_flip_df = build_live_flip_frame(raw_df, float(curr_quote))
+                    flip_struct = extract_entry_structure_context(live_flip_df, flip_side, config=watch_cfg)
+                    current_watch_bar_id = watch_eval.get("current_bar_id")
+                    flip_meta: Dict[str, Any] = {
+                        "symbol": symbol,
+                        "side": flip_side,
+                        "direction_override": True,
+                        "is_agile_trigger": True,
+                        "entry_type": f"PEAK_VALLEY_FLIP_{flip_side}",
+                        "candidate_signal_type": f"PEAK_VALLEY_FLIP_{flip_side}",
+                        "is_peak_valley_inflection": True,
+                        "is_flip": True,
+                        "is_pv_flip": True,
+                        "pv_flip_bar_id": current_watch_bar_id,
+                        "pv_flip_origin_exit_reason": active_watch.get("origin_exit_reason"),
+                        "pv_flip_watch_state": dict(active_watch),
+                        "frame_5m": watch_df_5m,
+                        "entry_swing_low": flip_struct.get("entry_swing_low"),
+                        "entry_swing_high": flip_struct.get("entry_swing_high"),
+                        "entry_kc_width_pct": flip_struct.get("entry_kc_width_pct"),
+                        "entry_pattern": "REVERSAL",
+                        "is_swing_pivot": False,
+                        "is_cross_mid": True,
+                        "no_rigid_sl": True,
+                        "stop_loss_price": None,
+                        "upstream_entry_gate_authorized": True,
+                        "intrabar_authorized": not bool(live_flip_df.iloc[-1].get("is_closed", True)),
+                        "allow_kc_internal": True,
+                        "strategy_mode": "AGILE_MOMENTUM",
+                        "raw_df": live_flip_df,
+                        "macro_trend": macro_trend,
+                        "source": f"UNIFIED_PIPELINE|PEAK_VALLEY_FLIP_{flip_side}",
+                        "atr": atr_v,
+                    }
+                    if hasattr(live_flip_df, "attrs"):
+                        from core.services.low_latency_exit import wrap_frame_ref as _wrap_frame_ref
+                        live_flip_df.attrs["symbol"] = symbol
+                        for k in (
+                            "direction_override",
+                            "is_agile_trigger",
+                            "is_cross_mid",
+                            "entry_type",
+                            "strategy_mode",
+                            "allow_kc_internal",
+                            "is_peak_valley_inflection",
+                            "is_pv_flip",
+                            "pv_flip_bar_id",
+                            "pv_flip_origin_exit_reason",
+                            "pv_flip_watch_state",
+                            "frame_5m",
+                        ):
+                            if flip_meta.get(k) is not None:
+                                v_attr = flip_meta.get(k)
+                                live_flip_df.attrs[k] = _wrap_frame_ref(v_attr) if k == "frame_5m" else v_attr
+
+                    flip_opened = await cls.open_position(
+                        engine_or_account=engine_or_account,
+                        symbol=symbol,
+                        side=flip_side,
+                        price=float(curr_quote),
+                        reason=f"PV_FLIP_WATCH:{watch_eval['reason']}",
+                        meta=flip_meta,
+                    )
+                    if flip_opened:
+                        cls._pv_flip_watch_records.pop(acc_key_watch, None)
+                        if current_watch_bar_id is not None:
+                            cls._pv_flip_records[acc_key_watch] = {
+                                "flip_bar_id": int(current_watch_bar_id),
+                                "flip_side": flip_side,
+                                "origin_exit_reason": active_watch.get("origin_exit_reason"),
+                                "timestamp": time.time(),
+                            }
+                        pos_dict = getattr(account, "positions", None)
+                        if isinstance(pos_dict, dict) and symbol in pos_dict and isinstance(pos_dict[symbol], dict):
+                            pos_dict[symbol]["pv_flip_bar_id"] = current_watch_bar_id
+                            pos_dict[symbol]["is_pv_flip"] = True
+                            pos_dict[symbol]["pv_flip_origin_exit_reason"] = active_watch.get("origin_exit_reason")
+                        pm_dict = getattr(account, "position_meta", None)
+                        if isinstance(pm_dict, dict) and symbol in pm_dict and isinstance(pm_dict[symbol], dict):
+                            pm_dict[symbol]["pv_flip_bar_id"] = current_watch_bar_id
+                            pm_dict[symbol]["is_pv_flip"] = True
+                            pm_dict[symbol]["pv_flip_origin_exit_reason"] = active_watch.get("origin_exit_reason")
+                        logger.info(
+                            "🎯 [PV_FLIP_WATCH_CONFIRMED] %s 開出結構確認反手單 side=%s elapsed=%s/%s @ %s",
+                            symbol,
+                            flip_side,
+                            watch_eval.get("elapsed_bars"),
+                            watch_eval.get("window_bars"),
+                            curr_quote,
+                        )
+                        return {
+                            "status": "FLIP_WATCH_ENTRY_EXECUTED",
+                            "symbol": symbol,
+                            "side": flip_side,
+                            "reason": watch_eval.get("reason"),
+                            "flip_watch": watch_eval,
+                            "success": True,
+                        }
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": cls._last_open_error.get(symbol) or "FLIP_WATCH_OPEN_VETOED",
+                        "flip_watch": watch_eval,
+                        "success": False,
+                    }
+                else:
+                    logger.debug(
+                        "👁️ [PV_FLIP_WATCH_HOLD] %s target=%s reason=%s elapsed=%s/%s",
+                        symbol,
+                        watch_eval.get("side"),
+                        watch_eval.get("reason"),
+                        watch_eval.get("elapsed_bars"),
+                        watch_eval.get("window_bars"),
+                    )
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": watch_eval.get("reason"),
+                        "flip_watch": watch_eval,
+                        "success": False,
+                    }
+
+            _pv_cached_eval: Optional[tuple[Optional[Dict[str, Any]], bool, str]] = None
+
+            def _get_pv_inflection_status() -> tuple[Optional[Dict[str, Any]], bool, str]:
+                nonlocal _pv_cached_eval
+                if _pv_cached_eval is not None:
+                    return _pv_cached_eval
+                if not isinstance(raw_df, pd.DataFrame) or len(raw_df) < 15:
+                    _pv_cached_eval = (None, False, "PV_FRAME_TOO_SHORT")
+                    return _pv_cached_eval
+                from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+                from core.services.low_latency_exit import can_reenter_after_pv_exit
+
+                decision = evaluate_peak_valley_inflection_entry(
+                    raw_df,
+                    live_price=curr_quote,
+                    symbol=symbol,
+                    df_5m=frame_5m,
+                    require_directional_candle=True,
+                )
+                ready = bool(
+                    decision.get("action") in ("OPEN_LONG", "OPEN_SHORT")
+                    and not decision.get("is_consolidation")
+                )
+                reentry_reason = "NOT_TRIGGERED"
+                if ready:
+                    acc_key_pv = cls._get_account_key(account, symbol)
+                    pv_bar_id = None
+                    try:
+                        pv_bar_id = int(float(raw_df.iloc[-1].get("timestamp", 0) or 0))
+                    except (TypeError, ValueError, OverflowError):
+                        pv_bar_id = None
+                    reentry_ok, reentry_reason = can_reenter_after_pv_exit(
+                        cls._pv_exit_records.get(acc_key_pv),
+                        current_bar_id=pv_bar_id,
+                        candidate_side=decision["side"],
+                    )
+                    if not reentry_ok:
+                        ready = False
+                _pv_cached_eval = (decision, ready, reentry_reason)
+                return _pv_cached_eval
+
             from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, evaluate_entry_method
             if evaluate_entry_method(
                 raw_df, quote=curr_quote, symbol=symbol,
@@ -2197,6 +2588,7 @@ class ExecutionManager:
                 if pivot_result is not None:
                     return pivot_result
             from core.services.entry_methods import MEME_GATE_ENTRY
+            meme_final_gate_vetoed = False
             meme_signal = evaluate_entry_method(
                 raw_df, symbol=symbol, quote=curr_quote, expected_method=MEME_GATE_ENTRY,
             )
@@ -2211,15 +2603,34 @@ class ExecutionManager:
                     only_method=MEME_GATE_ENTRY,
                 )
                 if meme_result is not None:
-                    return meme_result
+                    if (
+                        meme_result.get("status") == "VETO"
+                        and meme_result.get("reason") == "ENTRY_METHOD_FINAL_GATE_VETO"
+                    ):
+                        meme_final_gate_vetoed = True
+                        logger.info(
+                            "MEME_GATE_ENTRY_FINAL_VETO_FALLTHROUGH symbol=%s side=%s event=%s",
+                            symbol, meme_result.get("side"), meme_result.get("event_id"),
+                        )
+                    else:
+                        return meme_result
             if not entry_kc_up and not entry_kc_down:
-                reason = (
-                    "BLOCKED_ENTRY_KC_DIRECTION_UNAVAILABLE"
-                    if entry_kc_slope is None else "BLOCKED_ENTRY_KC_DIRECTION_FLAT"
-                )
-                logger.info("ENTRY_KC_DIRECTION_VETO symbol=%s reason=%s", symbol, reason)
-                return {"status": "VETO", "symbol": symbol, "reason": reason}
-            kc_slope = entry_kc_slope
+                pv_flat_decision, pv_flat_ready, _ = _get_pv_inflection_status()
+                if entry_kc_slope is not None and pv_flat_ready and pv_flat_decision is not None:
+                    logger.info(
+                        "ENTRY_KC_DIRECTION_FLAT_PV_BYPASS symbol=%s side=%s trigger=%s",
+                        symbol,
+                        pv_flat_decision.get("side"),
+                        pv_flat_decision.get("trigger_mode"),
+                    )
+                else:
+                    reason = (
+                        "BLOCKED_ENTRY_KC_DIRECTION_UNAVAILABLE"
+                        if entry_kc_slope is None else "BLOCKED_ENTRY_KC_DIRECTION_FLAT"
+                    )
+                    logger.info("ENTRY_KC_DIRECTION_VETO symbol=%s reason=%s", symbol, reason)
+                    return {"status": "VETO", "symbol": symbol, "reason": reason}
+            kc_slope = entry_kc_slope if entry_kc_slope is not None else 0.0
             try:
                 m5_c = float(c_k.get("ma5", math.nan))
                 m5_p = float(p_k.get("ma5", math.nan))
@@ -2316,6 +2727,7 @@ class ExecutionManager:
                 frame=raw_df,
                 quote=curr_quote,
                 macro_trend=macro_trend,
+                exclude_methods={MEME_GATE_ENTRY} if meme_final_gate_vetoed else None,
             )
             if method_result is not None:
                 rejections = method_result.get("entry_rejections", [])
@@ -2985,8 +3397,43 @@ class ExecutionManager:
                         entry_type = "PIVOT_SHORT"
                     pivot_triggered = True
 
-            # 🚫 順勢交易鐵律（2026-10-13 最新授權）：趨勢是多頭不要開空，趨勢是空頭不要開多！
-            if pivot_triggered and candidate_side == "SHORT":
+            # ── 峰谷轉向雙向即時開倉引擎（解除 KC 中軌單邊方向鎖死 + 三因子盤整嚴格濾網）──
+            is_peak_valley_inflection = False
+            inflection_decision: Optional[Dict[str, Any]] = None
+            pv_entry_struct: Dict[str, Any] = {}
+            if (not has_position) and (not pivot_cooldown_blocked) and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 15:
+                from core.services.low_latency_exit import extract_entry_structure_context
+                inflection_decision, pv_ready, pv_reentry_reason = _get_pv_inflection_status()
+                if (
+                    not pivot_triggered
+                    and inflection_decision is not None
+                    and inflection_decision.get("action") in ("OPEN_LONG", "OPEN_SHORT")
+                    and not inflection_decision.get("is_consolidation")
+                ):
+                    if not pv_ready:
+                        logger.info(
+                            "🚫 [PV_EXIT_ANTI_WHIPSAW] %s side=%s reason=%s",
+                            symbol, inflection_decision["side"], pv_reentry_reason,
+                        )
+                    else:
+                        candidate_side = inflection_decision["side"]
+                        entry_type = f"PEAK_VALLEY_INFLECTION_{candidate_side}"
+                        pivot_triggered = True
+                        is_peak_valley_inflection = True
+                        pv_entry_struct = extract_entry_structure_context(raw_df, candidate_side)
+                        logger.info(
+                            "🎯 [PEAK_VALLEY_INFLECTION_%s] %s trigger=%s kc_dir=%s width=%.4f spread=%.4f adx=%s",
+                            candidate_side,
+                            symbol,
+                            inflection_decision.get("trigger_mode"),
+                            inflection_decision.get("kc_direction"),
+                            float(inflection_decision.get("kc_width_pct") or 0.0),
+                            float(inflection_decision.get("ma_spread_pct") or 0.0),
+                            inflection_decision.get("adx"),
+                        )
+
+            # 🚫 一般趨勢單仍保留防逆勢檢查；唯已確立之峰谷轉向訊號解除 KC 中軌方向鎖死
+            if pivot_triggered and candidate_side == "SHORT" and not is_peak_valley_inflection:
                 if is_zoomed_out_bullish or is_macro_htf_bullish or macro_trend == "BULLISH":
                     logger.info(
                         f"🚫 [BLOCKED_SHORT_ON_BULLISH_TREND] {symbol} 拉遠看是大週期多頭趨勢 "
@@ -2996,7 +3443,7 @@ class ExecutionManager:
                     pivot_triggered = False
                     candidate_side = None
 
-            if pivot_triggered and candidate_side == "LONG":
+            if pivot_triggered and candidate_side == "LONG" and not is_peak_valley_inflection:
                 if is_zoomed_out_bearish or is_macro_htf_bearish or macro_trend == "BEARISH":
                     logger.info(
                         f"🚫 [BLOCKED_LONG_ON_BEARISH_TREND] {symbol} 拉遠看是大週期空頭趨勢 "
@@ -3024,11 +3471,44 @@ class ExecutionManager:
                             candidate_side = _p_side
                             entry_type = "MEME_" + _p_trigger.replace("TRIGGER_", "") + "_" + _p_side
                             pivot_triggered = True
+                            is_peak_valley_inflection = False
                             logger.info(
                                 f"⚡ [MEME_PRIORITY_CHANNEL] {symbol} {_p_side} {_p_trigger} 命中優先通道，"
                                 f"豁免 KC 中軌滯後斜率與平倉冷卻，交由 MasterGateFunnel 終審"
                             )
                             break
+
+            ma5_angle_opportunity = None
+            if not has_position:
+                ma5_angle_opportunity = UltimateShortExitGatekeeper.ma5_angle_opportunity(
+                    raw_df, curr_quote,
+                )
+                if ma5_angle_opportunity:
+                    angle_side, angle_value, angle_candle_timestamp_ms = ma5_angle_opportunity
+                    if cls._ma5_angle_latched(
+                        account, symbol, angle_candle_timestamp_ms,
+                    ):
+                        logger.info(
+                            "MA5_ANGLE_SIGNAL_LATCHED symbol=%s side=%s candle_timestamp_ms=%s",
+                            symbol, angle_side, angle_candle_timestamp_ms,
+                        )
+                        ma5_angle_opportunity = None
+                    elif pivot_triggered and candidate_side != angle_side:
+                        logger.warning(
+                            "ENTRY_AUTHORITY_CONFLICT symbol=%s existing_side=%s ma5_angle_side=%s action=BLOCK",
+                            symbol, candidate_side, angle_side,
+                        )
+                        pivot_triggered = False
+                        candidate_side = None
+                        meme_priority_entry = None
+                    elif not pivot_triggered:
+                        candidate_side = angle_side
+                        entry_type = f"MA5_75_DEGREE_{angle_side}"
+                        pivot_triggered = True
+                        logger.info(
+                            "MA5_ANGLE_ENTRY_CANDIDATE symbol=%s side=%s degrees=%.4f",
+                            symbol, angle_side, angle_value,
+                        )
 
             # 🛑 2026-11-01 最高鐵律：開倉必須通過 evaluate_direction_master_lock 與 MasterGateFunnel
             # 做空：MA5 必須向下且小於 MA15，當前必須是紅K陰線 (curr_close < curr_open)，否則 100% 嚴禁開空！
@@ -3037,9 +3517,11 @@ class ExecutionManager:
                 from core.gates.direction_master_lock import evaluate_direction_master_lock
                 from core.gates.master_gate_funnel import MasterGateFunnel, market_snapshot_from_frame
 
-                # 1. 執行 Direction Master Lock 檢查（妖幣優先通道改由 MasterGateFunnel 同側完整重驗）
+                # 1. 執行 Direction Master Lock 檢查（妖幣優先通道改由 MasterGateFunnel 同側完整重驗；峰谷轉向通道由 CentralEntryGate 實盤雙重核驗）
                 if meme_priority_entry:
                     p_dir_ok, p_dir_reason, p_dir_details = True, "MEME_PRIORITY_CHANNEL", {}
+                elif is_peak_valley_inflection:
+                    p_dir_ok, p_dir_reason, p_dir_details = True, "PEAK_VALLEY_INFLECTION_CHANNEL", {}
                 else:
                     p_dir_ok, p_dir_reason, p_dir_details = evaluate_direction_master_lock(
                         candidate_side,
@@ -3058,7 +3540,7 @@ class ExecutionManager:
                     )
                     pivot_triggered = False
                     candidate_side = None
-                else:
+                elif not is_peak_valley_inflection:
                     # 2. 執行 MasterGateFunnel 兩階段漏斗與黑名單審查
                     try:
                         m_snap = market_snapshot_from_frame(raw_df, symbol, curr_quote, macro_trend)
@@ -3069,6 +3551,42 @@ class ExecutionManager:
                         funnel_res = MasterGateFunnel.evaluate_open_long(m_snap)
                     else:
                         funnel_res = MasterGateFunnel.evaluate_open_short(m_snap)
+
+                    if funnel_res.can_execute and entry_type.startswith("MA5_75_DEGREE_"):
+                        from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+                        from core.services.candle_data import closed_entry_candles
+
+                        closed_frame = closed_entry_candles(raw_df)
+                        if len(closed_frame) < 1:
+                            macro_allowed, macro_reason = False, "VETO_CLOSED_CANDLE_UNAVAILABLE"
+                        else:
+                            macro_bar = closed_frame.iloc[-1].to_dict()
+                            macro_indicators = {
+                                "kc_upper": m_snap.kc_upper,
+                                "kc_lower": m_snap.kc_lower,
+                                "kc_middle": m_snap.kc_middle,
+                                "ma15": m_snap.ma15_curr,
+                                "atr": m_snap.atr,
+                                "kc_middle_previous": m_snap.kc_middle_prev,
+                                "ma15_previous": m_snap.ma15_prev,
+                                "ma5_current": m_snap.ma5_curr,
+                            }
+                            macro_allowed, macro_reason = MacroCandleStructureGate(
+                                max_bias_atr=1.2,
+                            ).can_open(
+                                candidate_side,
+                                macro_bar,
+                                macro_indicators,
+                                symbol=symbol,
+                                entry_pattern="REVERSAL",
+                            )
+                        if not macro_allowed:
+                            logger.info(
+                                "MA5_ANGLE_MACRO_VETO symbol=%s side=%s reason=%s",
+                                symbol, candidate_side, macro_reason,
+                            )
+                            pivot_triggered = False
+                            candidate_side = None
 
                     if not funnel_res.can_execute:
                         logger.info(
@@ -3082,6 +3600,18 @@ class ExecutionManager:
                 logger.info(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} 無持倉狀態捕獲轉折/交叉！發起 {candidate_side} 開倉 ({entry_type})")
                 print(f"🎯 [PIVOT_ENTRY_TRIGGERED] {symbol} {candidate_side} {entry_type}", flush=True)
                 is_swing = entry_type in ("PIVOT_LONG", "PIVOT_SHORT", "SWING_PIVOT")
+                is_ma5_angle_entry = entry_type.startswith("MA5_75_DEGREE_")
+                if is_ma5_angle_entry and not await cls._claim_ma5_angle_latch(
+                    account,
+                    symbol,
+                    candidate_side,
+                    ma5_angle_opportunity[2],
+                ):
+                    return {
+                        "status": "VETO",
+                        "symbol": symbol,
+                        "reason": "MA5_ANGLE_SIGNAL_ALREADY_CLAIMED_OR_LATCH_PERSIST_FAILED",
+                    }
                 is_cm = ("CROSS" in entry_type or "MID" in entry_type or "V_LONG" in entry_type)
                 is_breakdown = ("BREAKDOWN" in entry_type or "BREAKOUT" in entry_type)
                 is_momentum = ("MOMENTUM" in entry_type or "CONTINUATION" in entry_type)
@@ -3105,19 +3635,29 @@ class ExecutionManager:
                     intrabar_flag = False
                 entry_meta = {
                     "side": candidate_side,
-                    "direction_override": True,
-                    "is_agile_trigger": True,
+                    "direction_override": not is_ma5_angle_entry,
+                    "is_agile_trigger": not is_ma5_angle_entry,
                     "entry_type": entry_type,
-                    "candidate_signal_type": sig_type,
+                    "is_peak_valley_inflection": bool(is_peak_valley_inflection),
+                    "frame_5m": frame_5m if is_peak_valley_inflection else None,
+                    "entry_swing_low": pv_entry_struct.get("entry_swing_low"),
+                    "entry_swing_high": pv_entry_struct.get("entry_swing_high"),
+                    "entry_kc_width_pct": pv_entry_struct.get("entry_kc_width_pct"),
+                    "candidate_signal_type": (
+                        f"ENTRY_MA5_75_DEGREE_REVERSAL_{candidate_side}"
+                        if is_ma5_angle_entry else sig_type
+                    ),
                     "is_swing_pivot": is_swing,
                     "is_cross_mid": bool(is_cm or is_breakdown or is_momentum),
+                    "entry_pattern": "REVERSAL" if (is_ma5_angle_entry or is_peak_valley_inflection) else None,
+                    "trigger": "TRIGGER_MA5_75_DEGREE" if is_ma5_angle_entry else None,
                     "no_rigid_sl": True,
                     "stop_loss_price": None,
                     "meme_wick_stop_loss": meme_wick_buffer_sl_long if candidate_side == "LONG" else meme_wick_buffer_sl_short,
-                    "upstream_entry_gate_authorized": True,
+                    "upstream_entry_gate_authorized": not is_ma5_angle_entry,
                     "intrabar_authorized": intrabar_flag,
-                    "allow_kc_internal": True,
-                    "strategy_mode": "AGILE_MOMENTUM",
+                    "allow_kc_internal": not is_ma5_angle_entry,
+                    "strategy_mode": "CONSERVATIVE" if is_ma5_angle_entry else "AGILE_MOMENTUM",
                     "raw_df": target_pivot_df,
                     "macro_trend": macro_trend,
                     "source": f"UNIFIED_PIPELINE|{entry_type}",
@@ -3125,7 +3665,8 @@ class ExecutionManager:
                 }
                 raw_df_instance = entry_meta.get("raw_df")
                 if hasattr(raw_df_instance, "attrs"):
-                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal"):
+                    raw_df_instance.attrs["symbol"] = symbol
+                    for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_peak_valley_inflection"):
                         raw_df_instance.attrs[k] = entry_meta.get(k, True)
 
                 open_success = await cls.open_position(
@@ -3140,6 +3681,14 @@ class ExecutionManager:
                     logger.info(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！")
                     print(f"🎯 [PIVOT_ENTRY_SUCCESS] {symbol} 成功建立 {candidate_side} 倉位！", flush=True)
                     return {"status": "ENTRY_EXECUTED", "symbol": symbol, "side": candidate_side, "entry_type": entry_type}
+                if is_ma5_angle_entry:
+                    return {
+                        "status": "VETO",
+                        "symbol": symbol,
+                        "side": candidate_side,
+                        "reason": "MA5_ANGLE_ENTRY_ATTEMPT_REJECTED",
+                        "success": False,
+                    }
                 if method_rejection is not None:
                     logger.warning(
                         "ENTRY_METHOD_ALTERNATIVE_FINAL_VETO symbol=%s side=%s entry_type=%s",
@@ -3797,11 +4346,16 @@ class ExecutionManager:
                     else:
                         swing_pivot = raw_swing_pivot
                 elif pivot_side == "SHORT":
-                    # 妖幣頂部轉折開空：只要極短線 MA5 轉下（向下拐頭或比前根低，或當前已收陰跌破 MA5）且當前收陰，100% 豁免大週期/中軌限制立即進場！
-                    is_ma5_bear_turn = is_entry_ma5_trending_down or (curr_close < entry_ma5_curr and curr_close < curr_open) or (entry_ma5_curr < entry_ma5_prev)
+                    # 妖幣頂部轉折開空：極短線 MA5 轉下、或當前收陰、或滿足斷頭急砸特徵，100% 豁免大週期/中軌限制立即進場！
+                    is_ma5_bear_turn = (
+                        is_entry_ma5_trending_down
+                        or (curr_close < entry_ma5_curr and curr_close < curr_open)
+                        or (entry_ma5_curr < entry_ma5_prev)
+                        or is_candle_bearish
+                        or (raw_df is not None and len(raw_df) >= 2 and float(raw_df['close'].iloc[-1]) < float(raw_df['open'].iloc[-1]))
+                    )
                     pivot_short_ok = (
-                        is_ma5_bear_turn
-                        and is_candle_bearish
+                        (is_ma5_bear_turn or is_candle_bearish)
                         and (is_meme_contract or ((not is_zoomed_out_bullish) and (not is_macro_bull) and allow_short_defense))
                     )
                     if not pivot_short_ok:
@@ -4554,6 +5108,61 @@ class ExecutionManager:
         return f"{acc_id}:{symbol}"
 
     @classmethod
+    def _ma5_angle_latched(cls, account: Any, symbol: str, candle_timestamp_ms: int) -> bool:
+        state = getattr(account, "entry_filter_last", None)
+        latches = state.get("ma5_angle_signal_latch") if isinstance(state, dict) else None
+        latch = latches.get(symbol) if isinstance(latches, dict) else None
+        return (
+            isinstance(latch, dict)
+            and latch.get("candle_timestamp_ms") == int(candle_timestamp_ms)
+        )
+
+    @classmethod
+    async def _claim_ma5_angle_latch(
+        cls, account: Any, symbol: str, side: str, candle_timestamp_ms: int,
+    ) -> bool:
+        """Persist one MA5 reversal attempt per symbol and live 1m candle."""
+        key = cls._get_account_key(account, symbol)
+        lock = cls._ma5_angle_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if cls._ma5_angle_latched(account, symbol, candle_timestamp_ms):
+                return False
+            state = getattr(account, "entry_filter_last", None)
+            if not isinstance(state, dict):
+                state = {}
+                account.entry_filter_last = state
+            latches = state.get("ma5_angle_signal_latch")
+            if not isinstance(latches, dict):
+                latches = {}
+                state["ma5_angle_signal_latch"] = latches
+            previous = latches.get(symbol)
+            latches[symbol] = {
+                "side": str(side).upper(),
+                "candle_timestamp_ms": int(candle_timestamp_ms),
+                "status": "CLAIMED",
+            }
+            save_state = getattr(account, "save_state", None)
+            if not callable(save_state):
+                if previous is None:
+                    latches.pop(symbol, None)
+                else:
+                    latches[symbol] = previous
+                return False
+            try:
+                try:
+                    save_state(strict=True)
+                except TypeError:
+                    save_state()
+            except Exception:
+                logger.exception("MA5_ANGLE_LATCH_PERSIST_FAILED symbol=%s", symbol)
+                if previous is None:
+                    latches.pop(symbol, None)
+                else:
+                    latches[symbol] = previous
+                return False
+            return True
+
+    @classmethod
     async def _try_structure_position_flip(
         cls,
         account: Any,
@@ -4589,10 +5198,22 @@ class ExecutionManager:
             except Exception as inner_exc:
                 logger.info("POSITION_FLIP_DATA_BLOCK symbol=%s error=%s", symbol, inner_exc)
                 return None
-        candidate = MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
-        is_true_3pt_flip = False
         held = str(position_side or "").upper()
+        sharp_exit = exit_reason in SHARP_REVERSAL_EXIT_REASONS.values()
+        angle_exit = exit_reason in MA5_ANGLE_REVERSAL_EXIT_REASONS.values()
+        candidate = (
+            (
+                "SHORT" if held == "LONG" else "LONG",
+                "TRIGGER_MA5_75_DEGREE" if angle_exit else "TRIGGER_SHARP_REVERSAL_15ATR",
+            )
+            if sharp_exit or angle_exit
+            else MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
+        )
+        is_true_3pt_flip = False
         if (
+            not sharp_exit
+            and not angle_exit
+            and
             held == "SHORT"
             and snapshot.is_closed
             and snapshot.kc_middle > snapshot.kc_middle_prev
@@ -4605,6 +5226,9 @@ class ExecutionManager:
                 candidate = ("LONG", "TRIGGER_BULLISH_ORIGIN_MA5_TURN")
             is_true_3pt_flip = True
         elif (
+            not sharp_exit
+            and not angle_exit
+            and
             held == "LONG"
             and snapshot.is_closed
             and snapshot.kc_middle < snapshot.kc_middle_prev
@@ -4641,6 +5265,52 @@ class ExecutionManager:
             }
         if symbol in getattr(account, "positions", {}):
             return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
+        if angle_exit:
+            angle_signal = UltimateShortExitGatekeeper.ma5_angle_opportunity(frame, quote)
+            if not angle_signal or angle_signal[0] != target_side:
+                return {"success": False, "side": target_side, "reason": "LIVE_MA5_ANGLE_SIGNAL_STALE"}
+            from core.gates.direction_master_lock import evaluate_direction_master_lock
+
+            direction_ok, direction_reason, _ = evaluate_direction_master_lock(
+                target_side,
+                ma5_curr=snapshot.ma5_curr,
+                ma5_prev=snapshot.ma5_prev,
+                kc_middle=snapshot.kc_middle,
+                direction_override=False,
+                ma15_curr=snapshot.ma15_curr,
+                curr_close=snapshot.close_price,
+                curr_open=snapshot.open_price,
+            )
+            if not direction_ok:
+                return {"success": False, "side": target_side, "reason": direction_reason}
+            try:
+                closed_frame = closed_entry_candles(frame)
+            except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError):
+                closed_frame = pd.DataFrame()
+            if closed_frame.empty:
+                return {"success": False, "side": target_side, "reason": "VETO_CLOSED_CANDLE_UNAVAILABLE"}
+            from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+
+            macro_allowed, macro_reason = MacroCandleStructureGate(
+                max_bias_atr=1.2,
+            ).can_open(
+                target_side,
+                closed_frame.iloc[-1].to_dict(),
+                {
+                    "kc_upper": snapshot.kc_upper,
+                    "kc_lower": snapshot.kc_lower,
+                    "kc_middle": snapshot.kc_middle,
+                    "ma15": snapshot.ma15_curr,
+                    "atr": snapshot.atr,
+                    "kc_middle_previous": snapshot.kc_middle_prev,
+                    "ma15_previous": snapshot.ma15_prev,
+                    "ma5_current": snapshot.ma5_curr,
+                },
+                symbol=symbol,
+                entry_pattern="REVERSAL",
+            )
+            if not macro_allowed:
+                return {"success": False, "side": target_side, "reason": macro_reason}
         if not is_true_3pt_flip:
             location_veto = MasterGateFunnel.pivot_kc_location_veto(snapshot, target_side)
             if location_veto:
@@ -4691,14 +5361,18 @@ class ExecutionManager:
             entry_meta = {
                 "side": target_side,
                 "entry_type": "STRUCTURE_REVERSAL",
-                "entry_pattern": "CROSSOVER",
+                "entry_pattern": "REVERSAL" if angle_exit else "CROSSOVER",
                 "candidate_signal_type": f"ENTRY_STRUCTURE_REVERSAL_{target_side}",
-                "structure_confirmation": "MA_CROSSOVER",
+                "structure_confirmation": "MA5_75_DEGREE_LIVE" if angle_exit else "MA_CROSSOVER",
                 "trigger": trigger,
                 "raw_df": frame,
                 "atr": snapshot.atr,
                 "macro_trend": snapshot.macro_trend,
-                "bar_timestamp": int(closed_entry_candles(frame).iloc[-1]["timestamp"]),
+                "bar_timestamp": int(
+                    frame.iloc[-1]["timestamp"] if angle_exit
+                    else closed_entry_candles(frame).iloc[-1]["timestamp"]
+                ),
+                "intrabar_authorized": bool(angle_exit and not snapshot.is_closed),
             }
             if is_true_3pt_flip:
                 entry_meta["direction_override"] = True
@@ -4992,6 +5666,18 @@ class ExecutionManager:
                 if hasattr(frame, "attrs"):
                     frame.attrs["entry_finality_verified"] = True
                     frame.attrs.setdefault("timeframe_ms", 60_000)
+                    from core.services.low_latency_exit import wrap_frame_ref as _wrap_frame_ref
+                    for pv_attr in (
+                        "is_peak_valley_inflection",
+                        "is_pv_flip",
+                        "pv_flip_bar_id",
+                        "pv_flip_origin_exit_reason",
+                        "pv_flip_watch_state",
+                        "frame_5m",
+                    ):
+                        if (meta or {}).get(pv_attr) is not None:
+                            v_pv = (meta or {}).get(pv_attr)
+                            frame.attrs[pv_attr] = _wrap_frame_ref(v_pv) if pv_attr == "frame_5m" else v_pv
                     macro_label = (meta or {}).get("macro_trend")
                     if macro_label:
                         frame.attrs["macro_trend"] = str(macro_label).upper()
@@ -5079,6 +5765,15 @@ class ExecutionManager:
                 "is_outer_entry": not is_cross_mid,
                 "allow_kc_internal": bool((meta or {}).get("allow_kc_internal") or is_cross_mid),
                 "direction_override": bool((meta or {}).get("direction_override") or is_cross_mid),
+                "is_peak_valley_inflection": bool((meta or {}).get("is_peak_valley_inflection")),
+                "entry_swing_low": (meta or {}).get("entry_swing_low"),
+                "entry_swing_high": (meta or {}).get("entry_swing_high"),
+                "entry_kc_width_pct": (meta or {}).get("entry_kc_width_pct"),
+                "is_pv_flip": bool((meta or {}).get("is_pv_flip")),
+                "pv_flip_bar_id": (meta or {}).get("pv_flip_bar_id"),
+                "pv_flip_origin_exit_reason": (meta or {}).get("pv_flip_origin_exit_reason"),
+                "pv_flip_watch_state": (meta or {}).get("pv_flip_watch_state"),
+                "frame_5m": (meta or {}).get("frame_5m"),
                 "entry_type": (
                     (meta or {}).get("entry_type")
                     if (meta or {}).get("entry_type")
@@ -5103,10 +5798,33 @@ class ExecutionManager:
                 entry_context["entry_gate_quote"] = float(price)
 
             # 🛑 2026-11-01 執行邊界物理總閘門：開多必綠K、開空必紅K，嚴禁任何反向K棒或盤中逆向開倉
+            pv_flip_verified_exec = False
+            if (meta or {}).get("is_pv_flip") and isinstance(frame, pd.DataFrame):
+                from core.services.low_latency_exit import verify_pv_flip_entry_authority
+                pv_flip_verified_exec = verify_pv_flip_entry_authority(
+                    frame, side=side, live_price=price, context=meta, symbol=symbol,
+                )
+            pv_entry_verified_exec = False
+            if (
+                (meta or {}).get("is_peak_valley_inflection") is True
+                and isinstance(frame, pd.DataFrame)
+            ):
+                from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+
+                pv_entry = evaluate_peak_valley_inflection_entry(
+                    frame,
+                    live_price=price,
+                    symbol=symbol,
+                    require_directional_candle=True,
+                )
+                pv_entry_verified_exec = (
+                    pv_entry.get("action") == f"OPEN_{side.upper()}"
+                    and not pv_entry.get("is_consolidation")
+                )
             if frame is not None and isinstance(frame, pd.DataFrame) and len(frame) >= 1:
                 last_f_row = frame.iloc[-1]
                 prev_f_row = frame.iloc[-2] if len(frame) >= 2 else last_f_row
-                f_is_closed = bool(last_f_row.get("is_closed", True))
+                f_is_closed = bool(last_f_row.get("is_closed", True)) or bool((meta or {}).get("intrabar_authorized"))
                 eval_f_row = last_f_row if f_is_closed else prev_f_row
                 prev_eval_f_row = prev_f_row if f_is_closed else (frame.iloc[-3] if len(frame) >= 3 else prev_f_row)
                 eval_f_c = float(eval_f_row.get("close", price))
@@ -5117,11 +5835,13 @@ class ExecutionManager:
                 or any(k in str(reason).upper() for k in ("PIVOT", "REVERSAL", "MODE_A", "VALLEY", "PEAK"))
                 or (meta or {}).get("is_mode_a") is True
                 or (meta or {}).get("is_flip") is True
+                or pv_entry_verified_exec
+                or pv_flip_verified_exec
             )
             # 建立多空方向與標頭/中軌一致性門禁
             from core.symbol_aliases import is_meme_breakout_symbol
             is_meme_symbol = is_meme_breakout_symbol(symbol)
-            if (is_meme_symbol or True) and "kc_middle" in frame.columns and len(frame) >= 2:
+            if (is_meme_symbol or True) and "kc_middle" in frame.columns and len(frame) >= 2 and not pv_flip_verified_exec:
                 eval_kc_mid = float(eval_f_row.get("kc_middle", 0.0))
                 prev_kc_mid = float(prev_eval_f_row.get("kc_middle", eval_kc_mid))
                 is_kc_up = eval_kc_mid > prev_kc_mid
@@ -5150,30 +5870,67 @@ class ExecutionManager:
                             f"界面方向為『KC 向下 (只評估空單)』，一般趨勢引擎絕對禁止開多！(只有獨立極值谷底反轉具備完整證據時才允許)"
                         )
                         return False
-                if side.upper() == "SHORT":
-                    if eval_f_c >= eval_f_o and not is_entry_ma5_ma15_entry:
+                # ──【開倉三大必要條件與即時 K 線顏色嚴格審查（Pre-Order Guard）】──
+                # 取得當前最新未收盤 K 棒 open 與最新即時價格
+                current_open = float(last_f_row.get("open", eval_f_o))
+                current_price = float(price)
+
+                # 提取 MA5 與 MA15 數值（優先使用最新未收盤值，確保即時性）
+                live_ma5 = float(last_f_row.get("ma5", prev_f_row.get("ma5", 0.0)))
+                prev_ma5 = float(prev_f_row.get("ma5", live_ma5))
+                live_ma15 = float(last_f_row.get("ma15", prev_f_row.get("ma15", 0.0)))
+
+                if side.upper() == "LONG":
+                    # 開多單三大必要條件：
+                    # 條件 A: MA5 > MA15
+                    # 條件 B: MA5 向上 (live_ma5 > prev_ma5)
+                    # 條件 C: 嚴格綠 K (current_price > current_open)
+                    if not pv_entry_verified_exec and not (live_ma5 > live_ma15):
                         logger.critical(
-                            f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_GREEN_CANDLE] {symbol} 開空硬攔截：已收線K棒非紅K陰線 "
-                            f"(close={eval_f_c:.6f} >= open={eval_f_o:.6f})，向下紅K才能開空，強制拒單！"
+                            f"🛑 [防呆攔截] {symbol} 準備開多但 MA5 未大於 MA15 (MA5={live_ma5:.6f} <= MA15={live_ma15:.6f})，取消下單"
                         )
                         return False
-                    if price > eval_f_c and (price - eval_f_c) > 0.3 * atr:
+                    if not (live_ma5 > prev_ma5):
                         logger.critical(
-                            f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_BOUNCE] {symbol} 開空硬攔截：即時報價正大幅向上反彈 "
-                            f"(price={price:.6f} > close={eval_f_c:.6f})，嚴防逆勢追空！"
+                            f"🛑 [防呆攔截] {symbol} 準備開多但 MA5 未向上推進 (MA5={live_ma5:.6f} <= 前一根={prev_ma5:.6f})，取消下單"
                         )
                         return False
-                elif side.upper() == "LONG":
-                    if eval_f_c <= eval_f_o and not is_entry_ma5_ma15_entry:
+                    if current_price <= current_open:
                         logger.critical(
-                            f"🛑 [EXECUTION_FAILSAFE_VETO_LONG_RED_CANDLE] {symbol} 開多硬攔截：已收線K棒非綠K陽線 "
-                            f"(close={eval_f_c:.6f} <= open={eval_f_o:.6f})，向上綠K才能開多，強制拒單！"
+                            f"🛑 [防呆攔截] 準備開多但當前非綠K (現價={current_price:.6f} <= 開盤價={current_open:.6f})，取消下單"
                         )
                         return False
                     if price < eval_f_c and (eval_f_c - price) > 0.3 * atr:
                         logger.critical(
                             f"🛑 [EXECUTION_FAILSAFE_VETO_LONG_DUMP] {symbol} 開多硬攔截：即時報價正大幅向下急殺 "
                             f"(price={price:.6f} < close={eval_f_c:.6f})，嚴防逆勢接飛刀！"
+                        )
+                        return False
+
+                elif side.upper() == "SHORT":
+                    # 開空單三大必要條件：
+                    # 條件 A: MA5 < MA15
+                    # 條件 B: MA5 向下 (live_ma5 < prev_ma5)
+                    # 條件 C: 嚴格紅 K (current_price < current_open)
+                    if not pv_entry_verified_exec and not (live_ma5 < live_ma15):
+                        logger.critical(
+                            f"🛑 [防呆攔截] {symbol} 準備開空但 MA5 未小於 MA15 (MA5={live_ma5:.6f} >= MA15={live_ma15:.6f})，取消下單"
+                        )
+                        return False
+                    if not (live_ma5 < prev_ma5):
+                        logger.critical(
+                            f"🛑 [防呆攔截] {symbol} 準備開空但 MA5 未向下拐頭 (MA5={live_ma5:.6f} >= 前一根={prev_ma5:.6f})，取消下單"
+                        )
+                        return False
+                    if current_price >= current_open:
+                        logger.critical(
+                            f"🛑 [防呆攔截] 準備開空但當前非紅K (現價={current_price:.6f} >= 開盤價={current_open:.6f})，取消下單"
+                        )
+                        return False
+                    if price > eval_f_c and (price - eval_f_c) > 0.3 * atr:
+                        logger.critical(
+                            f"🛑 [EXECUTION_FAILSAFE_VETO_SHORT_BOUNCE] {symbol} 開空硬攔截：即時報價正大幅向上反彈 "
+                            f"(price={price:.6f} > close={eval_f_c:.6f})，嚴防逆勢追空！"
                         )
                         return False
 

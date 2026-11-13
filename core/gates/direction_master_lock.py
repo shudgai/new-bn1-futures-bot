@@ -212,14 +212,21 @@ def extract_direction_metrics_from_frame(frame: Any) -> Optional[Dict[str, float
     if len(closed_df) < 2:
         return None
 
-    # 計算或讀取 MA5、MA15 與 KC 中軌。
+    # 計算或讀取 MA5、MA15 與 KC 中軌（若盤中動態棒欄位為 NaN 則以 close 即時補值，避免誤報 DATA_INVALID）。
     c_df = closed_df.copy()
+    close_num = pd.to_numeric(c_df["close"], errors="coerce").astype(float)
     if "ma5" not in c_df.columns:
-        c_df["ma5"] = c_df["close"].rolling(5, min_periods=5).mean()
+        c_df["ma5"] = close_num.rolling(5, min_periods=5).mean()
+    elif pd.to_numeric(c_df["ma5"], errors="coerce").iloc[-2:].isna().any():
+        c_df["ma5"] = pd.to_numeric(c_df["ma5"], errors="coerce").fillna(close_num.rolling(5, min_periods=5).mean())
     if "ma15" not in c_df.columns:
-        c_df["ma15"] = c_df["close"].rolling(15, min_periods=1).mean()
+        c_df["ma15"] = close_num.rolling(15, min_periods=1).mean()
+    elif pd.to_numeric(c_df["ma15"], errors="coerce").iloc[-2:].isna().any():
+        c_df["ma15"] = pd.to_numeric(c_df["ma15"], errors="coerce").fillna(close_num.rolling(15, min_periods=1).mean())
     if "kc_middle" not in c_df.columns:
-        c_df["kc_middle"] = c_df["close"].ewm(span=20, adjust=False).mean()
+        c_df["kc_middle"] = close_num.ewm(span=20, adjust=False).mean()
+    elif pd.to_numeric(c_df["kc_middle"], errors="coerce").iloc[-2:].isna().any():
+        c_df["kc_middle"] = pd.to_numeric(c_df["kc_middle"], errors="coerce").fillna(close_num.ewm(span=20, adjust=False).mean())
 
     curr_row = c_df.iloc[-1]
     prev_row = c_df.iloc[-2]

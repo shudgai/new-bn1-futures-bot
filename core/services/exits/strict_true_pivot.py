@@ -24,7 +24,10 @@ PIVOT_MIN_PROFIT_ATR = 1.0
 
 
 def evaluate_position_exit(
-    position: Dict[str, Any], frame: Optional[pd.DataFrame],
+    position: Dict[str, Any],
+    frame: Optional[pd.DataFrame],
+    *,
+    require_kc_middle_break: bool = True,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """Qualify ordinary exits; this alone never supplies pivot/order authority."""
     logger = logging.getLogger(__name__)
@@ -81,8 +84,9 @@ def evaluate_position_exit(
             confirmation_bar_id=current["timestamp"], reference_atr=atr,
             kc_middle=current["kc_middle"], confirmation_close=current["close"],
             confirmation_ma5=current["ma5"], confirmation_ma15=current["ma15"],
+            kc_middle_break_required=require_kc_middle_break,
         )
-        if distance >= -0.5 * atr:
+        if require_kc_middle_break and distance >= -0.5 * atr:
             return reject(f"VETO_HOLD_{side}_050_ATR_BUFFER")
         if sign * (current["close"] - current["open"]) >= 0:
             return reject(f"VETO_HOLD_{side}_DIRECTIONAL_CANDLE")
@@ -105,7 +109,7 @@ def evaluate_position_exit(
             peak_gain_atr=gain / atr, retreat_atr=retreat / atr,
             structure_broken=structure, trailing_qualified=trailing,
         )
-        if not structure:
+        if require_kc_middle_break and not structure:
             return reject(f"VETO_HOLD_{side}_STRUCTURE_AND_TRAIL_NOT_READY")
         return True, "MA5_050_ATR_STRUCTURE_QUALIFIED", details
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -180,7 +184,9 @@ def profitable_true_pivot_exit(
         return None
     if not pivot_min_profit_reached(position, frame, quote):
         return None
-    structure_allowed, _, structure_details = evaluate_position_exit(position, frame)
+    structure_allowed, _, structure_details = evaluate_position_exit(
+        position, frame, require_kc_middle_break=False,
+    )
     if not structure_allowed:
         return None
     pending = pending_confirmed_pivot_exit(position, metadata, key=PROFIT_PIVOT_PENDING_KEY)
@@ -211,6 +217,10 @@ def profitable_true_pivot_exit(
             return None
     elif pending is not None:
         logging.getLogger(__name__).error("Rejected missing profit-pivot pending policy")
+        return None
+    if quote is not None and not profit_pivot_net_positive(position, quote):
+        return None
+    if not pivot_min_profit_reached(position, frame, quote):
         return None
     identity = _position_identity(position)
     if identity is None or not isinstance(frame, pd.DataFrame):

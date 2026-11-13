@@ -164,9 +164,41 @@ def validate_entry_math(
     )
 
     # ── 方向總開關 (Direction Master Lock) 絕對一票否決 ──
+    peak_valley_verified = False
+    pv_flip_verified = False
+    if frame_attrs.get("is_peak_valley_inflection") or frame_attrs.get("is_pv_flip"):
+        import pandas as pd
+        if isinstance(frame, pd.DataFrame) and len(frame) >= 15:
+            from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+            from core.services.low_latency_exit import unwrap_frame_ref
+            f5m_raw = frame_attrs.get("frame_5m")
+            if f5m_raw is None and isinstance(getattr(frame, "attrs", None), dict):
+                f5m_raw = frame.attrs.get("frame_5m")
+            f5m = unwrap_frame_ref(f5m_raw)
+            pv_res = evaluate_peak_valley_inflection_entry(
+                frame, symbol=symbol, df_5m=f5m, require_directional_candle=True,
+            )
+            peak_valley_verified = (pv_res.get("action") == f"OPEN_{side}" and not pv_res.get("is_consolidation"))
+            if not peak_valley_verified and frame_attrs.get("is_pv_flip"):
+                from core.services.low_latency_exit import verify_pv_flip_entry_authority
+                pv_live_p = float(frame["close"].iloc[-1])
+                pv_flip_verified = verify_pv_flip_entry_authority(
+                    frame, side=side, live_price=pv_live_p, context=frame_attrs, symbol=symbol,
+                )
+                if pv_flip_verified:
+                    peak_valley_verified = True
+
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, _ = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
-    if not dir_lock_pass and not outer_pivot_authorized and not meme_authorized:
+    pv_lag_exempt = pv_flip_verified or (peak_valley_verified and dir_lock_reason in {
+        "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID",
+        "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID",
+        "BLOCKED_DIRECTION_LOCK_LONG_MA5_BELOW_SLOW",
+        "BLOCKED_DIRECTION_LOCK_SHORT_MA5_ABOVE_SLOW",
+        "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+        "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
+    })
+    if not dir_lock_pass and not outer_pivot_authorized and not meme_authorized and not pv_lag_exempt:
         return False, dir_lock_reason
 
     # The final account gate must enforce MA5 direction for every entry class.
@@ -176,6 +208,7 @@ def validate_entry_math(
         outer_pivot_authorized
         or meme_pivot_authorized
         or is_swing_pivot
+        or peak_valley_verified
         or frame_attrs.get("is_pivot_flip_override")
     )
     if side == "LONG" and ma5 <= previous_ma5 and not allow_override and not pivot_guard_override:
@@ -232,7 +265,7 @@ def validate_entry_math(
     is_outer = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
 
     # In-channel entries: reject squeeze chop
-    if not is_outer and not allow_override:
+    if not is_outer and not allow_override and not peak_valley_verified:
         kc_width = upper - lower
         if kc_width < (atr * 1.5):
             return False, "BLOCKED_ENTRY_KC_CHANNEL_SQUEEZE_CHOP"
@@ -240,9 +273,9 @@ def validate_entry_math(
     # 做多必須站在中軌與 MA15 之上，做空必須在下方
     # 放寬中軌/MA15 緩衝區（0.15 ATR）：允許反抽假刺穿或短暫回測中軌/MA15 時，不被直接 1 票秒殺
     retest_buffer = 0.15 * atr
-    if side == "LONG" and not is_swing_pivot and not allow_override and (close < latest_middle - retest_buffer or close < ma15 - retest_buffer):
+    if side == "LONG" and not is_swing_pivot and not allow_override and not peak_valley_verified and (close < latest_middle - retest_buffer or close < ma15 - retest_buffer):
         return False, "BLOCKED_LONG_BELOW_MIDLINE_OR_MA15"
-    if side == "SHORT" and not is_swing_pivot and not allow_override and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
+    if side == "SHORT" and not is_swing_pivot and not allow_override and not peak_valley_verified and (close > latest_middle + retest_buffer or close > ma15 + retest_buffer):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE_OR_MA15"
     if (
         side == "LONG" and allow_override and not outer_pivot_authorized
@@ -404,17 +437,17 @@ def validate_entry_math(
 
         return True, "ENTRY_MATH_APPROVED"
 
-    max_ma15_dist_atr = 3.0 if allow_override else 1.5
+    max_ma15_dist_atr = 3.0 if (allow_override or peak_valley_verified) else 1.5
     ma_tol_atr = 0.5 if allow_override else 0.05
     if side == "LONG":
-        # 開多允許：MA5 > MA15，且 MA5 向上發散；或者當前價已站上 MA15/KC中軌 且處於上行狀態
-        if not (ma5 >= ma15 - ma_tol_atr * atr and (ma5 > previous_ma5 or (close > ma15 and ma15 >= previous_ma15) or allow_override)):
+        # 開多允許：MA5 > MA15，且 MA5 向上發散；或已驗證峰谷轉向谷底起漲（MA5 轉折向上）
+        if not peak_valley_verified and not (ma5 >= ma15 - ma_tol_atr * atr and (ma5 > previous_ma5 or (close > ma15 and ma15 >= previous_ma15) or allow_override)):
             return False, "BLOCKED_ENTRY_MATH_LONG_MA_ALIGNMENT"
         if close - ma15 > max_ma15_dist_atr * atr:
             return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
     else:
-        # 開空允許：MA5 < MA15，且 MA5 向下發散；或者當前價已跌破 MA15/KC中軌 且處於下行狀態
-        if not (ma5 <= ma15 + ma_tol_atr * atr and (ma5 < previous_ma5 or (close < ma15 and ma15 <= previous_ma15) or allow_override)):
+        # 開空允許：MA5 < MA15，且 MA5 向下發散；或已驗證峰谷轉向波峰起跌（MA5 轉折向下）
+        if not peak_valley_verified and not (ma5 <= ma15 + ma_tol_atr * atr and (ma5 < previous_ma5 or (close < ma15 and ma15 <= previous_ma15) or allow_override)):
             return False, "BLOCKED_ENTRY_MATH_SHORT_MA_ALIGNMENT"
         if ma15 - close > max_ma15_dist_atr * atr:
             return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
@@ -1030,7 +1063,31 @@ async def validate_entry_at_execution(
         (payload.get("manual_entry") is True or payload.get("source") == "MANUAL")
         and not payload.get("entry_method_authority")
     )
-    if not manual_entry and payload.get("entry_authority") != "WAIT":
+    pv_exec_verified = False
+    pv_exec_flip_verified = False
+    if (payload.get("is_peak_valley_inflection") or payload.get("is_pv_flip")) and frame is not None:
+        from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+        from core.services.low_latency_exit import unwrap_frame_ref
+        frame_5m_raw = payload.get("frame_5m")
+        if frame_5m_raw is None and isinstance(getattr(frame, "attrs", None), dict):
+            frame_5m_raw = frame.attrs.get("frame_5m")
+        pv_exec_5m = unwrap_frame_ref(frame_5m_raw)
+        pv_exec = evaluate_peak_valley_inflection_entry(
+            frame, live_price=meme_quote, symbol=symbol, df_5m=pv_exec_5m, require_directional_candle=True,
+        )
+        pv_exec_verified = (pv_exec.get("action") == f"OPEN_{side}" and not pv_exec.get("is_consolidation"))
+        if not pv_exec_verified and payload.get("is_pv_flip"):
+            from core.services.low_latency_exit import verify_pv_flip_entry_authority
+            pv_exec_flip_verified = verify_pv_flip_entry_authority(
+                frame,
+                side=side,
+                live_price=float(meme_quote or 0.0),
+                context=payload,
+                symbol=symbol,
+            )
+            if pv_exec_flip_verified:
+                pv_exec_verified = True
+    if not manual_entry and not pv_exec_verified and payload.get("entry_authority") != "WAIT":
         meme_gate = evaluate_meme_entry_frame(
             frame, symbol, side, meme_quote,
             last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
@@ -1086,8 +1143,16 @@ async def validate_entry_at_execution(
 
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, dir_details = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
+    pv_exec_lag_exempt = pv_exec_flip_verified or (pv_exec_verified and dir_lock_reason in {
+        "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID",
+        "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID",
+        "BLOCKED_DIRECTION_LOCK_LONG_MA5_BELOW_SLOW",
+        "BLOCKED_DIRECTION_LOCK_SHORT_MA5_ABOVE_SLOW",
+        "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+        "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
+    })
     from core.services.entry_methods import MEME_GATE_ENTRY
-    if not dir_lock_pass and not outer_pivot_authorized and not (
+    if not dir_lock_pass and not outer_pivot_authorized and not pv_exec_lag_exempt and not (
         entry_method_authorized and entry_method_authority == MEME_GATE_ENTRY
     ):
         account_log = getattr(account, "log", None)
@@ -1282,7 +1347,13 @@ def validate_exit_at_execution(
     close_reason: str,
 ) -> tuple[bool, str, dict[str, Any]]:
     provider = getattr(account, "channel_exit_frame_provider", None)
-    frame = provider(symbol) if callable(provider) else None
+    frame = None
+    if callable(provider):
+        maybe_frame = provider(symbol)
+        if hasattr(maybe_frame, "__await__"):
+            maybe_frame.close()
+        else:
+            frame = maybe_frame
     if frame is None:
         frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
     if frame is None:
@@ -1291,6 +1362,21 @@ def validate_exit_at_execution(
     metadata = getattr(account, "position_meta", {}).get(symbol, {})
     if str(close_reason or "").strip() == "手動平倉":
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
+    from core.services.low_latency_exit import (
+        evaluate_peak_valley_exit,
+        is_peak_valley_exit_authorized_reason,
+    )
+    if is_peak_valley_exit_authorized_reason(close_reason):
+        pv_eval = evaluate_peak_valley_exit(
+            frame,
+            position=position,
+            live_price=price,
+            metadata=metadata if isinstance(metadata, Mapping) else None,
+            symbol=symbol,
+        )
+        if not pv_eval.get("should_exit"):
+            return False, "BLOCKED_PEAK_VALLEY_EXIT_NOT_CONFIRMED", pv_eval.get("metrics", {})
+        return True, "PEAK_VALLEY_LOW_LATENCY_EXIT_APPROVED", pv_eval.get("metrics", {})
     from core.services.exits.authorized_position_exit import (
         automated_position_exit_allowed, strategy_exit_bar_block_reason,
     )

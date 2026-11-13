@@ -197,7 +197,11 @@ def test_meme_coin_breakout_cannot_exceed_one_atr_ma15_limit():
     # 驗證不再被 VETO_KC_OUTER_OVEREXTENSION 阻斷
     assert not gate_res.passed
     # Big-body breakouts measure bias from open but are capped at 0.8 ATR beyond the rail.
-    assert gate_res.reason in {"BLOCKED_LONG_MA15_EXTENSION_1_ATR", "BLOCKED_LONG_KC_BAND_EXTENSION"}
+    assert gate_res.reason in {
+        "VETO_MA15_BIAS_EXTENSION",
+        "BLOCKED_LONG_MA15_EXTENSION_1_ATR",
+        "BLOCKED_LONG_KC_BAND_EXTENSION",
+    }
 
 
 def test_lobster_1055_dead_cross_slope_down_long_vetoed():
@@ -239,3 +243,32 @@ def test_lobster_1055_dead_cross_slope_down_long_vetoed():
     )
     assert res.passed is False
     assert "DIRECTION_LOCK" in res.reason or "BLOCKED" in res.reason
+
+
+def test_direction_lock_fills_live_bar_nan_indicators():
+    """盤中動態棒預計算 ma5/ma15/kc_middle 為 NaN 時，須由 close 自動補值而不可誤報 DATA_INVALID。"""
+    closes = [0.004600 - i * 0.000003 for i in range(21)]
+    close_s = pd.Series(closes)
+    ma5_s = close_s.rolling(5, min_periods=5).mean()
+    ma15_s = close_s.rolling(15, min_periods=1).mean()
+    kcm_s = close_s.ewm(span=20, adjust=False).mean()
+    rows = []
+    for i, c in enumerate(closes):
+        is_last = i == len(closes) - 1
+        rows.append({
+            "timestamp": (i + 1) * 60_000,
+            "open": c + 0.000001,
+            "high": c + 0.000002,
+            "low": c - 0.000001,
+            "close": c,
+            "ma5": float("nan") if is_last else float(ma5_s.iloc[i]),
+            "ma15": float("nan") if is_last else float(ma15_s.iloc[i]),
+            "kc_middle": float("nan") if is_last else float(kcm_s.iloc[i]),
+            "is_closed": not is_last,
+        })
+    df = pd.DataFrame(rows)
+    df.attrs["is_agile_trigger"] = True
+    ok, reason, details = check_direction_lock_from_frame(df, "SHORT")
+    assert reason != "BLOCKED_DIRECTION_LOCK_DATA_INVALID"
+    assert ok is True, f"{reason}: {details}"
+    assert reason == "DIRECTION_LOCK_PASS", details

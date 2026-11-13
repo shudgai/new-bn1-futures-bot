@@ -261,6 +261,39 @@ def ma_parallel_chop_problem(frame, side, quote=None):
         return "BLOCKED_MA_PARALLEL_DATA_INVALID"
 
 
+def _is_pv_entry_verified(frame, side, *, quote=None, symbol=None):
+    """複驗峰谷轉向或條件反手授權（共用 helpers，避免重複判斷與漏傳 symbol）。"""
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict) or not (attrs.get("is_peak_valley_inflection") or attrs.get("is_pv_flip")):
+        return False, False
+    from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+
+    pv_eval = evaluate_peak_valley_inflection_entry(
+        frame, live_price=quote, symbol=symbol, require_directional_candle=True,
+    )
+    pv_verified = (
+        pv_eval.get("action") == f"OPEN_{side}"
+        and not pv_eval.get("is_consolidation")
+    )
+    pv_flip_verified = False
+    if not pv_verified and attrs.get("is_pv_flip"):
+        from core.services.low_latency_exit import verify_pv_flip_entry_authority
+
+        fallback_price = quote
+        if fallback_price is None and hasattr(frame, "iloc") and len(frame) > 0:
+            fallback_price = frame.iloc[-1].get("close")
+        pv_flip_verified = verify_pv_flip_entry_authority(
+            frame,
+            side=side,
+            live_price=float(fallback_price or 0.0),
+            context=attrs,
+            symbol=symbol,
+        )
+        if pv_flip_verified:
+            pv_verified = True
+    return pv_verified, pv_flip_verified
+
+
 def ma5_ma15_entry_gate_problem(
     frame, side, quote=None, *, entry_confirmation=None,
     is_continuation_entry=False, is_instant_breakout=False,
@@ -297,7 +330,10 @@ def ma5_ma15_entry_gate_problem(
     )
     if structure_problem:
         return structure_problem
-    if is_confirmed_outer_entry or is_manual:
+    pv_verified, _ = _is_pv_entry_verified(
+        frame, normalized_side, quote=quote, symbol=symbol,
+    )
+    if is_confirmed_outer_entry or is_manual or pv_verified:
         return None
     return ma_parallel_chop_problem(frame, normalized_side, quote=quote)
 
@@ -445,7 +481,14 @@ def market_structure_gate_problem(
             min_gap=f"{min_gap:.8f}",
         )
 
-        if not is_manual and not is_confirmed_outer_entry and not is_relaxed_ma_entry and enforce_ma_direction:
+        pv_verified, pv_flip_verified = _is_pv_entry_verified(
+            frame,
+            normalized_side,
+            quote=float(quote or current_price),
+            symbol=symbol,
+        )
+
+        if not is_manual and not pv_verified and not is_confirmed_outer_entry and not is_relaxed_ma_entry and enforce_ma_direction:
             # 破軌加速與中軌放行：若價格已破下軌且在 MA5 之下，或突破上軌且在 MA5 之上，絕不因滯後的 MA15 斜率阻斷！
             is_breakout_action = (
                 (normalized_side == "SHORT" and current_price <= values["kc_lower"][-1] and current_price <= values["ma5"][-1])
@@ -457,7 +500,7 @@ def market_structure_gate_problem(
                 if normalized_side == "SHORT" and slopes["MA15"] > 0:
                     return veto("VETO_BLOCKED_SHORT_ON_RISING_MA15")
 
-        if not is_manual:
+        if not is_manual and not pv_verified:
             if relaxed_continuation and not is_confirmed_outer_entry:
                 continuation_rail = float(
                     values["kc_upper" if normalized_side == "LONG" else "kc_lower"][-1]
@@ -479,12 +522,12 @@ def market_structure_gate_problem(
                     if abs(slope) < 0.00015:
                         return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
-        if not is_manual and not is_confirmed_outer_entry and not is_relaxed_ma_entry and gap < min_gap:
+        if not is_manual and not pv_verified and not is_confirmed_outer_entry and not is_relaxed_ma_entry and gap < min_gap:
             return veto(
                 f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
             )
 
-        if not is_confirmed_outer_entry and not is_relaxed_ma_entry and not is_manual:
+        if not is_confirmed_outer_entry and not is_relaxed_ma_entry and not is_manual and not pv_verified:
             window = 10
             ma_diff = values["ma5"][-window:] - values["ma15"][-window:]
             crosses = np.flatnonzero(np.diff(np.sign(ma_diff)))
@@ -500,7 +543,7 @@ def market_structure_gate_problem(
                         f"(bars_since_cross: {bars_since_last_cross})"
                     )
 
-        if not is_confirmed_outer_entry and not is_relaxed_ma_entry and not is_manual:
+        if not is_confirmed_outer_entry and not is_relaxed_ma_entry and not is_manual and not pv_verified:
             ma5_diffs = np.diff(values["ma5"][-12:])
             direction_turns = np.flatnonzero(np.diff(np.sign(ma5_diffs)))
             if len(direction_turns) >= 3:
@@ -519,6 +562,8 @@ def market_structure_gate_problem(
                 (ma5 > ma15 and ma5_rising and ma5 > previous_ma5)
                 or (is_relaxed_ma_entry and current_price >= values["kc_middle"][-1] and ma5 >= ma15)
                 or (is_continuation_entry and current_price > values["kc_middle"][-1] and current_price >= ma5)
+                or (pv_verified and ma5 > previous_ma5)
+                or pv_flip_verified
             )
             if not long_ma_aligned:
                 return veto("VETO_LONG_MA_CONDITION_NOT_MET")
@@ -527,6 +572,8 @@ def market_structure_gate_problem(
                 (ma5 < ma15 and ma5_falling and ma5 < previous_ma5)
                 or (is_relaxed_ma_entry and current_price <= values["kc_middle"][-1] and ma5 <= ma15)
                 or (is_continuation_entry and current_price < values["kc_middle"][-1] and current_price <= ma5)
+                or (pv_verified and ma5 < previous_ma5)
+                or pv_flip_verified
             )
             if not short_ma_aligned:
                 return veto("VETO_SHORT_MA_CONDITION_NOT_MET")
@@ -850,13 +897,33 @@ async def validate_account_entry(account, symbol, side, context):
                 fresh_meme_frame = scanned
             else:
                 raise ValueError("[FORBIDDEN_ENTRY] MEME_GATE_FRESH_FRAME_UNAVAILABLE")
-        meme_gate = evaluate_meme_entry_frame(
-            fresh_meme_frame, symbol, side, context.get("entry_gate_quote"),
-            last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
-            macro_trend=context.get("macro_trend"),
-        )
-        if not meme_gate.can_execute:
-            raise ValueError("[FORBIDDEN_ENTRY] " + meme_gate.reason)
+        pv_bypass_meme_kc_lock = False
+        if context.get("is_peak_valley_inflection") or context.get("is_pv_flip"):
+            from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+            pv_res = evaluate_peak_valley_inflection_entry(
+                fresh_meme_frame,
+                live_price=context.get("entry_gate_quote"),
+                symbol=symbol,
+                require_directional_candle=True,
+            )
+            pv_bypass_meme_kc_lock = (pv_res.get("action") == f"OPEN_{side}" and not pv_res.get("is_consolidation"))
+            if not pv_bypass_meme_kc_lock and context.get("is_pv_flip"):
+                from core.services.low_latency_exit import verify_pv_flip_entry_authority
+                pv_bypass_meme_kc_lock = verify_pv_flip_entry_authority(
+                    fresh_meme_frame,
+                    side=side,
+                    live_price=float(context.get("entry_gate_quote") or 0.0),
+                    context=context,
+                    symbol=symbol,
+                )
+        if not pv_bypass_meme_kc_lock:
+            meme_gate = evaluate_meme_entry_frame(
+                fresh_meme_frame, symbol, side, context.get("entry_gate_quote"),
+                last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
+                macro_trend=context.get("macro_trend"),
+            )
+            if not meme_gate.can_execute:
+                raise ValueError("[FORBIDDEN_ENTRY] " + meme_gate.reason)
     from core.services.entry_methods import (
         KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY,
         THREE_BAR_PIVOT_REVERSAL, MA5_MA15_CROSS, POST_CLOSE_KC_REENTRY, ENTRY_METHODS,
@@ -1623,7 +1690,8 @@ async def validate_account_entry(account, symbol, side, context):
         }
 
     code = context.get('entry_signal_code')
-    if code not in ENTRY_CODES:
+    is_pv_route = bool(context.get("is_pv_flip") or context.get("is_peak_valley_inflection"))
+    if not is_pv_route and code not in ENTRY_CODES:
         from core.gates.pipeline import pipeline
         regime_problem = pipeline.market_regime_problem(symbol)
         if regime_problem:
@@ -1660,6 +1728,59 @@ async def validate_account_entry(account, symbol, side, context):
     if frame is None or not frame.attrs.get('entry_finality_verified'):
         raise ValueError('[FORBIDDEN_ENTRY] 收線資料尚未通過獨立取樣確認')
     quote = float(frame.iloc[-1]['close'])
+    if context.get("is_pv_flip"):
+        from core.services.low_latency_exit import verify_pv_flip_entry_authority
+
+        flip_quote = float(context.get("entry_gate_quote") or quote)
+        if not verify_pv_flip_entry_authority(
+            frame, side=side, live_price=flip_quote, context=context, symbol=symbol,
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] BLOCKED_PV_CONDITIONAL_FLIP_REVALIDATION")
+        return {
+            "type": str(context.get("entry_type") or f"PEAK_VALLEY_FLIP_{side}"),
+            "side": side,
+            "entry_mode": "WILD_SWING",
+            "entry_phase": "PV_CONDITIONAL_FLIP",
+            "price": flip_quote,
+        }
+    if context.get("is_peak_valley_inflection"):
+        from core.services.low_latency_entry import evaluate_peak_valley_inflection_entry
+        from core.services.low_latency_exit import unwrap_frame_ref
+        from core.services.entry_contract import (
+            opposite_side_close_cooldown_problem,
+            same_bar_close_entry_problem,
+            same_side_anti_churn_problem,
+        )
+
+        pv_quote = float(context.get("entry_gate_quote") or quote)
+        frame_5m_raw = context.get("frame_5m")
+        if frame_5m_raw is None and isinstance(getattr(frame, "attrs", None), dict):
+            frame_5m_raw = frame.attrs.get("frame_5m")
+        pv_5m = unwrap_frame_ref(frame_5m_raw)
+        pv_reval = evaluate_peak_valley_inflection_entry(
+            frame, live_price=pv_quote, symbol=symbol, df_5m=pv_5m, require_directional_candle=True,
+        )
+        if pv_reval.get("action") != f"OPEN_{side}" or pv_reval.get("is_consolidation"):
+            raise ValueError(
+                "[FORBIDDEN_ENTRY] BLOCKED_PEAK_VALLEY_REVALIDATION:"
+                + str(pv_reval.get("consolidation_reason") or pv_reval.get("reason") or "HOLD")
+            )
+        churn_problem = same_side_anti_churn_problem(account, symbol, frame, side, pv_quote)
+        if churn_problem:
+            raise ValueError('[FORBIDDEN_ENTRY] ' + churn_problem)
+        same_bar_problem = same_bar_close_entry_problem(account, symbol, frame, side)
+        if same_bar_problem:
+            raise ValueError('[FORBIDDEN_ENTRY] ' + same_bar_problem)
+        opposite_cooldown_problem = opposite_side_close_cooldown_problem(account, symbol, frame, side)
+        if opposite_cooldown_problem:
+            raise ValueError('[FORBIDDEN_ENTRY] ' + opposite_cooldown_problem)
+        return {
+            "type": str(context.get("entry_type") or f"PEAK_VALLEY_INFLECTION_{side}"),
+            "side": side,
+            "entry_mode": "WILD_SWING",
+            "entry_phase": "PEAK_VALLEY_INFLECTION",
+            "price": pv_quote,
+        }
     is_peak_flip = code == 'AUTHORIZED_BY_PEAK_FLIP_SHORT' and side == 'SHORT'
     if is_peak_flip:
         # Rebuild the matched close plus fresh bearish-body authority at the

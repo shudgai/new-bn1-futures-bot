@@ -85,6 +85,18 @@ class UltimateExitGatekeeper:
             logger.error("ULTIMATE_EXIT_INVALID_PRICE symbol=%s price=%s", symbol, price)
             return False
 
+        normalized_reason = str(reason or "").upper()
+        from core.services.exits.kc_true_extreme_exit import (
+            pending_kc_true_extreme_exit,
+        )
+        pending_kc_exit = pending_kc_true_extreme_exit(position, metadata)
+        if (
+            pending_kc_exit is not None
+            and pending_kc_exit[1].get("cause") == "THREE_POINT_CONFIRMED_PIVOT"
+            and normalized_reason.endswith(str(pending_kc_exit[0]).upper())
+        ):
+            return True
+
         # 🚀 ACTIVE_EXIT 授權：主動鎖盈平倉、峰頂吞噬/RSI下彎、追蹤止盈、破MA5及時平倉
         if "ACTIVE_EXIT" in str(reason).upper():
             logger.info("⚡ [ULTIMATE_EXIT_ALLOWED] symbol=%s ACTIVE_EXIT 授權通過: reason=%s", symbol, reason)
@@ -122,7 +134,6 @@ class UltimateExitGatekeeper:
         if strategy_exit_bar_block_reason(position, metadata):
             return False
 
-        normalized_reason = str(reason or "").upper()
         from core.services.exits.strict_true_pivot import (
             PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,
         )
