@@ -363,6 +363,77 @@ def test_execution_manager_pipeline_opens_peak_short_when_kc_middle_rising(monke
     assert account.positions["ETH/USDT"]["side"] == "SHORT"
 
 
+@pytest.mark.parametrize(
+    "side,invalid_history",
+    [("LONG", False), ("SHORT", False), ("LONG", True)],
+)
+def test_execution_manager_recomputes_missing_live_ma_before_final_entry_guard(side, invalid_history):
+    import asyncio
+    from types import SimpleNamespace
+    from core.services.execution_manager import ExecutionManager
+
+    closes = [100.0 + index if side == "LONG" else 119.0 - index for index in range(20)]
+    rows = []
+    start = int(time.time() // 60) * 60_000 - 20 * 60_000
+    for index, close in enumerate(closes):
+        open_price = close - 0.25 if side == "LONG" else close + 0.25
+        middle = 90.0 + index * 0.2 if side == "LONG" else 125.0 - index * 0.2
+        rows.append({
+            "timestamp": start + index * 60_000,
+            "open": open_price,
+            "high": max(open_price, close) + 0.5,
+            "low": min(open_price, close) - 0.5,
+            "close": close,
+            "kc_middle": middle,
+            "ma5": pd.Series(closes[: index + 1]).rolling(5, min_periods=5).mean().iloc[-1],
+            "ma15": pd.Series(closes[: index + 1]).rolling(15, min_periods=15).mean().iloc[-1],
+            "atr": 1.0,
+            "is_closed": True,
+        })
+    live_open = closes[-1]
+    live_quote = live_open + 1.0 if side == "LONG" else live_open - 1.0
+    rows.append({
+        "timestamp": start + 20 * 60_000,
+        "open": live_open,
+        "high": max(live_open, live_quote) + 0.1,
+        "low": min(live_open, live_quote) - 0.1,
+        "close": live_open,
+        "kc_middle": rows[-1]["kc_middle"],
+        "ma5": float("nan"),
+        "ma15": float("nan"),
+        "atr": 1.0,
+        "is_closed": False,
+    })
+    if invalid_history:
+        rows[10]["timestamp"] = rows[9]["timestamp"]
+    frame = pd.DataFrame(rows)
+    frame.attrs["timeframe_ms"] = 60_000
+    submitted = []
+
+    async def open_account_position(**kwargs):
+        submitted.append(kwargs)
+        return True
+
+    account = SimpleNamespace(
+        positions={},
+        closing_lock=set(),
+        get_wallet_balance=lambda: 100.0,
+        get_available_balance=lambda: 100.0,
+        open_position=open_account_position,
+    )
+    opened = asyncio.run(ExecutionManager.open_position(
+        account,
+        "ETH/USDT",
+        side,
+        live_quote,
+        reason="EntryMethod:TEST",
+        meta={"raw_df": frame, "atr": 1.0},
+    ))
+
+    assert opened is (not invalid_history)
+    assert len(submitted) == (0 if invalid_history else 1)
+
+
 def test_meme_gate_entry_failure_releases_bar_claim(monkeypatch, tmp_path):
     import asyncio
     from types import SimpleNamespace

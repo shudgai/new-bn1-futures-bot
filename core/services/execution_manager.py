@@ -5879,6 +5879,19 @@ class ExecutionManager:
                 live_ma5 = float(last_f_row.get("ma5", prev_f_row.get("ma5", 0.0)))
                 prev_ma5 = float(prev_f_row.get("ma5", live_ma5))
                 live_ma15 = float(last_f_row.get("ma15", prev_f_row.get("ma15", 0.0)))
+                if not bool(last_f_row.get("is_closed", True)):
+                    from core.services.ma5_entry_slope import quote_adjusted_entry_mas
+
+                    live_mas = quote_adjusted_entry_mas(frame, current_price)
+                    if live_mas is None:
+                        cls._last_open_error[symbol] = "BLOCKED_INVALID_LIVE_MA_DATA"
+                        logger.critical(
+                            "BLOCKED_INVALID_LIVE_MA_DATA symbol=%s bar=%s",
+                            symbol,
+                            last_f_row.get("timestamp"),
+                        )
+                        return False
+                    live_ma5, prev_ma5, live_ma15 = live_mas
 
                 if side.upper() == "LONG":
                     # 開多單三大必要條件：

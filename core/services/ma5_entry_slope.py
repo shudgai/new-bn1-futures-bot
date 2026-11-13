@@ -2,8 +2,60 @@
 import math
 from typing import Optional
 
+import numpy as np
+
 # Entry authorization requires directional slope, not a minimum ATR magnitude.
 MIN_MA5_SLOPE_ATR = 0.0
+
+
+def quote_adjusted_entry_mas(frame, quote):
+    """Return live MA5, last-closed MA5, and live MA15 for an explicit live bar."""
+    try:
+        if frame is None or len(frame) < 2 or "is_closed" not in frame.columns:
+            return None
+        live = frame.iloc[-1]
+        if not isinstance(live["is_closed"], (bool, np.bool_)) or bool(live["is_closed"]):
+            return None
+
+        quote = float(quote)
+        if not math.isfinite(quote) or quote <= 0:
+            return None
+
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(frame)
+        if len(closed) < 15 or "close" not in closed.columns or "timestamp" not in closed.columns:
+            return None
+        closes = [float(value) for value in closed["close"].tail(15)]
+        if len(closes) != 15 or not all(math.isfinite(value) and value > 0 for value in closes):
+            return None
+
+        interval = frame.attrs.get("timeframe_ms")
+        previous_stamp = float(closed.iloc[-2]["timestamp"])
+        closed_stamp = float(closed.iloc[-1]["timestamp"])
+        live_stamp = float(live["timestamp"])
+        if interval is None:
+            interval = closed_stamp - previous_stamp
+        interval = float(interval)
+        gap = live_stamp - closed_stamp
+        accepted_gaps = (
+            (interval, interval / 1000.0)
+            if interval >= 1000
+            else (interval, interval * 1000.0)
+        )
+        if (
+            not all(math.isfinite(value) and value > 0 for value in (interval, previous_stamp, closed_stamp, live_stamp))
+            or not any(math.isclose(gap, expected, rel_tol=1e-12, abs_tol=0) for expected in accepted_gaps)
+        ):
+            return None
+
+        live_ma5 = (sum(closes[-4:]) + quote) / 5.0
+        previous_ma5 = sum(closes[-5:]) / 5.0
+        live_ma15 = (sum(closes[-14:]) + quote) / 15.0
+        values = (live_ma5, previous_ma5, live_ma15)
+        return values if all(math.isfinite(value) and value > 0 for value in values) else None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def live_ma5_slope_atr(frame, quote):
