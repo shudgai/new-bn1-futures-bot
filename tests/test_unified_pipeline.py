@@ -371,6 +371,79 @@ async def test_dual_trend_reversal_retries_after_entry_gate_veto(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_confirmed_dual_trend_reversal_closes_then_opens_in_same_pass(monkeypatch):
+    from types import SimpleNamespace
+    from core.paper_account import PaperAccount
+    from core.gates.master_gate_funnel import MasterGateFunnel
+    from core.services.execution_manager import ExecutionManager
+    import time
+
+    symbol = "1000PEPE/USDT"
+    now_ms = int(time.time() // 60) * 60_000 - 60_000
+    account = PaperAccount()
+    account.positions[symbol] = {
+        "side": "SHORT",
+        "entry_price": 105.0,
+        "qty": 1.0,
+        "peak_roe": 0.08,
+        "margin": 21.0,
+        "leverage": 5,
+        "open_timestamp": (now_ms - 30 * 60_000) / 1000,
+    }
+
+    bars = []
+    for i in range(30):
+        close = 97.0 + i * 0.05
+        opened = close - 0.05
+        bars.append({
+            "timestamp": int(now_ms - (29 - i) * 60_000),
+            "open": opened,
+            "high": close + 0.1,
+            "low": opened - 0.1,
+            "close": close,
+            "volume": 100.0,
+            "is_closed": True,
+        })
+    frame = pd.DataFrame(bars)
+    frame.attrs.update(
+        timeframe_ms=60_000,
+        snapshot_ms=now_ms + 60_000,
+        macro_trend_htf="BULLISH",
+    )
+    frame.loc[29, ["open", "high", "low", "close"]] = [98.1, 98.3, 98.0, 98.2]
+
+    allow = SimpleNamespace(can_execute=True, reason="PASS")
+    monkeypatch.setattr(
+        MasterGateFunnel, "pivot_kc_location_veto",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        MasterGateFunnel, "evaluate_open_long",
+        staticmethod(lambda *_args, **_kwargs: allow),
+    )
+
+    async def open_long(_cls, engine_or_account, symbol, side, price, reason, meta=None):
+        assert symbol not in engine_or_account.positions
+        engine_or_account.positions[symbol] = {
+            "side": side, "entry_price": price, "qty": 1.0,
+        }
+        return True
+
+    monkeypatch.setattr(ExecutionManager, "open_position", classmethod(open_long))
+    result = await ExecutionManager.process_symbol_pipeline(
+        symbol=symbol,
+        engine_or_account=account,
+        klines_df=frame,
+        quote=98.2,
+    )
+
+    assert result["status"] == "SUCCESS_FLIP"
+    assert account.trades[-1]["action"] == "CLOSE_SHORT"
+    assert account.positions[symbol]["side"] == "LONG"
+    assert "dual_trend_reversal_pending" not in account.entry_filter_last
+
+
+@pytest.mark.anyio
 async def test_replay_rejects_flat_ma15_midline_cross_without_room():
     """長時間黏合後單根反彈，仍須通過現行 MA5／KC 位置防線。"""
     from core.services.execution_manager import ExecutionManager

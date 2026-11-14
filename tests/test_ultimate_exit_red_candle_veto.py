@@ -339,6 +339,22 @@ def test_outer_rail_true_valley_or_peak_pivot_releases_in_profit(side):
         ),
     ]
     data = pd.DataFrame(rows)
+    quote = m(0.01706)
+    live_open = quote + 1e-5 if side == "SHORT" else quote - 1e-5
+    data.loc[len(data)] = {
+        "timestamp": now_minute * 60_000,
+        "open": live_open,
+        "high": max(live_open, quote),
+        "low": min(live_open, quote),
+        "close": quote,
+        "ma5": m(0.017044),
+        "ma15": m(0.017083),
+        "kc_middle": m(0.017099),
+        "kc_upper": max(m(0.017165), m(0.017033)),
+        "kc_lower": min(m(0.017165), m(0.017033)),
+        "atr": 0.000037,
+        "is_closed": False,
+    }
     data.attrs.update(timeframe_ms=60_000, snapshot_ms=time.time() * 1000)
     position = {
         "side": side,
@@ -346,15 +362,102 @@ def test_outer_rail_true_valley_or_peak_pivot_releases_in_profit(side):
         "qty": 29242.0,
         "open_timestamp": (now_minute - 10) * 60,
     }
-    quote = m(0.01706)
+    reason = (
+        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+        if side == "SHORT"
+        else "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
+    )
     result = UltimateShortExitGatekeeper.evaluate(
-        "龙虾/USDT", position, {}, "STRUCTURE_EXIT_PROBE", quote,
+        "龙虾/USDT", position, {}, reason, quote,
         frame=data, is_bar_closed=True,
     )
     assert result.verdict == "ALLOW"
     assert result.code == TRUE_OUTER_PIVOT_EXIT_REASONS[side]
     assert UltimateShortExitGatekeeper.can_execute_exit(
-        "龙虾/USDT", position, {}, result.code, quote,
+        "龙虾/USDT", position, {}, reason, quote,
         frame=data, is_bar_closed=True,
     )
+
+
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+@pytest.mark.parametrize("matching_identity", [True, False])
+def test_persisted_confirmed_pivot_overrides_live_favorable_candle_only_for_same_position(
+    side, matching_identity,
+):
+    now_minute = int(time.time() // 60)
+    closed = frame(side, 0.0046926, 0.0046979, FRESH_PREV_MA5)
+    quote = mirror(0.0046979, side)
+    live_open = quote + 1e-5 if side == "SHORT" else quote - 1e-5
+    kc_middle = mirror(MIDDLE, side)
+    kc_offset = 1.5 * ATR
+    closed.loc[len(closed)] = {
+        "timestamp": now_minute * 60_000,
+        "open": live_open,
+        "high": max(live_open, quote),
+        "low": min(live_open, quote),
+        "close": quote,
+        "ma5": mirror(0.00469292, side),
+        "ma15": mirror(0.004686927, side),
+        "kc_middle": kc_middle,
+        "kc_upper": kc_middle + kc_offset,
+        "kc_lower": kc_middle - kc_offset,
+        "atr": ATR,
+        "is_closed": False,
+    }
+    closed.attrs.update(timeframe_ms=60_000, snapshot_ms=time.time() * 1000)
+
+    opened = time.time() - 40 * 60
+    entry = quote + 0.0001 if side == "SHORT" else quote - 0.0001
+    position = {
+        "side": side,
+        "entry_price": entry,
+        "qty": 1.0,
+        "open_timestamp": opened,
+    }
+    identity = [side, opened, entry, 1.0]
+    if not matching_identity:
+        identity[1] += 60.0
+    exit_reason = (
+        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+        if side == "SHORT"
+        else "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
+    )
+    confirmed_pivot_reason = (
+        "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+        if side == "SHORT"
+        else "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+    )
+    position["kc_true_extreme_exit_state"] = {
+        "version": 1,
+        "identity": identity,
+        "pending": {
+            "reason": exit_reason,
+            "details": {
+                "cause": "THREE_POINT_CONFIRMED_PIVOT",
+                "confirmed_pivot_reason": confirmed_pivot_reason,
+                "pivot_bar_id": float(closed.iloc[-2]["timestamp"]),
+                "confirm_bar_id": float(closed.iloc[-1]["timestamp"]),
+            },
+        },
+    }
+
+    result = UltimateShortExitGatekeeper.evaluate(
+        "1000PEPE/USDT", position, {}, f"CHANNEL_SWING {exit_reason}", quote,
+        frame=closed, is_bar_closed=True,
+    )
+
+    if matching_identity:
+        assert result.verdict == "ALLOW"
+        assert result.code == (
+            "EXIT_SHORT_TRUE_VALLEY_BOTTOM"
+            if side == "SHORT"
+            else "EXIT_LONG_TRUE_PEAK_TOP"
+        )
+    else:
+        assert result.verdict == "HOLD"
+        assert result.code == (
+            "VETO_HOLD_SHORT_ON_FAVORABLE_RED_CANDLE"
+            if side == "SHORT"
+            else "VETO_HOLD_LONG_ON_FAVORABLE_GREEN_CANDLE"
+        )
 

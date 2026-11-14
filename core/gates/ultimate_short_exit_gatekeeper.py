@@ -123,9 +123,14 @@ def _float(value: Any) -> Optional[float]:
 
 def _normalized_exit_reason(reason: Any) -> str:
     normalized = str(reason or "").strip().upper()
-    prefix = "EXITGATE:"
-    while normalized.startswith(prefix):
-        normalized = normalized[len(prefix):].strip()
+    prefixes = ("EXITGATE:", "CHANNEL_SWING ")
+    changed = True
+    while changed:
+        changed = False
+        for prefix in prefixes:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):].strip()
+                changed = True
     return normalized
 
 
@@ -276,6 +281,8 @@ OWN_STRUCTURE_REASONS = frozenset(
      *(r.upper() for r in SHARP_REVERSAL_EXIT_REASONS.values()),
      *(r.upper() for r in MA5_ANGLE_REVERSAL_EXIT_REASONS.values()),
      *(r.upper() for r in KC_MIDDLE_SLOPE_EXIT_REASONS.values()),
+     "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
+     "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
      "EXIT_LONG_CONSECUTIVE_BEAR_CANDLES_PIVOT_TURN",
      "EXIT_SHORT_CONSECUTIVE_BULL_CANDLES_PIVOT_TURN",
      "EXIT_BY_STAGED_PROFIT_LOCK_TIER1",
@@ -593,6 +600,46 @@ def _outer_rail_true_pivot_release(
     return False
 
 
+def _has_matching_confirmed_kc_pivot(
+    side: str,
+    normalized_reason: str,
+    position: Mapping[str, Any],
+    metadata: Mapping[str, Any] | None,
+) -> bool:
+    expected_reason = {
+        "LONG": "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
+        "SHORT": "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+    }.get(side)
+    if normalized_reason != expected_reason:
+        return False
+
+    from core.services.exits.kc_true_extreme_exit import (
+        pending_kc_true_extreme_exit,
+    )
+
+    pending = pending_kc_true_extreme_exit(
+        dict(position),
+        dict(metadata) if isinstance(metadata, Mapping) else None,
+    )
+    if pending is None or pending[0] != expected_reason:
+        return False
+    details = pending[1]
+    expected_pivot_reason = (
+        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+        if side == "LONG"
+        else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+    )
+    pivot_bar_id = _float(details.get("pivot_bar_id"))
+    confirm_bar_id = _float(details.get("confirm_bar_id"))
+    return (
+        details.get("cause") == "THREE_POINT_CONFIRMED_PIVOT"
+        and details.get("confirmed_pivot_reason") == expected_pivot_reason
+        and pivot_bar_id is not None
+        and confirm_bar_id is not None
+        and confirm_bar_id > pivot_bar_id
+    )
+
+
 class UltimateShortExitGatekeeper:
     """Highest-priority exit veto; also mirrors the identical rules for LONG."""
 
@@ -710,6 +757,10 @@ class UltimateShortExitGatekeeper:
 
         if len(closed) < 2:
             return hold("VETO_EXIT_CLOSED_DATA_UNAVAILABLE")
+        if _has_matching_confirmed_kc_pivot(
+            side, normalized, position, metadata,
+        ):
+            return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
         if normalized in STRICT_TRUE_PIVOT_EXIT_CANDIDATES[side]:
             from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
@@ -832,6 +883,11 @@ class UltimateShortExitGatekeeper:
                 return hold(f"VETO_HOLD_{side}_COST_SHIELD")
             return hold(f"VETO_HOLD_{side}_OPPOSITE_BODY_REQUIRED")
 
+        if normalized in OWN_STRUCTURE_REASONS and _outer_rail_true_pivot_release(
+            symbol, side, closed, opened, entry, quote, is_bar_closed, current_time,
+        ):
+            return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
+
         # 🚨【使用者最高指示：K線若不是大瀑布、異常K，就要讓他走完，不要一開始就平倉；變回同向K線就可以不平倉（多空都要改）】
         # 若當前未收線 live K 棒已形成，且即時最新價/K 棒已變回順向同向 K（做空變回紅 K 陰線 quote <= live_open；做多變回綠 K 陽線 quote >= live_open），
         # 且非反向巨型瀑布（> 1.5 ATR 貫穿中軌）或異常K，100% 一票否決平倉 (VETO_HOLD)，讓部位走完、避免在反彈回踩變回同向時被提前洗下車！
@@ -846,14 +902,6 @@ class UltimateShortExitGatekeeper:
                     elif side == "LONG" and quote >= live_open:
                         return hold("VETO_HOLD_LONG_ON_FAVORABLE_GREEN_CANDLE")
         # 單筆部位反側外軌硬止損 (DISASTER_RAIL_REASONS) 已停用：只留帳戶硬止損、大瀑布及市場熔斷！
-
-        # 🎯 真峰谷優先放行 (True Valley / True Peak Pivot Exit - 優先於趨勢波段續抱審查)
-        # 核心鐵律：一旦確認真谷底(或真峰頂)，立即在谷底/峰頂市價平倉獲利了結！
-        # 絕不拖延、絕不坐過山車回到中軌或反側外軌，一票否決「健康回踩續抱 (VETO_HOLD)」，100% 豁免持倉滿 5 根限制！
-        if normalized in OWN_STRUCTURE_REASONS and _outer_rail_true_pivot_release(
-            symbol, side, closed, opened, entry, quote, is_bar_closed, current_time,
-        ):
-            return allow(TRUE_OUTER_PIVOT_EXIT_REASONS[side])
 
         # ⚡ 通道 A：真峰谷/V轉「最高優先級極速平倉與反手」(True Peak/Valley Override)
         # 核心鐵律：持倉防洗！開倉後不要隨便平倉，只有當波段實質展開獲利 (peak_gain >= 0.5 ATR 或 peak_roe >= 5%)，
