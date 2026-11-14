@@ -31,6 +31,7 @@ import logging
 import math
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -83,6 +84,47 @@ class CentralEntryGate:
         ts_part = int(time.time() * 1000)
         rand_part = uuid.uuid4().hex[:6]
         return f"SIG_{clean_sym}_{side}_{source[:10]}_{ts_part}_{rand_part}"
+
+    @staticmethod
+    def _has_confirmed_meme_short_continuation(
+        symbol: str, side: str, context: Any, frame: Any,
+    ) -> bool:
+        from core.symbol_aliases import is_lobster_symbol, is_pepe_symbol
+        from core.services.entry_methods import MEME_SHORT_CONTINUATION_TRIGGERS
+
+        if (
+            side != "SHORT"
+            or not (is_lobster_symbol(symbol) or is_pepe_symbol(symbol))
+            or not isinstance(context, Mapping)
+            or context.get("entry_method_authority") != "MEME_GATE_ENTRY"
+        ):
+            return False
+
+        signal = context.get("entry_method_signal")
+        if (
+            not isinstance(signal, Mapping)
+            or signal.get("side") != "SHORT"
+            or signal.get("trigger") not in MEME_SHORT_CONTINUATION_TRIGGERS
+            or not signal.get("event_id")
+            or signal.get("event_id") != context.get("entry_method_event_id")
+        ):
+            return False
+        try:
+            confirmation_bar_id = float(signal["confirmation_bar_id"])
+            context_bar_id = float(context["entry_method_bar_id"])
+            latest_bar_id = float(frame.iloc[-1]["timestamp"])
+            is_closed = frame.iloc[-1].get("is_closed", False)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+            return False
+        return (
+            math.isfinite(confirmation_bar_id)
+            and math.isfinite(context_bar_id)
+            and math.isfinite(latest_bar_id)
+            and math.isclose(confirmation_bar_id, context_bar_id, rel_tol=0, abs_tol=1)
+            and math.isclose(confirmation_bar_id, latest_bar_id, rel_tol=0, abs_tol=1)
+            and isinstance(is_closed, (bool, np.bool_))
+            and bool(is_closed)
+        )
 
     @classmethod
     def verify_and_authorize(
@@ -343,6 +385,9 @@ class CentralEntryGate:
         max_ma15_bias_atr = (
             cls.MEME_MAX_MA15_BIAS_ATR if meme_symbol else cls.MAX_MA15_BIAS_ATR
         )
+        confirmed_short_continuation = cls._has_confirmed_meme_short_continuation(
+            symbol, side, entry_method_context, klines_or_snapshot,
+        )
         checks["ma15_bias"] = {
             "status": "PASS" if (
                 ma15_bias_atr < max_ma15_bias_atr
@@ -352,9 +397,11 @@ class CentralEntryGate:
                     rel_tol=1e-12,
                     abs_tol=0,
                 )
+                or confirmed_short_continuation
             ) else "FAIL",
             "bias_atr": ma15_bias_atr,
             "max_bias_atr": max_ma15_bias_atr,
+            "confirmed_short_continuation": confirmed_short_continuation,
         }
         if checks["ma15_bias"]["status"] == "FAIL":
             return GateCheckResult(
@@ -543,6 +590,51 @@ class CentralEntryGate:
                 bar_index = int(float(last_stamp) // 60_000) if last_stamp is not None else None
             except (TypeError, ValueError, OverflowError):
                 bar_index = None
+            if source_upper not in ("WAIT_1M", "MANUAL"):
+                from core.services.candle_data import closed_entry_candles
+
+                strict_frame = closed_entry_candles(entry_frame)
+                strict_blocked, strict_reason, strict_evidence = evaluate_market_blacklist(
+                    strict_frame,
+                    -1,
+                    side=side,
+                    last_closed_trade=last_trade,
+                    current_bar_index=bar_index,
+                    macro_trend=macro_trend,
+                    is_breakout=("BREAKOUT" in source_upper) or ("CONTINUATION" in source_upper),
+                    independent_kc_direction=(
+                        outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified
+                    ),
+                    meme_policy=meme_policy,
+                    meme_low_trend_override=meme_symbol,
+                    expansion=meme_expansion,
+                    meme_structural_entry=meme_structural_entry,
+                    strict_consolidation=True,
+                )
+                strict_regime_reasons = {
+                    "VETO_KC_MIDLINE_FLAT",
+                    "VETO_MA5_KC_MIDLINE_CHOP",
+                    "VETO_MA5_MA15_CHOP",
+                    "VETO_DONCHIAN_RANGE_LOW_TREND",
+                    "VETO_CONSOLIDATION_INSUFFICIENT_CLOSED_HISTORY",
+                    "VETO_CONSOLIDATION_REQUIRED_DATA_MISSING",
+                    "VETO_CONSOLIDATION_INVALID_INDICATORS",
+                    "VETO_CONSOLIDATION_INVALID_OR_OPEN_BAR",
+                }
+                if strict_blocked and strict_reason in strict_regime_reasons:
+                    return GateCheckResult(
+                        passed=False,
+                        reason=strict_reason,
+                        signal_id=sig_id,
+                        details={"market_regime": strict_evidence},
+                        checks={
+                            "market_regime": {
+                                "status": "FAIL",
+                                "reason": strict_reason,
+                                "evidence": strict_evidence,
+                            }
+                        },
+                    )
             if is_swing_pivot:
                 from core.services.swing_pivot_rules import evaluate_swing_pivot_entry
                 pivot_evidence = evaluate_swing_pivot_entry(entry_frame)

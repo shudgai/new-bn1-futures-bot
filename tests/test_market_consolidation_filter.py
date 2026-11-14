@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from core.services.market_consolidation_filter import (
+    SLOPE_FLAT_PCT,
     check_entry_signal,
     evaluate_market_blacklist,
     is_market_in_consolidation,
@@ -164,6 +165,90 @@ def test_meme_policy_bypasses_only_low_trend_donchian_veto(side):
     assert reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
 
 
+def test_strict_regime_blocks_flat_kc_midline_even_for_breakout_authority():
+    frame = _base_frame()
+    flat_middle = float(frame.iloc[-11]["kc_middle"])
+    frame.loc[frame.index[-10:], "kc_middle"] = flat_middle
+
+    blocked, reason, checks = evaluate_market_blacklist(
+        frame,
+        side="LONG",
+        is_breakout=True,
+        independent_kc_direction=True,
+        meme_policy=True,
+        meme_low_trend_override=True,
+        expansion=True,
+        meme_structural_entry=True,
+        strict_consolidation=True,
+    )
+
+    assert blocked is True
+    assert reason == "VETO_KC_MIDLINE_FLAT"
+    assert checks["strict_consolidation"] is True
+
+
+def test_strict_regime_blocks_flat_latest_kc_slope_after_a_recent_rise():
+    frame = _base_frame()
+    frame.loc[frame.index[-1], "kc_middle"] = frame.iloc[-2]["kc_middle"]
+
+    blocked, reason, checks = evaluate_market_blacklist(
+        frame,
+        side="LONG",
+        is_breakout=True,
+        expansion=True,
+        strict_consolidation=True,
+    )
+
+    assert blocked is True
+    assert reason == "VETO_KC_MIDLINE_FLAT"
+    assert checks["kc_middle_net_slope_pct"] > SLOPE_FLAT_PCT
+    assert checks["kc_middle_slope_atr"] == 0.0
+
+
+def test_strict_regime_blocks_meme_donchian_range_even_with_expansion():
+    frame = _low_volume_directional_frame("LONG", body_atr=0.8)
+    frame.loc[frame.index[-1], "volume"] = 1000.0
+    frame.loc[frame.index[-1], "adx"] = 14.0
+    frame.loc[frame.index[-1], "atr"] = 0.1
+
+    blocked, reason, checks = evaluate_market_blacklist(
+        frame,
+        side="LONG",
+        is_breakout=True,
+        meme_policy=True,
+        meme_low_trend_override=True,
+        expansion=True,
+        meme_structural_entry=True,
+        strict_consolidation=True,
+    )
+
+    assert blocked is True
+    assert reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert checks["inside_donchian_box"] is True
+    assert checks["meme_donchian_low_trend_override"] is True
+
+
+def test_strict_regime_blocks_two_ma_crosses_even_during_breakout():
+    frame = _base_frame()
+    offsets = np.array([0.05, -0.05, 0.05, 0.05, 0.10, 0.20, 0.30, 0.40])
+    frame.loc[frame.index[-8:], "ma5"] = (
+        frame.loc[frame.index[-8:], "ma15"].to_numpy() + offsets
+    )
+
+    blocked, reason, checks = evaluate_market_blacklist(
+        frame,
+        side="LONG",
+        is_breakout=True,
+        meme_policy=True,
+        expansion=True,
+        strict_consolidation=True,
+    )
+
+    assert blocked is True
+    assert reason == "VETO_MA5_MA15_CHOP"
+    assert checks["ma5_ma15_recent_crossings"] == 2
+
+
 @pytest.mark.parametrize(
     "meme_policy,expansion,meme_structural_entry",
     [(False, True, False), (True, False, False)],
@@ -256,6 +341,124 @@ def test_central_entry_gate_applies_meme_ma15_bias_limit(
     else:
         assert result.passed is False
         assert result.reason == "VETO_MA15_BIAS_EXTENSION"
+
+
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "TRIGGER_ALIGNED_TREND_SLOPES",
+        "TRIGGER_B_BREAKDOWN_LOWER_RAIL",
+        "TRIGGER_C_BREAKDOWN_LOWER_RAIL",
+        "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT",
+    ],
+)
+def test_confirmed_short_continuation_allows_meme_ma15_extension(
+    monkeypatch, symbol, trigger,
+):
+    import time
+    from types import SimpleNamespace
+
+    import core.gates.master_gate_funnel as master_gate_funnel
+    import core.services.entry_methods as entry_methods
+
+    frame = _low_volume_directional_frame("SHORT")
+    last = frame.index[-1]
+    quote = float(frame.loc[last, "close"])
+    atr = float(frame.loc[last, "atr"])
+    frame.loc[last, "ma15"] = quote + 1.8 * atr
+    frame.loc[frame.index[-2], "ma15"] = float(frame.loc[last, "ma15"]) + 0.1 * atr
+    bar_id = int(frame.loc[last, "timestamp"])
+    event_id = f"ENTRY_METHOD|MEME_GATE_ENTRY|SHORT|{bar_id}"
+    frame.attrs.update(
+        timeframe_ms=60_000,
+        snapshot_ms=time.time() * 1000,
+        entry_method_context={
+            "symbol": symbol,
+            "entry_method_authority": "MEME_GATE_ENTRY",
+            "entry_method_signal": {
+                "side": "SHORT",
+                "event_id": event_id,
+                "confirmation_bar_id": bar_id,
+                "trigger": trigger,
+            },
+            "entry_method_bar_id": bar_id,
+            "entry_method_event_id": event_id,
+        },
+    )
+    monkeypatch.setattr(
+        entry_methods, "revalidate_entry_method",
+        lambda *_args, **_kwargs: (True, "ENTRY_METHOD_REVALIDATED"),
+    )
+    monkeypatch.setattr(
+        master_gate_funnel, "evaluate_meme_entry_frame",
+        lambda *_args, **_kwargs: type(
+            "GatePass", (), {"can_execute": True, "reason": "PASS_MEME_GATE", "details": {}},
+        )(),
+    )
+    monkeypatch.setattr(
+        master_gate_funnel, "market_snapshot_from_frame",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    for name in (
+        "is_expansion", "is_early_long", "is_squeeze_breakout_long",
+        "is_top_pivot_short",
+    ):
+        monkeypatch.setattr(
+            master_gate_funnel.MasterGateFunnel, name,
+            lambda *_args, **_kwargs: False,
+        )
+    monkeypatch.setattr(
+        master_gate_funnel.MasterGateFunnel, "priority_channel",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = CentralEntryGate.verify_and_authorize(
+        symbol=symbol,
+        side="SHORT",
+        price=quote,
+        klines_or_snapshot=frame,
+        source="UNIFIED_PIPELINE|ENTRY_METHOD|MEME_GATE_ENTRY",
+    )
+
+    assert result.passed, result.reason
+    assert result.checks["ma15_bias"]["bias_atr"] > 1.5
+    assert result.checks["ma15_bias"]["confirmed_short_continuation"] is True
+
+
+@pytest.mark.parametrize(
+    "symbol,side,trigger,bar_offset,event_matches",
+    [
+        ("CAP/USDT", "SHORT", "TRIGGER_ALIGNED_TREND_SLOPES", 0, True),
+        ("龙虾/USDT", "LONG", "TRIGGER_ALIGNED_TREND_SLOPES", 0, True),
+        ("龙虾/USDT", "SHORT", "TRIGGER_TOP_PIVOT_CROSS", 0, True),
+        ("1000PEPE/USDT", "SHORT", "TRIGGER_ALIGNED_TREND_SLOPES", -60_000, True),
+        ("龙虾/USDT", "SHORT", "TRIGGER_ALIGNED_TREND_SLOPES", 0, False),
+    ],
+)
+def test_meme_ma15_extension_requires_fresh_short_continuation_identity(
+    symbol, side, trigger, bar_offset, event_matches,
+):
+    frame = _low_volume_directional_frame("SHORT")
+    bar_id = int(frame.iloc[-1]["timestamp"])
+    event_id = "ENTRY_METHOD|MEME_GATE_ENTRY|SHORT|fresh"
+    context_event_id = event_id if event_matches else "stale-event"
+    signal_bar_id = bar_id + bar_offset
+    context = {
+        "entry_method_authority": "MEME_GATE_ENTRY",
+        "entry_method_signal": {
+            "side": side,
+            "event_id": event_id,
+            "confirmation_bar_id": signal_bar_id,
+            "trigger": trigger,
+        },
+        "entry_method_bar_id": signal_bar_id,
+        "entry_method_event_id": context_event_id,
+    }
+
+    assert CentralEntryGate._has_confirmed_meme_short_continuation(
+        symbol, side, context, frame,
+    ) is False
 
 
 def test_zero_trust_entry_gate_rules_a_to_h_and_check_entry_signal():

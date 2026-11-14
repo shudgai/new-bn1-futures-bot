@@ -10,12 +10,14 @@ from typing import Dict, Any, Optional, Tuple, NamedTuple
 
 import pandas as pd
 
+from core.services.entry_methods import MEME_SHORT_CONTINUATION_TRIGGERS
 from core.services.candle_data import closed_entry_candles
 from core.services.market_consolidation_filter import (
     check_entry_signal,
     evaluate_market_blacklist,
     is_market_in_consolidation,
 )
+from core.symbol_aliases import is_lobster_symbol, is_pepe_symbol
 
 logger = logging.getLogger("MasterGateFunnel")
 
@@ -978,6 +980,12 @@ class MasterGateFunnel:
             priority = None
         if priority:
             details["priority_channel"] = priority
+        confirmed_short_continuation = (
+            side == "SHORT"
+            and (is_lobster_symbol(m.symbol) or is_pepe_symbol(m.symbol))
+            and m.is_closed
+            and priority in MEME_SHORT_CONTINUATION_TRIGGERS
+        )
         CONTINUATION_PRIORITY_TRIGGERS = {
             REVERSE_TRIGGER,
             "TRIGGER_OUTER_RAIL_CONTINUATION_LONG",
@@ -1078,24 +1086,25 @@ class MasterGateFunnel:
                     return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
                 if side == "LONG" and m.close_price - m.kc_upper > 0 and not valid_outer_breakout:
                     return block("VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE")
-            if slope_aligned_breakout and abs(m.quote - m.close_price) <= 0.25 * distance_atr:
-                if (
-                    abs(m.open_price - m.ma15_curr) > distance_atr
+            if not confirmed_short_continuation:
+                if slope_aligned_breakout and abs(m.quote - m.close_price) <= 0.25 * distance_atr:
+                    if (
+                        abs(m.open_price - m.ma15_curr) > distance_atr
+                        and not math.isclose(
+                            abs(m.open_price - m.ma15_curr), distance_atr,
+                            rel_tol=1e-12, abs_tol=0,
+                        )
+                    ):
+                        return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
+                elif any(
+                    abs(price - m.ma15_curr) > distance_atr
                     and not math.isclose(
-                        abs(m.open_price - m.ma15_curr), distance_atr,
+                        abs(price - m.ma15_curr), distance_atr,
                         rel_tol=1e-12, abs_tol=0,
                     )
+                    for price in (m.quote, m.close_price)
                 ):
                     return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
-            elif any(
-                abs(price - m.ma15_curr) > distance_atr
-                and not math.isclose(
-                    abs(price - m.ma15_curr), distance_atr,
-                    rel_tol=1e-12, abs_tol=0,
-                )
-                for price in (m.quote, m.close_price)
-            ):
-                return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         reverse_entry = priority == REVERSE_TRIGGER
         macro = str(m.macro_trend).upper()
         if macro not in ("BULLISH", "BEARISH", "RANGE", "NEUTRAL"):
@@ -1183,7 +1192,7 @@ class MasterGateFunnel:
 
         open_bias_breakout = slope_aligned_breakout and abs(m.quote - m.close_price) <= 0.25 * distance_atr
         ma15_limit = (
-            3.5 if open_bias_breakout
+            3.5 if open_bias_breakout or confirmed_short_continuation
             else MEME_BREAKOUT_MA15_EXTENSION_ATR if big_body_breakout
             else MEME_MA15_EXTENSION_ATR
         )
@@ -1191,7 +1200,13 @@ class MasterGateFunnel:
         if over_limit(sign * (extreme - m.ma15_curr), ma15_limit):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         bias_price = m.open_price if (big_body_breakout or open_bias_breakout) else extreme
-        if over_limit(sign * (bias_price - m.ma15_curr), MEME_BREAKOUT_MA15_EXTENSION_ATR if (big_body_breakout or open_bias_breakout) else MEME_MA15_EXTENSION_ATR):
+        bias_limit = (
+            3.5 if confirmed_short_continuation
+            else MEME_BREAKOUT_MA15_EXTENSION_ATR
+            if big_body_breakout or open_bias_breakout
+            else MEME_MA15_EXTENSION_ATR
+        )
+        if over_limit(sign * (bias_price - m.ma15_curr), bias_limit):
             return block(f"BLOCKED_{side}_MA15_EXTENSION_1_ATR")
         # When the bias-from-open exemption was actually needed, cap the rail extension tightly.
         breakout_priority = priority in {

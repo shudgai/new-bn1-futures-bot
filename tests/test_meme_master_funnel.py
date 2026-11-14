@@ -376,6 +376,84 @@ def test_ma15_extension_is_capped_at_one_atr_for_both_sides(bias_atr, allowed, s
         assert result.reason == f"BLOCKED_{side}_MA15_EXTENSION_1_ATR"
 
 
+@pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "TRIGGER_ALIGNED_TREND_SLOPES",
+        "TRIGGER_B_BREAKDOWN_LOWER_RAIL",
+        "TRIGGER_C_BREAKDOWN_LOWER_RAIL",
+        "TRIGGER_OUTER_RAIL_CONTINUATION_SHORT",
+    ],
+)
+def test_fresh_meme_short_continuation_can_exceed_one_atr_ma15_bias(
+    monkeypatch, symbol, trigger,
+):
+    base = market("SHORT", symbol)
+    ma15 = base.ma15_curr
+    close = ma15 - 1.8 * base.atr
+    opened = close + 0.4 * base.atr
+    snapshot = base._replace(
+        open_price=opened, close_price=close, quote=close,
+        high_price=max(opened, close) + 0.05,
+        low_price=min(opened, close) - 0.05,
+        ma5_curr=ma15 - 0.3 * base.atr,
+        ma5_prev=ma15 - 0.2 * base.atr,
+        ma15_prev=ma15,
+        kc_middle=ma15 - 0.6 * base.atr,
+        kc_middle_prev=ma15 - 0.4 * base.atr,
+        kc_upper=ma15 - 0.5 * base.atr,
+        kc_lower=close - 1.6 * base.atr,
+    )
+    monkeypatch.setattr(
+        MasterGateFunnel, "priority_channel",
+        lambda *_args, **_kwargs: trigger,
+    )
+
+    result = MasterGateFunnel.evaluate_entry_filters(snapshot, "SHORT")
+
+    assert result.can_execute, result.reason
+    assert result.details["priority_channel"] == trigger
+
+
+@pytest.mark.parametrize(
+    "symbol,trigger,is_closed",
+    [
+        ("CAP/USDT", "TRIGGER_ALIGNED_TREND_SLOPES", True),
+        ("龙虾/USDT", "TRIGGER_TOP_PIVOT_CROSS", True),
+        ("1000PEPE/USDT", "TRIGGER_ALIGNED_TREND_SLOPES", False),
+    ],
+)
+def test_short_ma15_extension_exception_rejects_unscoped_or_unconfirmed_cases(
+    monkeypatch, symbol, trigger, is_closed,
+):
+    base = market("SHORT", symbol)
+    ma15 = base.ma15_curr
+    close = ma15 - 1.8 * base.atr
+    opened = close + 0.4 * base.atr
+    snapshot = base._replace(
+        open_price=opened, close_price=close, quote=close,
+        high_price=max(opened, close) + 0.05,
+        low_price=min(opened, close) - 0.05,
+        ma5_curr=ma15 - 0.3 * base.atr,
+        ma5_prev=ma15 - 0.2 * base.atr,
+        ma15_prev=ma15,
+        kc_middle=ma15 - 0.6 * base.atr,
+        kc_middle_prev=ma15 - 0.4 * base.atr,
+        kc_upper=ma15 - 0.5 * base.atr,
+        kc_lower=close - 1.6 * base.atr,
+        is_closed=is_closed,
+    )
+    monkeypatch.setattr(
+        MasterGateFunnel, "priority_channel",
+        lambda *_args, **_kwargs: trigger,
+    )
+
+    result = MasterGateFunnel.evaluate_entry_filters(snapshot, "SHORT")
+
+    assert not result.can_execute
+
+
 @pytest.mark.parametrize("fault", [
     "macro", "opposite_kc", "flat_ma5", "equal_ma15", "old_cross", "unclosed",
     "quote_middle", "quote_ma15", "chop", "bias_close", "bias_quote",

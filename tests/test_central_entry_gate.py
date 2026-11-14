@@ -17,7 +17,7 @@ def _build_valid_long_frame():
     # MA5 斜率 = 101 - 100.5 = 0.5 > 0
     # 實體 = 101.5 - 100.0 = 1.5 >= 0.35 * 2.0 = 0.7
     # 上影線 = 102.0 - 101.5 = 0.5 <= 0.7 * 1.5 = 1.05
-    # 乖離 = 101.5 - 105.0 = -3.5 <= 0.5 * 2.0 = 1.0
+    # 乖離 = 101.5 - 100.5 = 1.0 <= 0.5 * 2.0 = 1.0
     # 量能 = 1500 >= 1.2 * 1000 = 1200
     rows = []
     for i in range(25):
@@ -55,9 +55,11 @@ def _build_valid_long_frame():
         "kc_middle_slope": 0.30,  # >= 0.1 * 2.0 = 0.2
         "ma5": 101.0,  # prev is 100.5, so delta = 0.5 > 0
         "ma3": 101.5,
-        "ma15": 98.0,
+        "ma15": 100.5,
         "macro_trend": "BULLISH",
     }
+    rows[-3]["kc_middle"] = 99.4
+    rows[-2]["kc_middle"] = 99.7
     return pd.DataFrame(rows)
 
 
@@ -112,6 +114,34 @@ def test_veto_intrabar_not_closed():
     assert res.reason == "VETO_INTRABAR_NOT_CLOSED"
 
 
+def test_flat_kc_midline_blocks_confirmed_pivot_override(monkeypatch):
+    import core.services.low_latency_entry as low_latency_entry
+
+    df = _build_valid_long_frame()
+    df.loc[df.index[-10:], "kc_middle"] = 100.0
+    df.loc[df.index[-10:], "kc_middle_slope"] = 0.0
+    df.loc[df.index[-1], "ma15"] = 101.0
+    monkeypatch.setattr(
+        low_latency_entry,
+        "evaluate_peak_valley_inflection_entry",
+        lambda *_args, **_kwargs: {
+            "action": "OPEN_LONG",
+            "is_consolidation": False,
+        },
+    )
+
+    res = CentralEntryGate.verify_and_authorize(
+        symbol="BTC/USDT",
+        side="LONG",
+        price=101.5,
+        klines_or_snapshot=df,
+        source="PEAK_VALLEY_INFLECTION",
+    )
+
+    assert res.passed is False
+    assert res.reason == "VETO_KC_MIDLINE_FLAT"
+
+
 def test_authorized_intrabar_entry_still_runs_all_market_checks():
     df = _build_valid_long_frame()
     df.loc[df.index[-1], "is_closed"] = False
@@ -160,6 +190,8 @@ def test_veto_ma5_slope_opposite():
 def test_veto_kc_outer_overextension():
     df = _build_valid_long_frame()
     # 價格衝到 107.0 (kc_upper is 105.0, 乖離 2.0 > 0.5 * 2.0 = 1.0)
+    df.loc[df.index[-1], "ma15"] = 110.5
+    df.loc[df.index[-1], "ma5"] = 110.6
     res = CentralEntryGate.verify_and_authorize(
         symbol="BTC/USDT",
         side="LONG",
@@ -232,8 +264,8 @@ def test_veto_volume_insufficient():
     assert res.reason == "VETO_VOLUME_INSUFFICIENT"
 
 
-def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
-    """均線死叉轉折做空：中軌走平 (斜率 0.0，不足 0.1 ATR) 但在中軌下方，放行做空"""
+def test_cross_mid_short_blocked_when_kc_midline_is_flat():
+    """中軌走平時，即使價格在中軌下方也阻擋做空。"""
     rows = []
     for i in range(25):
         rows.append({
@@ -272,12 +304,12 @@ def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
         "kc_middle_slope": -0.02,  # 接近 0，破軌單會被擋，但死叉轉折單放行
         "ma5": 99.0,  # 下彎
         "ma3": 98.8,
-        "ma15": 102.0,
+        "ma15": 99.5,
         "macro_trend": "BEARISH",
         "kc_middle": 100.0,
     }
     df = pd.DataFrame(rows)
-    # 常規破軌追空：被擋
+    # 常規破軌與轉折入口均被平坦中軌 Gate 阻擋。
     res_breakout = CentralEntryGate.verify_and_authorize(
         symbol="BTC/USDT",
         side="SHORT",
@@ -286,9 +318,8 @@ def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
         source="BREAKDOWN_SHORT",
     )
     assert res_breakout.passed is False
-    assert res_breakout.reason == "VETO_KC_SLOPE_INSUFFICIENT"
+    assert res_breakout.reason == "VETO_KC_MIDLINE_FLAT"
 
-    # 均線死叉轉折開空：動態放寬放行！
     res_cross = CentralEntryGate.verify_and_authorize(
         symbol="BTC/USDT",
         side="SHORT",
@@ -296,7 +327,8 @@ def test_cross_mid_short_allowed_when_flat_slope_and_below_midline():
         klines_or_snapshot=df,
         source="ENTRY_SHORT_EMA_CROSS_MID",
     )
-    assert res_cross.passed is True
+    assert res_cross.passed is False
+    assert res_cross.reason == "VETO_KC_MIDLINE_FLAT"
 
 
 def test_cross_mid_short_veto_if_above_midline():
@@ -354,8 +386,8 @@ def test_cross_mid_short_veto_if_above_midline():
     assert res.reason in ("VETO_SHORT_ABOVE_KC_MIDDLE", "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID")
 
 
-def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
-    """均線金叉轉折做多：中軌走平 (斜率 0.0) 但在中軌上方，放行做多"""
+def test_cross_mid_long_blocked_when_kc_midline_is_flat():
+    """中軌走平時，即使價格在中軌上方也阻擋做多。"""
     rows = []
     for i in range(25):
         rows.append({
@@ -393,7 +425,7 @@ def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
         "kc_middle_slope": 0.02,  # 走平微翹，不足 0.2
         "ma5": 101.0,  # 上翹
         "ma3": 101.0,
-        "ma15": 98.0,
+        "ma15": 100.5,
         "macro_trend": "BULLISH",
         "kc_middle": 100.0,
     }
@@ -405,7 +437,8 @@ def test_cross_mid_long_allowed_when_flat_slope_and_above_midline():
         klines_or_snapshot=df,
         source="ENTRY_LONG_EMA_CROSS_MID",
     )
-    assert res.passed is True
+    assert res.passed is False
+    assert res.reason == "VETO_KC_MIDLINE_FLAT"
 
 
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "1000PEPE/USDT"])

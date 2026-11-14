@@ -16,6 +16,7 @@ MIDLINE_LOOKBACK = 10
 MAX_MIDLINE_CROSSINGS = 3
 MAX_MA_CROSSINGS = 2
 SLOPE_FLAT_PCT = 0.0003
+KC_MIDDLE_FLAT_SLOPE_ATR = 0.05
 KC_BIG_MOUTH_RATIO = 2.0
 LOW_ADX = 20.0
 LOW_ATR_PCT = 0.003
@@ -49,6 +50,7 @@ def evaluate_market_blacklist(
     meme_low_trend_override: bool = False,
     expansion: bool = False,
     meme_structural_entry: bool = False,
+    strict_consolidation: bool = False,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return (blocked, reason, evidence), using only explicitly closed bars.
 
@@ -117,7 +119,8 @@ def evaluate_market_blacklist(
         low_amp = pd.concat([delta.abs(), delta.shift(1).abs()], axis=1).max(axis=1) < 0.5 * atr
         checks["ma5_midline_crossings"] = int((cross & low_amp).tail(MIDLINE_LOOKBACK).sum())
         if checks["ma5_midline_crossings"] >= MAX_MIDLINE_CROSSINGS and (
-            (not meme_policy and not is_breakout) or dead_chop_adx
+            strict_consolidation
+            or ((not meme_policy and not is_breakout) or dead_chop_adx)
         ):
             return True, "VETO_MA5_KC_MIDLINE_CHOP", checks
 
@@ -125,11 +128,24 @@ def evaluate_market_blacklist(
         ma3_delta_pct = abs(float(ma3.iloc[-1] - ma3.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma3.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         ma5_delta_pct = abs(float(ma5.iloc[-1] - ma5.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(ma5.iloc[-MIDLINE_LOOKBACK])), 1e-12)
         mid_delta_pct = abs(float(mid.iloc[-1] - mid.iloc[-MIDLINE_LOOKBACK])) / max(abs(float(mid.iloc[-MIDLINE_LOOKBACK])), 1e-12)
+        kc_slope_atr = abs(float(mid.iloc[-1] - mid.iloc[-2])) / float(atr.iloc[-1])
         checks.update(
             ma3_net_slope_pct=ma3_delta_pct,
             ma5_net_slope_pct=ma5_delta_pct,
             kc_middle_net_slope_pct=mid_delta_pct,
+            kc_middle_slope_atr=kc_slope_atr,
         )
+        kc_slope_is_directional = (
+            kc_slope_atr >= KC_MIDDLE_FLAT_SLOPE_ATR
+            or math.isclose(kc_slope_atr, KC_MIDDLE_FLAT_SLOPE_ATR, rel_tol=1e-9, abs_tol=0)
+        )
+        if strict_consolidation and (
+            not kc_slope_is_directional or mid_delta_pct < SLOPE_FLAT_PCT
+        ):
+            return True, "VETO_KC_MIDLINE_FLAT", {
+                **checks,
+                "strict_consolidation": True,
+            }
         if not is_breakout and not expansion and (
             ma3_delta_pct < SLOPE_FLAT_PCT
             or ma5_delta_pct < SLOPE_FLAT_PCT
@@ -149,6 +165,13 @@ def evaluate_market_blacklist(
         checks["ma3_ma15_recent_crossings"] = recent_crossings_ma3
         checks["ma5_ma15_crossings"] = total_crossings
         checks["ma5_ma15_recent_crossings"] = recent_crossings
+        if strict_consolidation and (
+            recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4
+        ):
+            return True, "VETO_MA5_MA15_CHOP", {
+                **checks,
+                "strict_consolidation": True,
+            }
         if (
             meme_policy
             and (
@@ -193,7 +216,10 @@ def evaluate_market_blacklist(
         checks["meme_donchian_low_trend_override"] = bool(
             low_trend_range and (meme_policy or meme_low_trend_override)
         )
-        if low_trend_range and not (meme_policy or meme_low_trend_override):
+        if low_trend_range and (
+            strict_consolidation or not (meme_policy or meme_low_trend_override)
+        ):
+            checks["strict_consolidation"] = strict_consolidation
             return True, "VETO_DONCHIAN_RANGE_LOW_TREND", checks
 
         # Weak-volume and wick-heavy signal candle.
