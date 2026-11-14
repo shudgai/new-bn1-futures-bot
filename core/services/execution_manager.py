@@ -510,30 +510,18 @@ class ExecutionManager:
         return cls._save_dual_trend_reversal_ticket_state(account, symbol)
 
     @classmethod
-    def _confirmed_dual_trend_structure_exit_candidate(
+    def _confirmed_dual_trend_exit_candidate(
         cls,
-        symbol: str,
         position: Dict[str, Any],
         metadata: Optional[Dict[str, Any]],
-        price: float,
         frame: Optional[pd.DataFrame],
     ) -> Optional[str]:
-        from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
         from core.services.exits.authorized_position_exit import dual_trend_exit_block_reason
 
-        reason = UltimateShortExitGatekeeper.structure_exit_candidate(
-            symbol, position, metadata or {}, price, frame,
-        )
-        if not reason:
-            return None
         block_reason = dual_trend_exit_block_reason(position, frame, metadata)
         if block_reason:
-            logger.info(
-                "DUAL_TREND_STRUCTURE_EXIT_HELD symbol=%s reason=%s gate=%s",
-                symbol, reason, block_reason,
-            )
             return None
-        return reason
+        return "ACTIVE_EXIT_DUAL_TREND_REVERSAL"
 
     @classmethod
     async def _evaluate_closed_entry_methods(
@@ -1145,8 +1133,18 @@ class ExecutionManager:
                 market_data=market_data,
                 account=account,
             )
+            pv_pos_meta = getattr(account, "position_meta", {}).get(symbol, {})
+            dual_trend_exit_candidate = cls._confirmed_dual_trend_exit_candidate(
+                current_position,
+                pv_pos_meta if isinstance(pv_pos_meta, dict) else None,
+                raw_df,
+            )
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
-            if gate_should_exit and gate_reason in PROFIT_PIVOT_REASONS:
+            if (
+                gate_should_exit
+                and gate_reason in PROFIT_PIVOT_REASONS
+                and not dual_trend_exit_candidate
+            ):
                 success = await cls.close_position(
                     account=account,
                     symbol=symbol,
@@ -1162,8 +1160,6 @@ class ExecutionManager:
                 }
 
             # 🎯 峰谷轉向低延遲即時平倉與條件式即時反手引擎（統一接管所有持倉，含舊通道開的單）
-            pv_pos_meta = getattr(account, "position_meta", {}).get(symbol, {})
-            layered_reversal_reason = None
             from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
 
             if isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
@@ -1188,7 +1184,10 @@ class ExecutionManager:
                     if isinstance(pv_pos_meta, dict):
                         pv_pos_meta[state_k] = state_v
 
-                if pv_exit.get("reason") == "HOLD_SAME_BAR_FLIP_EXIT_LOCKED":
+                if (
+                    pv_exit.get("reason") == "HOLD_SAME_BAR_FLIP_EXIT_LOCKED"
+                    and not dual_trend_exit_candidate
+                ):
                     return {
                         "status": "HOLD",
                         "symbol": symbol,
@@ -1200,7 +1199,7 @@ class ExecutionManager:
                         "success": False,
                     }
 
-                if pv_exit.get("should_exit"):
+                if pv_exit.get("should_exit") and not dual_trend_exit_candidate:
                     flip_lock = cls._position_flip_locks.setdefault(symbol, asyncio.Lock())
                     async with flip_lock:
                         exit_result = await execute_peak_valley_exit_and_conditional_flip(
@@ -1315,19 +1314,10 @@ class ExecutionManager:
                             "reason": wf_reason if success else "EXIT_BLOCKED_HOLD:" + wf_reason,
                             "success": success,
                         }
-                    layered_reversal_reason = None
-                    if _is_meme_exit_symbol(symbol):
-                        layered_reversal_reason = cls._confirmed_dual_trend_structure_exit_candidate(
-                            symbol,
-                            current_position,
-                            pv_pos_meta if isinstance(pv_pos_meta, dict) else {},
-                            curr_quote,
-                            raw_df,
-                        )
-                    if layered_reversal_reason:
+                    if dual_trend_exit_candidate:
                         logger.info(
-                            "DUAL_TREND_STRUCTURE_EXIT_OVERRIDES_LAYERED_HOLD symbol=%s reason=%s",
-                            symbol, layered_reversal_reason,
+                            "DUAL_TREND_EXIT_OVERRIDES_LAYERED_HOLD symbol=%s reason=%s",
+                            symbol, dual_trend_exit_candidate,
                         )
                     else:
                         trailing_stop_p = float(current_position.get("trailing_stop_price", 0.0) or 0.0)
@@ -1401,10 +1391,10 @@ class ExecutionManager:
                     structure_reason = f"ACTIVE_EXIT_{_active_exit_res['action']}|{_active_exit_res.get('reason', '')}"
                     logger.info(f"⚡ [ACTIVE_EXIT_TRIGGERED] {symbol} {pos_side} 觸發波段反轉/風控平倉: {structure_reason}")
                 elif _active_exit_res and _active_exit_res.get("action") == "HOLD":
-                    structure_reason = layered_reversal_reason
+                    structure_reason = dual_trend_exit_candidate
                     if structure_reason:
                         logger.info(
-                            "DUAL_TREND_STRUCTURE_EXIT_RELEASED_FROM_TREND_LOCK symbol=%s reason=%s",
+                            "DUAL_TREND_EXIT_RELEASED_FROM_TREND_LOCK symbol=%s reason=%s",
                             symbol, structure_reason,
                         )
                     else:
@@ -1434,8 +1424,10 @@ class ExecutionManager:
                         logger.info(
                             f"🛡️ [KC_DIRECTION_HOLD] {symbol} {pos_side} "
                             f"KC 中軌方向未翻向 (curr={_kc_mid_curr:.6f} vs prev={_kc_mid_prev:.6f})，"
-                            f"一票否決 structure_exit_candidate，只有真峰谷才能出場！"
+                            "一般結構出口維持阻擋；已確認 KC＋HTF 同向反轉例外放行。"
                         )
+                if not structure_reason and dual_trend_exit_candidate:
+                    structure_reason = dual_trend_exit_candidate
                 is_emerg_bar_open = bool(
                     raw_df is not None
                     and isinstance(raw_df, pd.DataFrame)

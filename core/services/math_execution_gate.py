@@ -1362,6 +1362,18 @@ def validate_exit_at_execution(
     metadata = getattr(account, "position_meta", {}).get(symbol, {})
     if str(close_reason or "").strip() == "手動平倉":
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
+    if str(close_reason or "").strip().upper() == "ACTIVE_EXIT_DUAL_TREND_REVERSAL":
+        from core.services.exits.authorized_position_exit import dual_trend_exit_block_reason
+
+        block_reason = dual_trend_exit_block_reason(position, frame, metadata)
+        if block_reason is not None:
+            return False, block_reason, {
+                "exit_type": "BLOCKED",
+                "gate": block_reason,
+            }
+        return True, "DUAL_TREND_REVERSAL_CONFIRMED", {
+            "exit_type": "DUAL_TREND_REVERSAL",
+        }
     from core.services.low_latency_exit import (
         evaluate_peak_valley_exit,
         is_peak_valley_exit_authorized_reason,

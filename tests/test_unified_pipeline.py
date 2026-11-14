@@ -375,6 +375,7 @@ async def test_confirmed_dual_trend_reversal_closes_then_opens_in_same_pass(monk
     from types import SimpleNamespace
     from core.paper_account import PaperAccount
     from core.gates.master_gate_funnel import MasterGateFunnel
+    from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
     from core.services.execution_manager import ExecutionManager
     import time
 
@@ -412,6 +413,11 @@ async def test_confirmed_dual_trend_reversal_closes_then_opens_in_same_pass(monk
     )
     frame.loc[29, ["open", "high", "low", "close"]] = [98.1, 98.3, 98.0, 98.2]
 
+    monkeypatch.setattr(
+        UltimateShortExitGatekeeper,
+        "structure_exit_candidate",
+        lambda *_args, **_kwargs: None,
+    )
     allow = SimpleNamespace(can_execute=True, reason="PASS")
     monkeypatch.setattr(
         MasterGateFunnel, "pivot_kc_location_veto",

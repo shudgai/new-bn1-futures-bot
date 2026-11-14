@@ -82,6 +82,95 @@ def test_ordinary_exit_fails_closed_when_trend_evidence_is_missing(side):
     )
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_confirmed_dual_reversal_is_exit_candidate_without_pivot_signal(monkeypatch, side):
+    from core.services.execution_manager import ExecutionManager
+    from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+
+    frame, opened = _frame(
+        side, kc_reversed=True, macro_reversed=True,
+    )
+    position = {
+        "side": side,
+        "open_timestamp": opened,
+        "entry_price": 100.0,
+        "qty": 1.0,
+    }
+    monkeypatch.setattr(
+        UltimateShortExitGatekeeper,
+        "structure_exit_candidate",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert ExecutionManager._confirmed_dual_trend_exit_candidate(
+        position, {}, frame,
+    ) == "ACTIVE_EXIT_DUAL_TREND_REVERSAL"
+
+
+@pytest.mark.parametrize(("side", "symbol"), [
+    ("LONG", "BTC/USDT"),
+    ("SHORT", "1000PEPE/USDT"),
+])
+def test_dual_trend_exit_authority_passes_account_math_without_pivot(side, symbol):
+    from types import SimpleNamespace
+
+    from core.services.math_execution_gate import validate_exit_at_execution
+
+    frame, opened = _frame(
+        side, kc_reversed=True, macro_reversed=True,
+    )
+    position = {
+        "side": side,
+        "open_timestamp": opened,
+        "entry_price": 100.0,
+        "qty": 1.0,
+    }
+    account = SimpleNamespace(
+        channel_exit_frame_provider=lambda _symbol: frame,
+        position_meta={},
+    )
+
+    allowed, reason, details = validate_exit_at_execution(
+        account, symbol, position, 101.0, "ACTIVE_EXIT_DUAL_TREND_REVERSAL",
+    )
+
+    assert allowed
+    assert reason == "DUAL_TREND_REVERSAL_CONFIRMED"
+    assert details["exit_type"] == "DUAL_TREND_REVERSAL"
+    assert UltimateExitGatekeeper.can_execute_exit(
+        symbol, position, {}, "ACTIVE_EXIT_DUAL_TREND_REVERSAL", 101.0, frame=frame,
+    )
+
+
+def test_dual_trend_exit_authority_is_blocked_if_macro_did_not_reverse():
+    from types import SimpleNamespace
+
+    from core.services.math_execution_gate import validate_exit_at_execution
+
+    frame, opened = _frame(
+        "SHORT", kc_reversed=True, macro_reversed=False,
+    )
+    position = {
+        "side": "SHORT",
+        "open_timestamp": opened,
+        "entry_price": 100.0,
+        "qty": 1.0,
+    }
+    account = SimpleNamespace(
+        channel_exit_frame_provider=lambda _symbol: frame,
+        position_meta={},
+    )
+
+    allowed, reason, details = validate_exit_at_execution(
+        account, "1000PEPE/USDT", position, 101.0,
+        "ACTIVE_EXIT_DUAL_TREND_REVERSAL",
+    )
+
+    assert not allowed
+    assert reason == "VETO_EXIT_MACRO_TREND_NOT_REVERSED"
+    assert details["gate"] == reason
+
+
 def test_dual_trend_exit_requires_post_entry_closed_kc_confirmation():
     frame, _ = _frame(
         "LONG", kc_reversed=True, macro_reversed=True,
