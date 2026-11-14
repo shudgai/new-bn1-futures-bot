@@ -10,6 +10,7 @@ Path: core/gates/central_entry_gate.py
 1. 收盤確認：必須由已收線 K 棒 (is_closed=True) 產生訊號，嚴禁盤中毛刺 intrabar 偷跑。
 2. KC 中軌斜率：多單中軌向上 >= 0.1 ATR；空單中軌向下 >= 0.1 ATR，走平或不足一票否決。
 3. MA 斜率與乖離：MA5 必須順向發散；執行價距外軌 <= 0.5 ATR，距 MA5 <= 1.0 ATR，拒絕追高追低。
+   妖幣 MA15 乖離上限為 1.5 ATR，其他標的維持 1.2 ATR。
 4. 通道帶寬：(upper - lower) / middle >= 1%，過度狹窄死水區一票否決。
 5. 通道擴張：當前帶寬相較近期最低帶寬擴張 >= 5%，拒絕收口擠壓期開倉。
 6. 量能門檻：突破棒成交量 >= 過去 5 根均量 1.2 倍（有量能數據時強制執行）。
@@ -64,6 +65,7 @@ class CentralEntryGate:
     MAX_BAND_EXTENSION_ATR: float = 2.50
     MAX_MA5_EXTENSION_ATR: float = 3.00
     MAX_MA15_BIAS_ATR: float = 1.20
+    MEME_MAX_MA15_BIAS_ATR: float = 1.50
     MIN_KC_BANDWIDTH_PCT: float = 0.0035
     MIN_KC_SQUEEZE_WIDTH_RATIO: float = 0.015  # 通道頻寬比率門檻 1.5% (SQUEEZE_LOCK)
     MIN_ATR_VOLATILITY_RATIO: float = 0.70     # 當前 ATR 相對 20 根平均 ATR 門檻 0.7 倍
@@ -209,9 +211,10 @@ class CentralEntryGate:
                         peak_valley_verified = True
 
         from core.symbol_aliases import is_meme_breakout_symbol
+        meme_symbol = is_meme_breakout_symbol(symbol)
         meme_policy = (
             not peak_valley_verified
-            and is_meme_breakout_symbol(symbol)
+            and meme_symbol
             and source_upper != "WAIT_1M"
             and (source_upper != "MANUAL" or has_entry_method_context)
         )
@@ -337,18 +340,21 @@ class CentralEntryGate:
         c_close = float(parsed.get("close", curr_price))
         c_open = float(parsed.get("open", curr_price))
         ma15_bias_atr = abs(curr_price - ma15_c) / atr
+        max_ma15_bias_atr = (
+            cls.MEME_MAX_MA15_BIAS_ATR if meme_symbol else cls.MAX_MA15_BIAS_ATR
+        )
         checks["ma15_bias"] = {
             "status": "PASS" if (
-                ma15_bias_atr < cls.MAX_MA15_BIAS_ATR
+                ma15_bias_atr < max_ma15_bias_atr
                 or math.isclose(
                     ma15_bias_atr,
-                    cls.MAX_MA15_BIAS_ATR,
+                    max_ma15_bias_atr,
                     rel_tol=1e-12,
                     abs_tol=0,
                 )
             ) else "FAIL",
             "bias_atr": ma15_bias_atr,
-            "max_bias_atr": cls.MAX_MA15_BIAS_ATR,
+            "max_bias_atr": max_ma15_bias_atr,
         }
         if checks["ma15_bias"]["status"] == "FAIL":
             return GateCheckResult(
@@ -357,7 +363,7 @@ class CentralEntryGate:
                 signal_id=sig_id,
                 details={
                     "bias_atr": ma15_bias_atr,
-                    "max_bias_atr": cls.MAX_MA15_BIAS_ATR,
+                    "max_bias_atr": max_ma15_bias_atr,
                     "price": curr_price,
                     "ma15": ma15_c,
                     "atr": atr,
@@ -376,7 +382,7 @@ class CentralEntryGate:
                 "kc_middle_slope": kc_mid_slope_val,
                 "side": side,
             }
-        elif is_meme_breakout_symbol(symbol):
+        elif meme_symbol:
             if side == "LONG" and (kc_mid_slope_val <= 0.0 or kc_mid_val <= kc_mid_prev_val):
                 checks["kc_middle_direction"] = {
                     "status": "FAIL",
@@ -431,7 +437,7 @@ class CentralEntryGate:
             ma5_curr=ma5_c,
             ma5_prev=ma5_p,
             kc_middle=kc_mid_val,
-            kc_middle_prev=kc_mid_prev_val if is_meme_breakout_symbol(symbol) else None,
+            kc_middle_prev=kc_mid_prev_val if meme_symbol else None,
             is_swing_pivot=is_swing_pivot,
             direction_override=direction_override,
             ma15_curr=ma15_c,
@@ -560,6 +566,7 @@ class CentralEntryGate:
                     is_breakout=is_breakout_candidate,
                     independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified,
                     meme_policy=meme_policy, expansion=meme_expansion,
+                    meme_low_trend_override=meme_symbol,
                     meme_structural_entry=meme_structural_entry,
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
@@ -592,6 +599,7 @@ class CentralEntryGate:
                     is_breakout=is_breakout_candidate,
                     independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified,
                     meme_policy=meme_policy, expansion=meme_expansion,
+                    meme_low_trend_override=meme_symbol,
                     meme_structural_entry=meme_structural_entry,
                 )
         blocked, block_reason, block_evidence = blacklist
@@ -633,7 +641,7 @@ class CentralEntryGate:
                 "MEME_GATE_ENTRY",
             }
         )
-        if side == "SHORT" and is_meme_breakout_symbol(symbol) and not is_breakout_or_reentry:
+        if side == "SHORT" and meme_symbol and not is_breakout_or_reentry:
             bb_lower_v = float(parsed.get("bb_lower", parsed.get("kc_lower", kc_mid_val * 0.98)))
             # 一般追空 (如普通均線弱勢追單) 嚴禁在遠離中軌的極度超賣區追空
             if c_close < bb_lower_v - 0.5 * float(parsed.get("atr", 1.0)):

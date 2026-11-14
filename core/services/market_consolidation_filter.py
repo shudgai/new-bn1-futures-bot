@@ -22,7 +22,6 @@ LOW_ATR_PCT = 0.003
 MIN_VOLUME_RATIO = 0.8
 MAX_WICK_BODY_RATIO = 2.0
 COOLDOWN_BARS = 3
-MEME_IMPULSE_BODY_ATR = 0.6
 MEME_STRUCTURAL_BODY_ATR = 0.4
 
 
@@ -47,6 +46,7 @@ def evaluate_market_blacklist(
     is_breakout: bool = False,
     independent_kc_direction: bool = False,
     meme_policy: bool = False,
+    meme_low_trend_override: bool = False,
     expansion: bool = False,
     meme_structural_entry: bool = False,
 ) -> tuple[bool, str, dict[str, Any]]:
@@ -176,10 +176,8 @@ def evaluate_market_blacklist(
         )
         atr_pct = float(atr.iloc[-1] / max(close.iloc[-1], 1e-12))
         checks.update(inside_donchian_box=inside_box, adx=adx, atr_pct=atr_pct)
-        # Low ATR alone is common on 1m meme-coin charts even during a strong
-        # directional move. Only classify an in-range market as low-trend when
-        # both ADX and normalized ATR indicate weak conditions. Missing ADX
-        # remains fail-closed when ATR is also below threshold.
+        # Meme entries use their direction and entry-pattern gates instead of
+        # the generic low-ADX/low-ATR Donchian veto.
         weak_adx = adx is None or adx < LOW_ADX
         direction_sign = {"LONG": 1, "SHORT": -1}.get(str(side or "").upper(), 0)
         signal_body_atr = direction_sign * float(current["close"] - current["open"]) / float(atr.iloc[-1])
@@ -190,14 +188,12 @@ def evaluate_market_blacklist(
                 or expansion and signal_body_atr >= MEME_STRUCTURAL_BODY_ATR - 1e-12
             )
         )
-        # Meme impulse bar (same-side body >= 0.6 ATR, or authorized MEME_GATE_ENTRY >= 0.25 ATR) starts a move from inside the box,
-        # except in dead chop (ADX < 15.0) where bars trapped inside the Donchian box must not bypass range veto.
-        meme_impulse = meme_policy and not dead_chop_adx and (
-            signal_body_atr >= MEME_IMPULSE_BODY_ATR - 1e-12
-            or (meme_structural_trigger and signal_body_atr >= 0.25 - 1e-12)
-        )
         checks["signal_body_atr"] = signal_body_atr
-        if inside_box and weak_adx and atr_pct < LOW_ATR_PCT and not meme_impulse:
+        low_trend_range = inside_box and weak_adx and atr_pct < LOW_ATR_PCT
+        checks["meme_donchian_low_trend_override"] = bool(
+            low_trend_range and (meme_policy or meme_low_trend_override)
+        )
+        if low_trend_range and not (meme_policy or meme_low_trend_override):
             return True, "VETO_DONCHIAN_RANGE_LOW_TREND", checks
 
         # Weak-volume and wick-heavy signal candle.

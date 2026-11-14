@@ -112,17 +112,18 @@ def donchian_frame(last_open, last_close):
 
 
 @pytest.mark.parametrize("side,body", [("SHORT", -1.0), ("LONG", 1.0)])
-def test_meme_impulse_body_bypasses_donchian_low_trend(side, body):
+def test_meme_candidates_bypass_donchian_low_trend(side, body):
     from core.services.market_consolidation_filter import evaluate_market_blacklist
     impulse = donchian_frame(100.4, 100.4 + body * 0.2 * 0.62)
     small = donchian_frame(100.4, 100.4 + body * 0.2 * 0.3)
     _, impulse_reason, _ = evaluate_market_blacklist(
         impulse, -1, side=side, meme_policy=True, is_breakout=True, independent_kc_direction=True)
-    _, small_reason, _ = evaluate_market_blacklist(
+    _, small_reason, small_evidence = evaluate_market_blacklist(
         small, -1, side=side, meme_policy=True, is_breakout=True, independent_kc_direction=True)
     _, plain_reason, _ = evaluate_market_blacklist(
         impulse, -1, side=side, meme_policy=False, is_breakout=True, independent_kc_direction=True)
-    assert small_reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert small_reason != "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert small_evidence["meme_donchian_low_trend_override"] is True
     assert plain_reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
     assert impulse_reason != "VETO_DONCHIAN_RANGE_LOW_TREND"
 

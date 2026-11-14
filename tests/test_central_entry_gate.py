@@ -79,6 +79,25 @@ def test_central_entry_gate_valid_long():
     assert res.checks["bandwidth"]["status"] == "PASS"
 
 
+def test_non_meme_ma15_bias_limit_remains_1_2_atr():
+    df = _build_valid_long_frame()
+    last = df.index[-1]
+    quote = float(df.loc[last, "close"])
+    df.loc[last, "ma15"] = quote - 1.3 * float(df.loc[last, "atr"])
+
+    res = CentralEntryGate.verify_and_authorize(
+        symbol="BTC/USDT",
+        side="LONG",
+        price=quote,
+        klines_or_snapshot=df,
+        source="TEST_STRATEGY",
+    )
+
+    assert res.passed is False
+    assert res.reason == "VETO_MA15_BIAS_EXTENSION"
+    assert res.checks["ma15_bias"]["max_bias_atr"] == pytest.approx(1.2)
+
+
 def test_veto_intrabar_not_closed():
     df = _build_valid_long_frame()
     # 模擬最後一根尚未收線

@@ -79,7 +79,7 @@ def test_predict_maker_trigger_price_achieves_target_slopes():
     assert (next_kc - prev_kc_mid) / prev_kc_mid >= min_slope - 1e-12
 
 
-def test_dead_chop_adx_below_15_blocked_even_with_meme_impulse():
+def test_meme_low_trend_donchian_veto_does_not_block_candidate():
     n = 30
     close = 100 + 0.5 * np.sin(np.arange(n) / 3.0) + np.arange(n) * 0.02
     frame = pd.DataFrame({
@@ -92,11 +92,11 @@ def test_dead_chop_adx_below_15_blocked_even_with_meme_impulse():
     frame["kc_lower"] = frame["kc_middle"] - 2
     last = frame.index[-1]
     frame.loc[last, ["open", "close", "high", "low"]] = [100.4, 100.4 + 0.2 * 0.65, 100.6, 100.39]
-    blocked, reason, _ = evaluate_market_blacklist(
+    blocked, reason, evidence = evaluate_market_blacklist(
         frame, -1, side="LONG", meme_policy=True, is_breakout=True, independent_kc_direction=True,
     )
-    assert blocked is True
-    assert reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert reason != "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert evidence["meme_donchian_low_trend_override"] is True
 
 
 def test_post_close_reentry_blocks_giant_spike_chase():
@@ -874,7 +874,7 @@ def test_1000pepe_1319_range_box_chop_and_micro_noise_slope_blocked():
     res_micro = evaluate_peak_valley_inflection_entry(df_micro, symbol="1000PEPE/USDT")
     assert res_micro["action"] == "HOLD"
 
-    # 3. CentralEntryGate 對 PEAK_VALLEY_INFLECTION 不得繞過 VETO_DONCHIAN_RANGE_LOW_TREND
+    # 3. 妖幣已驗證的峰谷候選不受通用低趨勢 Donchian 否決。
     n = 25
     c_arr = 0.004560 + 0.000008 * np.sin(np.arange(n) / 2.2)
     gate_df = pd.DataFrame({
@@ -914,8 +914,8 @@ def test_1000pepe_1319_range_box_chop_and_micro_noise_slope_blocked():
         klines_or_snapshot=gate_df,
         source="UNIFIED_PIPELINE|PEAK_VALLEY_INFLECTION_SHORT",
     )
-    assert res_gate.passed is False
-    assert res_gate.reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert res_gate.reason != "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert res_gate.checks["market_blacklist"]["evidence"]["meme_donchian_low_trend_override"] is True
 
 
 def _make_5m_trend_df(direction: str, bars: int = 25) -> pd.DataFrame:
@@ -1228,7 +1228,7 @@ def test_1000pepe_1319_range_box_chop_and_micro_noise_slope_blocked():
     res_micro = evaluate_peak_valley_inflection_entry(df_micro, symbol="1000PEPE/USDT")
     assert res_micro["action"] == "HOLD"
 
-    # 3. CentralEntryGate 對 PEAK_VALLEY_INFLECTION 不得繞過 VETO_DONCHIAN_RANGE_LOW_TREND
+    # 3. 妖幣已驗證的峰谷候選不受通用低趨勢 Donchian 否決。
     n = 25
     c_arr = 0.004560 + 0.000008 * np.sin(np.arange(n) / 2.2)
     gate_df = pd.DataFrame({
@@ -1268,8 +1268,8 @@ def test_1000pepe_1319_range_box_chop_and_micro_noise_slope_blocked():
         klines_or_snapshot=gate_df,
         source="UNIFIED_PIPELINE|PEAK_VALLEY_INFLECTION_SHORT",
     )
-    assert res_gate.passed is False
-    assert res_gate.reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert res_gate.reason != "VETO_DONCHIAN_RANGE_LOW_TREND"
+    assert res_gate.checks["market_blacklist"]["evidence"]["meme_donchian_low_trend_override"] is True
 
 
 def _make_5m_trend_df(direction: str, bars: int = 25) -> pd.DataFrame:

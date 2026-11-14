@@ -138,6 +138,32 @@ def test_confirmed_meme_structure_can_clear_volume_contraction(
     assert reason == ("PASS_MARKET_BLACKLIST" if allowed else "VETO_VOLUME_CONTRACTION")
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_meme_policy_bypasses_only_low_trend_donchian_veto(side):
+    frame = _low_volume_directional_frame(side, body_atr=0.1)
+    last = frame.index[-1]
+    opened = float(frame.loc[last, "open"])
+    close = float(frame.loc[last, "close"])
+    frame.loc[last, "high"] = max(opened, close) + 0.001
+    frame.loc[last, "low"] = min(opened, close) - 0.001
+    frame.loc[last, "volume"] = 1000.0
+    frame.loc[last, "atr"] = 0.1
+    frame.loc[last, "adx"] = 14.0
+
+    blocked, reason, checks = evaluate_market_blacklist(
+        frame, -1, side=side, meme_policy=True,
+    )
+    assert blocked is False
+    assert reason == "PASS_MARKET_BLACKLIST"
+    assert checks["meme_donchian_low_trend_override"] is True
+
+    blocked, reason, _ = evaluate_market_blacklist(
+        frame, -1, side=side, meme_policy=False,
+    )
+    assert blocked is True
+    assert reason == "VETO_DONCHIAN_RANGE_LOW_TREND"
+
+
 @pytest.mark.parametrize(
     "meme_policy,expansion,meme_structural_entry",
     [(False, True, False), (True, False, False)],
@@ -159,7 +185,15 @@ def test_volume_contraction_override_requires_meme_structure(
     assert checks["meme_structural_volume_override"] is False
 
 
-def test_central_entry_gate_accepts_revalidated_meme_method_with_low_volume(monkeypatch):
+@pytest.mark.parametrize("symbol", ["CAP/USDT", "1000PEPE/USDT", "龙虾/USDT"])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize(
+    "bias_atr, expect_pass",
+    [(1.4966, True), (1.5001, False)],
+)
+def test_central_entry_gate_applies_meme_ma15_bias_limit(
+    monkeypatch, symbol, side, bias_atr, expect_pass,
+):
     import time
     from types import SimpleNamespace
 
@@ -167,16 +201,19 @@ def test_central_entry_gate_accepts_revalidated_meme_method_with_low_volume(monk
     import core.services.entry_methods as entry_methods
     from core.gates.central_entry_gate import CentralEntryGate
 
-    frame = _low_volume_directional_frame("SHORT")
+    frame = _low_volume_directional_frame(side)
+    last = frame.index[-1]
+    quote = float(frame.iloc[-1]["close"])
+    direction = 1 if side == "LONG" else -1
+    frame.loc[last, "ma15"] = quote - direction * bias_atr * float(frame.iloc[-1]["atr"])
     frame.attrs.update(
         timeframe_ms=60_000,
         snapshot_ms=time.time() * 1000,
         entry_method_context={
-            "symbol": "CAP/USDT",
+            "symbol": symbol,
             "entry_method_authority": "MEME_GATE_ENTRY",
         },
     )
-    quote = float(frame.iloc[-1]["close"])
     monkeypatch.setattr(
         entry_methods, "revalidate_entry_method",
         lambda *_args, **_kwargs: (True, "ENTRY_METHOD_REVALIDATED"),
@@ -205,15 +242,20 @@ def test_central_entry_gate_accepts_revalidated_meme_method_with_low_volume(monk
     )
 
     result = CentralEntryGate.verify_and_authorize(
-        symbol="CAP/USDT",
-        side="SHORT",
+        symbol=symbol,
+        side=side,
         price=quote,
         klines_or_snapshot=frame,
         source="UNIFIED_PIPELINE|ENTRY_METHOD|MEME_GATE_ENTRY",
     )
 
-    assert result.passed, result.reason
-    assert result.checks["market_blacklist"]["evidence"]["meme_structural_volume_override"]
+    assert result.checks["ma15_bias"]["max_bias_atr"] == pytest.approx(1.5)
+    if expect_pass:
+        assert result.passed, result.reason
+        assert result.checks["market_blacklist"]["evidence"]["meme_structural_volume_override"]
+    else:
+        assert result.passed is False
+        assert result.reason == "VETO_MA15_BIAS_EXTENSION"
 
 
 def test_zero_trust_entry_gate_rules_a_to_h_and_check_entry_signal():
@@ -304,8 +346,8 @@ def test_zero_trust_entry_gate_rules_a_to_h_and_check_entry_signal():
     assert res_h["details"]["bars_since_exit"] == 1
 
 
-def test_meme_dead_chop_adx_with_midline_and_ma_crossings_blocked():
-    """回歸測試：1000PEPE/USDT ADX < 15 死魚盤整期間即便觸發 meme_structural_entry，中軌與均線反覆交錯仍須攔截。"""
+def test_meme_dead_chop_still_blocks_midline_and_ma_crossings():
+    """妖幣豁免低趨勢 Donchian 規則，但均線糾纏仍須攔截。"""
     df = _base_frame()
     df["adx"] = 13.38
     # 1. 中軌穿刺 >= 3 次 + ADX < 15 -> 必須觸發 VETO_MA5_KC_MIDLINE_CHOP（含 breakout/meme 通道）
