@@ -53,20 +53,26 @@ def test_circuit_breaker_intrabar_holding_protection_pass():
     assert "CIRCUIT_BREAKER" in auth_code
 
 
-def test_extreme_waterfall_closed_candle_authorized():
-    """A closed extreme waterfall candle (> 1.5 ATR crossing kc_middle) must be authorized."""
+def test_extreme_waterfall_authorized_before_live_candle_closes():
+    """A live extreme waterfall (> 1.5 ATR crossing kc_middle) closes before bar close."""
+    import time
+
+    now = math.floor(time.time() / 60) * 60
     pos = {
         "symbol": "1000LOBSTER/USDT",
         "side": "LONG",
         "entry_price": 1.0,
         "amount": 100,
         "leverage": 10,
+        "open_timestamp": now - 60 + 10,
     }
-    # Previous bar dropped from 1.05 to 0.95 (body 0.10 >= 1.5 * 0.03 = 0.045), crossing mid 1.0
     df = pd.DataFrame([
-        {"open": 1.05, "high": 1.06, "low": 0.94, "close": 0.95, "atr": 0.03, "kc_middle": 1.0, "is_closed": True},
-        {"open": 0.95, "high": 0.96, "low": 0.94, "close": 0.95, "atr": 0.03, "kc_middle": 0.99, "is_closed": False},
+        {"timestamp": (now - 60) * 1000, "open": 1.00, "high": 1.02, "low": 0.98,
+         "close": 1.01, "atr": 0.03, "kc_middle": 1.00, "is_closed": True},
+        {"timestamp": now * 1000, "open": 1.05, "high": 1.06, "low": 0.94,
+         "close": 0.95, "atr": 0.03, "kc_middle": 1.00, "is_closed": False},
     ])
+    df.attrs.update(timeframe_ms=60_000, snapshot_ms=time.time() * 1000)
     quote = 0.95
     ok, auth_code, details = HoldingProtectionExitGate.validate_exit(
         pos, df, quote, "EXIT_BY_EXTREME_WATERFALL",

@@ -33,6 +33,7 @@ KC_OUTER_PIVOT_REVERSAL = "KC_OUTER_PIVOT_REVERSAL"
 MA5_MA15_CROSS = "MA5_MA15_CROSS"
 KC_SINGLE_BAR_BREAKOUT = "KC_SINGLE_BAR_BREAKOUT"
 KC_MIDLINE_MOMENTUM = "KC_MIDLINE_MOMENTUM"
+KC_DUAL_TREND_LOCATION = "KC_DUAL_TREND_LOCATION"
 # Import compatibility only; persisted literal MA3 authorities are not accepted.
 MA3_MA15_CROSS = MA5_MA15_CROSS
 
@@ -46,6 +47,7 @@ ENTRY_METHODS = frozenset({
     MA5_MA15_CROSS,
     KC_SINGLE_BAR_BREAKOUT,
     KC_MIDLINE_MOMENTUM,
+    KC_DUAL_TREND_LOCATION,
 })
 
 _METHOD_RULES = {
@@ -62,6 +64,7 @@ _METHOD_RULES = {
     MA5_MA15_CROSS: ("CROSSOVER", "MA_CROSSOVER"),
     KC_SINGLE_BAR_BREAKOUT: ("BREAKOUT", "KC_OUTER_BREAKOUT"),
     KC_MIDLINE_MOMENTUM: ("CONTINUATION", "KC_MIDLINE_MOMENTUM"),
+    KC_DUAL_TREND_LOCATION: ("REVERSAL", KC_DUAL_TREND_LOCATION),
 }
 
 _REQUIRED_COLUMNS = (
@@ -224,6 +227,7 @@ def evaluate_entry_method(
     symbol: str,
     last_exit_timestamp: float | None = None,
     expected_method: str | None = None,
+    allow_same_bar_after_close: bool = False,
 ) -> dict[str, Any] | None:
     """Return one deterministic signal from closed bars, or fail closed."""
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -275,7 +279,6 @@ def evaluate_entry_method(
             logger.warning("MEME_GATE_ENTRY_DATA_BLOCK symbol=%s error=%s", symbol, exc)
 
     if expected_method in (None, KC_EARLY_MIDLINE_BREAK):
-        import time
         from core.services.exits.trend_lock import _closed_snapshot_fresh
 
 
@@ -322,7 +325,6 @@ def evaluate_entry_method(
                     candidates.append(signal)
 
     if len(bars) >= 3 and expected_method in (None, KC_OUTER_PIVOT_REVERSAL):
-        import time
         from core.services.exits.trend_lock import _closed_snapshot_fresh
 
         left, pivot, current = bars[-3:]
@@ -468,6 +470,56 @@ def evaluate_entry_method(
                     KC_MIDLINE_MOMENTUM, side, bars,
                 ))
 
+    if expected_method in (None, KC_DUAL_TREND_LOCATION):
+        previous, current = bars[-2:]
+        snapshot_ms = _number(frame.attrs, "snapshot_ms")
+        try:
+            from core.services.exits.trend_lock import _closed_snapshot_fresh
+
+            fresh = (
+                frame.attrs.get("entry_finality_verified") is True
+                and snapshot_ms is not None
+                and 0 <= time.time() * 1000 - snapshot_ms <= 180_000
+                and _closed_snapshot_fresh(frame, closed_frame)
+                and math.isclose(stamps[-1] - stamps[-2], 60_000, abs_tol=1)
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            fresh = False
+
+        macro_trend = str(frame.attrs.get("macro_trend_htf") or "").upper()
+        exit_ms = _timestamp_ms(last_exit_timestamp)
+        same_bar_flip = (
+            allow_same_bar_after_close
+            and exit_ms is not None
+            and stamps[-1] <= exit_ms < stamps[-1] + 60_000
+        )
+        exit_is_eligible = (
+            last_exit_timestamp is None
+            or (exit_ms is not None and stamps[-1] > exit_ms)
+            or same_bar_flip
+        )
+        if fresh and exit_is_eligible:
+            kc_slope = float(current["kc_middle"]) - float(previous["kc_middle"])
+            for side, expected_macro, aligned in (
+                ("LONG", "BULLISH", kc_slope > 0),
+                ("SHORT", "BEARISH", kc_slope < 0),
+            ):
+                if (
+                    macro_trend == expected_macro
+                    and aligned
+                    and (
+                        current_quote > float(current["kc_middle"])
+                        if side == "LONG"
+                        else current_quote < float(current["kc_middle"])
+                    )
+                ):
+                    candidates.append(_new_signal(
+                        KC_DUAL_TREND_LOCATION,
+                        side,
+                        bars,
+                        last_exit_timestamp=last_exit_timestamp,
+                    ))
+
     if (
         last_exit_timestamp is not None
         and len(bars) >= 2
@@ -587,7 +639,15 @@ def evaluate_entry_method(
         from core.gates.master_gate_funnel import evaluate_meme_entry_frame
         candidates = [
             signal for signal in candidates
-            if evaluate_meme_entry_frame(frame, symbol, signal["side"], current_quote).can_execute
+            if evaluate_meme_entry_frame(
+                frame,
+                symbol,
+                signal["side"],
+                current_quote,
+                allow_kc_location_override=(
+                    signal["method"] == KC_DUAL_TREND_LOCATION
+                ),
+            ).can_execute
         ]
     if not candidates:
         return None
@@ -597,6 +657,7 @@ def evaluate_entry_method(
 
     priority = (
         MEME_GATE_ENTRY,
+        KC_DUAL_TREND_LOCATION,
         KC_OUTER_PIVOT_REVERSAL,
         KC_EARLY_MIDLINE_BREAK,
         POST_CLOSE_KC_REENTRY,
@@ -646,9 +707,21 @@ def revalidate_entry_method(
             return False, "BLOCKED_LONG_ON_KC_DOWNWARD_TREND"
 
     last_exit_timestamp = context.get("entry_method_last_exit_timestamp")
+    same_bar_flip = (
+        method == KC_DUAL_TREND_LOCATION
+        and context.get("entry_method_allow_same_bar_after_close") is True
+        and context.get("is_flip") is True
+        and context.get("trigger") == "TRIGGER_DUAL_TREND_REVERSAL"
+    )
     if is_meme_breakout_symbol(symbol):
         from core.gates.master_gate_funnel import evaluate_meme_entry_frame
-        gate = evaluate_meme_entry_frame(frame, symbol, side, quote)
+        gate = evaluate_meme_entry_frame(
+            frame,
+            symbol,
+            side,
+            quote,
+            allow_kc_location_override=method == KC_DUAL_TREND_LOCATION,
+        )
         if not gate.can_execute:
             return False, gate.reason
     if method in (KC_EARLY_MIDLINE_BREAK, KC_TWO_BAR_BREAKOUT) and is_meme_breakout_symbol(symbol):
@@ -669,6 +742,7 @@ def revalidate_entry_method(
         symbol=symbol,
         last_exit_timestamp=last_exit_timestamp,
         expected_method=method,
+        allow_same_bar_after_close=same_bar_flip,
     )
     expected = context.get("entry_method_signal")
     if (
@@ -684,6 +758,29 @@ def revalidate_entry_method(
         )
     ):
         return False, "BLOCKED_ENTRY_METHOD_SIGNAL_STALE_OR_INVALID"
+
+    if method == KC_DUAL_TREND_LOCATION:
+        from core.gates.master_gate_funnel import (
+            MasterGateFunnel,
+            market_snapshot_from_frame,
+        )
+
+        try:
+            snapshot = market_snapshot_from_frame(
+                frame,
+                symbol,
+                quote,
+                context.get("macro_trend") or frame.attrs.get("macro_trend_htf"),
+            )
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+            return False, "BLOCKED_ENTRY_METHOD_MASTER_GATE_DATA_INVALID"
+        gate = MasterGateFunnel.evaluate_entry_filters(
+            snapshot,
+            side,
+            allow_kc_location_override=True,
+        )
+        if not gate.can_execute:
+            return False, "BLOCKED_ENTRY_METHOD_MASTER_GATE:" + gate.reason
 
     if final_submission:
         live_candle_veto = _live_candle_veto(frame, symbol, side, quote)
@@ -754,7 +851,7 @@ def revalidate_entry_method(
         ma5 = _number(current, "ma5")
         if ma5 is None or ma5 <= 0:
             return False, "BLOCKED_ENTRY_METHOD_BREAKOUT_MA5_INVALID"
-    elif method != POST_CLOSE_KC_REENTRY and not (
+    elif method not in (POST_CLOSE_KC_REENTRY, KC_DUAL_TREND_LOCATION) and not (
         method == KC_OUTER_PIVOT_REVERSAL and is_meme_breakout_symbol(symbol)
     ):
         long_position_max, short_position_min = 0.35, 0.65

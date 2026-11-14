@@ -222,28 +222,19 @@ class ExitGate:
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """Hold through pullbacks until a profitable confirmed pivot or emergency."""
         from core.services.exits.authorized_position_exit import strategy_exit_bar_block_reason
-        from core.symbol_aliases import is_meme_breakout_symbol
         symbol = pos.get("symbol") or (
             market_data.symbol if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("symbol", "")
         )
-        if is_meme_breakout_symbol(symbol):
-            from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
-            pos_side = str(pos.get("side") or "").upper()
-            m_trend = str(getattr(market_data, "macro_trend", "") or (market_data.get("macro_trend") if isinstance(market_data, dict) else "")).upper()
-            slope = float(getattr(market_data, "kc_middle_slope", 0.0) or (kc_slope or 0.0))
-            is_trend_aligned = (pos_side == "LONG" and (m_trend == "BULLISH" or slope >= 0)) or (
-                pos_side == "SHORT" and (m_trend == "BEARISH" or slope <= 0)
-            )
-            if not is_trend_aligned:
-                frame = market_data.raw_df if isinstance(market_data, MarketDataSnapshot) else market_data.get("raw_df")
-                quote = current_price if current_price is not None else (
-                    market_data.current_price if isinstance(market_data, MarketDataSnapshot)
-                    else market_data.get("current_price")
-                )
-                evidence = live_adverse_waterfall_evidence(pos, frame, quote)
-                if evidence is not None:
-                    return True, "EXIT_BY_EXTREME_WATERFALL", evidence
+        from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
+        frame = market_data.raw_df if isinstance(market_data, MarketDataSnapshot) else market_data.get("raw_df")
+        quote = current_price if current_price is not None else (
+            market_data.current_price if isinstance(market_data, MarketDataSnapshot)
+            else market_data.get("current_price")
+        )
+        evidence = live_adverse_waterfall_evidence(pos, frame, quote)
+        if evidence is not None:
+            return True, "EXIT_BY_EXTREME_WATERFALL", evidence
         priority_result = ExitGate._evaluate_core(
             pos, market_data, current_price, atr, kc_slope,
         )

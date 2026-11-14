@@ -1218,80 +1218,16 @@ class UltimateShortExitGatekeeper:
         frame: Any = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        🚨 盤中極速大瀑布緊急避險出口 (100% 豁免 is_bar_closed，毫秒級防崩盤熔斷)
-        做多時：
-          (1) 盤中最新報價 (Quote) 垂直貫穿跌破 KC 中軌與 MA15 深度達 >= 0.5 ATR
-          (2) 或單根盤中未收線 K 棒下殺幅度 (Live Candle Drop) 超過 1.2 ATR 且跌破 KC 中軌
-        做空時：
-          (1) 盤中最新報價 (Quote) 垂直爆拉突破 KC 中軌與 MA15 深度達 >= 0.5 ATR
-          (2) 或單根盤中未收線 K 棒拉升幅度 (Live Candle Pump) 超過 1.2 ATR 且突破 KC 中軌
+        Authorize a live 1.5-ATR adverse body crossing the KC middleline,
+        regardless of KC or macro trend alignment.
         """
-        evidence: Dict[str, Any] = {"symbol": symbol, "quote": price}
-        if frame is None or not isinstance(frame, pd.DataFrame) or len(frame) < 2:
-            return False, "INSUFFICIENT_FRAME", evidence
+        from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
 
-        side = str((position or {}).get("side") or "").upper()
-        if side not in ("LONG", "SHORT"):
-            return False, "INVALID_SIDE", evidence
-
-        try:
-            curr_candle = frame.iloc[-1]
-            prev_candle = frame.iloc[-2]
-            live_open = _float(curr_candle.get("open")) or price
-            atr_val = _float(prev_candle.get("atr")) or _float(curr_candle.get("atr")) or 0.0
-            from core.gates.master_gate_funnel import meme_distance_atr
-            dist_atr = meme_distance_atr(symbol, atr_val) if atr_val > 0 else 0.0
-            if dist_atr <= 0:
-                return False, "INVALID_ATR", evidence
-
-            kc_mid = (
-                _float(curr_candle.get("kc_middle"))
-                or _float(getattr(frame, "attrs", {}).get("live_kc_middle"))
-                or _float(prev_candle.get("kc_middle"))
-            )
-            ma15 = _float(curr_candle.get("ma15")) or _float(prev_candle.get("ma15"))
-            if kc_mid is None or ma15 is None:
-                return False, "INVALID_STRUCTURE_INDICATORS", evidence
-
-            evidence.update({
-                "side": side,
-                "live_open": live_open,
-                "dist_atr": dist_atr,
-                "kc_middle": kc_mid,
-                "ma15": ma15,
-            })
-
-            # 順勢死抱鐵律（2026-11-07 核心授權）：多頭走勢絕不平多，空頭走勢絕不平空！
-            is_macro_bull = (kc_mid > _float(prev_candle.get("kc_middle") or kc_mid)) or (str(getattr(frame, "attrs", {}).get("macro_trend", "")).upper() == "BULLISH")
-            is_macro_bear = (kc_mid < _float(prev_candle.get("kc_middle") or kc_mid)) or (str(getattr(frame, "attrs", {}).get("macro_trend", "")).upper() == "BEARISH")
-
-            if side == "LONG":
-                if is_macro_bull:
-                    return False, "VETO_HOLD_WATERFALL_IN_BULLISH_TREND", evidence
-                # 僅在非多頭趨勢且單根盤中 K 棒極速大瀑布下殺幅度超過 1.5 ATR 且跌破 KC 中軌時避險
-                single_bar_dump = (price < live_open) and ((live_open - price) >= 1.5 * dist_atr) and (price < kc_mid)
-
-                if single_bar_dump:
-                    reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["LONG"]
-                    evidence["trigger"] = "SINGLE_BAR_DUMP"
-                    return True, reason, evidence
-
-            elif side == "SHORT":
-                if is_macro_bear:
-                    return False, "VETO_HOLD_SURGE_IN_BEARISH_TREND", evidence
-                # 僅在非空頭趨勢且單根盤中 K 棒極速暴漲幅度超過 1.5 ATR 且突破 KC 中軌時避險
-                single_bar_pump = (price > live_open) and ((price - live_open) >= 1.5 * dist_atr) and (price > kc_mid)
-
-                if single_bar_pump:
-                    reason = EMERGENCY_CIRCUIT_BREAKER_REASONS["SHORT"]
-                    evidence["trigger"] = "SINGLE_BAR_PUMP"
-                    return True, reason, evidence
-
-            return False, "NO_WATERFALL_CRITERIA_MET", evidence
-
-        except Exception as exc:
-            logger.error("WATERFALL_EMERGENCY_EXIT_CHECK_ERROR symbol=%s error=%s", symbol, exc)
-            return False, f"ERROR_{exc}", evidence
+        evidence = live_adverse_waterfall_evidence(position, frame, price)
+        if evidence is None:
+            return False, "NO_WATERFALL_CRITERIA_MET", {"symbol": symbol, "quote": price}
+        evidence["symbol"] = symbol
+        return True, "EXIT_BY_EXTREME_WATERFALL", evidence
 
     @classmethod
     def structure_exit_candidate(cls, symbol, position, metadata, price, frame, *, now=None):

@@ -272,13 +272,38 @@ def market_snapshot_from_frame(frame, symbol, quote, macro_trend=None) -> Market
     )
 
 
-def evaluate_meme_entry_frame(frame, symbol, side, quote, *, last_closed_at=None, macro_trend=None):
+def evaluate_meme_entry_frame(
+    frame,
+    symbol,
+    side,
+    quote,
+    *,
+    last_closed_at=None,
+    macro_trend=None,
+    allow_kc_location_override=False,
+):
     """Common qualification only; independent entry/order authority is still required."""
     from core.symbol_aliases import is_meme_breakout_symbol
     if not is_meme_breakout_symbol(symbol):
         return GateDecision(True, "FILTER_PASS", "MEME_GATE_NOT_APPLICABLE", {})
     try:
         snapshot = market_snapshot_from_frame(frame, symbol, quote, macro_trend)
+        if allow_kc_location_override:
+            expected_macro = "BULLISH" if side == "LONG" else "BEARISH"
+            slope = snapshot.kc_middle - snapshot.kc_middle_prev
+            sign = 1 if side == "LONG" else -1
+            if (
+                side not in ("LONG", "SHORT")
+                or str(snapshot.macro_trend).upper() != expected_macro
+                or sign * slope <= 0
+                or sign * (snapshot.quote - snapshot.kc_middle) <= 0
+            ):
+                return GateDecision(
+                    False,
+                    "HOLD",
+                    "BLOCKED_TREND_LOCATION_AUTHORITY_INVALID",
+                    {},
+                )
         cooldown = False
         if last_closed_at is not None:
             closed_at = float(last_closed_at)
@@ -289,7 +314,12 @@ def evaluate_meme_entry_frame(frame, symbol, side, quote, *, last_closed_at=None
             # Post-exit cooldown: 2 complete 1m bars; priority channels are exempt in the filters.
             ready_at = math.ceil(closed_at / 60) * 60 + 120
             cooldown = time.time() < ready_at
-        return MasterGateFunnel.evaluate_entry_filters(snapshot, side, cooldown)
+        return MasterGateFunnel.evaluate_entry_filters(
+            snapshot,
+            side,
+            cooldown,
+            allow_kc_location_override=allow_kc_location_override,
+        )
     except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError) as exc:
         logger.error("MEME_GATE_DATA_BLOCK symbol=%s error=%s", symbol, exc)
         return GateDecision(False, "HOLD", "MEME_GATE_DATA_BLOCK", {"error": str(exc)})
@@ -965,7 +995,14 @@ class MasterGateFunnel:
         return bool(decision.can_execute and decision.details.get("priority_channel"))
 
     @classmethod
-    def evaluate_entry_filters(cls, m: MarketSnapshot, side: str, is_in_cooldown: bool = False) -> GateDecision:
+    def evaluate_entry_filters(
+        cls,
+        m: MarketSnapshot,
+        side: str,
+        is_in_cooldown: bool = False,
+        *,
+        allow_kc_location_override: bool = False,
+    ) -> GateDecision:
         details = {"symbol": m.symbol, "quote": m.quote, "macro": m.macro_trend}
         def block(reason):
             logger.info("[%s] symbol=%s side=%s", reason, m.symbol, side)
@@ -1055,7 +1092,10 @@ class MasterGateFunnel:
         # 做空：若未跌破 KC 下軌 (close >= kc_lower) 且非從中軌以上起跌之頂部反轉/穿中軌 (open < kc_middle)，
         #       價格到 KC 下軌剩餘空間必須至少 20% 通道寬度 (kc_position >= 0.20)，貼著下軌內側無利可圖嚴禁追空！
         kc_width = m.kc_upper - m.kc_lower
-        if math.isfinite(kc_width) and kc_width > 0 and not pivot_reversal:
+        if (
+            math.isfinite(kc_width) and kc_width > 0 and not pivot_reversal
+            and not allow_kc_location_override
+        ):
             kc_pos = (m.close_price - m.kc_lower) / kc_width
             if (
                 side == "LONG"
@@ -1110,7 +1150,11 @@ class MasterGateFunnel:
         if macro not in ("BULLISH", "BEARISH", "RANGE", "NEUTRAL"):
             return block("VETO_MACRO_TREND_UNKNOWN")
         if pivot_reversal:
-            location_veto = cls.pivot_kc_location_veto(m, side)
+            location_veto = (
+                None
+                if allow_kc_location_override
+                else cls.pivot_kc_location_veto(m, side)
+            )
             if location_veto:
                 return block(location_veto)
             details["macro_kc_position_policy"] = "CONFIRMED_PIVOT_EXCEPTION"
@@ -1168,9 +1212,15 @@ class MasterGateFunnel:
         if sign * (m.close_price - m.open_price) <= 0:
             return block(f"BLOCKED_{side}_DIRECTIONAL_CANDLE")
         if is_meme_breakout_symbol(m.symbol):
-            if side == "SHORT" and m.close_price - m.kc_lower < 0 and not valid_outer_breakout:
+            if (
+                side == "SHORT" and m.close_price - m.kc_lower < 0
+                and not valid_outer_breakout and not allow_kc_location_override
+            ):
                 return block("VETO_SHORT_BELOW_KC_LOWER_ANTI_CHASE")
-            if side == "LONG" and m.close_price - m.kc_upper > 0 and not valid_outer_breakout:
+            if (
+                side == "LONG" and m.close_price - m.kc_upper > 0
+                and not valid_outer_breakout and not allow_kc_location_override
+            ):
                 return block("VETO_LONG_ABOVE_KC_UPPER_ANTI_CHASE")
         extreme = max(m.quote, m.close_price) if sign == 1 else min(m.quote, m.close_price)
         # Anti-bottom/top chase: a fresh band break is measured from where the bar started.

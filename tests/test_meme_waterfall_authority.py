@@ -65,6 +65,17 @@ def test_verified_live_waterfall_bypasses_cost_shield_and_closed_bar_wait(
 ):
     pos, frame, quote = scenario(side, symbol, monkeypatch, body=3)
     pos["entry_price"] = quote
+    frame.attrs["macro_trend"] = "BULLISH" if side == "LONG" else "BEARISH"
+    market_data = {
+        "symbol": symbol,
+        "raw_df": frame,
+        "current_price": quote,
+        "macro_trend": frame.attrs["macro_trend"],
+    }
+
+    should_exit, exit_reason, _ = ExitGate.evaluate(pos, market_data)
+    assert should_exit
+    assert exit_reason == "EXIT_BY_EXTREME_WATERFALL"
 
     verdict = UltimateShortExitGatekeeper.evaluate(
         symbol, pos, {}, reason, quote, frame=frame, is_bar_closed=False,

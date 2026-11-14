@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pandas as pd
@@ -15,11 +16,18 @@ from test_wild_swing_strategy import (
 def forbid_final_qwen_check(monkeypatch):
     from core.vision import chart_guard
     from core.services import ai_chart_advisor
+    from core.gates.master_gate_funnel import GateDecision
 
     async def forbidden(*args, **kwargs):
         raise AssertionError("WILD_SWING must not invoke Qwen")
 
     monkeypatch.setattr(chart_guard, "evaluate_qwen_entry_vision", forbidden)
+    monkeypatch.setattr(
+        "core.gates.master_gate_funnel.evaluate_meme_entry_frame",
+        lambda *_args, **_kwargs: GateDecision(
+            True, "FILTER_PASS", "TEST_ENTRY_AUTHORITY_ISOLATION", {},
+        ),
+    )
     def forbidden(*_args, **_kwargs):
         raise AssertionError("entry firewall must not invoke chart vision")
 
@@ -67,6 +75,8 @@ def _context(bar_id, reason="MA_CROSSOVER_ENTRY", wick_trigger_bar_id=None):
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
         "entry_pattern": "CROSSOVER",
+        "structure_confirmation": "MA_CROSSOVER",
+        "entry_gate_quote": 99.6,
         "entry_signal_code": f"WILD_SWING_{reason}",
         "entry_signal_mode": "CROSSOVER",
         "channel_confirmation_bar_id": bar_id,
@@ -77,15 +87,40 @@ def _context(bar_id, reason="MA_CROSSOVER_ENTRY", wick_trigger_bar_id=None):
     return context
 
 
+def _refresh_to_current_closed_snapshot(frame):
+    missing_history = max(0, 20 - len(frame))
+    if missing_history:
+        padding = pd.concat(
+            [frame.iloc[[0]].copy() for _ in range(missing_history)],
+            ignore_index=True,
+        )
+        first_timestamp = float(frame.iloc[0]["timestamp"])
+        padding["timestamp"] = [
+            first_timestamp - (missing_history - index) * 60_000
+            for index in range(missing_history)
+        ]
+        frame = pd.concat([padding, frame], ignore_index=True)
+    now_ms = time.time() * 1000
+    current_minute_ms = int(now_ms // 60_000) * 60_000
+    frame["timestamp"] = (
+        pd.to_numeric(frame["timestamp"], errors="raise")
+        + current_minute_ms - 60_000 - float(frame.iloc[-1]["timestamp"])
+    )
+    frame.attrs.update(
+        timeframe_ms=60_000,
+        entry_finality_verified=True,
+        snapshot_ms=now_ms,
+    )
+    return frame
+
+
 def _firewall_cross_frame():
-    frame = _pivot_cross_frame("SHORT")
+    frame = _refresh_to_current_closed_snapshot(_pivot_cross_frame("SHORT"))
     frame["atr"] = 2.0
-    frame.loc[10, "kc_middle"] = 100.0
-    frame.loc[11, "kc_middle"] = 99.9
+    frame.loc[frame.index[-2], "kc_middle"] = 100.0
+    frame.loc[frame.index[-1], "kc_middle"] = 99.9
     frame["kc_upper"] = 102.0
     frame["kc_lower"] = 98.0
-    frame.attrs["timeframe_ms"] = 60_000
-    frame.attrs["entry_finality_verified"] = True
     return frame
 
 
@@ -125,8 +160,14 @@ def test_wild_swing_firewall_does_not_wait_for_ai_chart_vision(monkeypatch):
 def test_wild_swing_firewall_revalidates_long_wick_follow_through():
     from test_wild_swing_strategy import _wick_follow_through_frame
 
-    frame = _wick_follow_through_frame("LONG")
+    frame = _refresh_to_current_closed_snapshot(
+        _wick_follow_through_frame("LONG"),
+    )
     frame["atr"] = 2.0
+    frame.loc[frame.index[-1], "kc_upper"] += 0.1
+    frame.loc[frame.index[-1], "kc_lower"] -= 0.1
+    frame.loc[frame.index[-2], ["ma5", "ma15"]] = [100.6, 100.0]
+    frame.loc[frame.index[-1], ["ma5", "ma15"]] = [100.7, 100.1]
     frame.attrs["timeframe_ms"] = 60_000
     frame.attrs["entry_finality_verified"] = True
     wick_bar_id = float(frame.iloc[-2]["timestamp"])
@@ -150,7 +191,7 @@ def test_wild_swing_firewall_revalidates_long_wick_follow_through():
 
 
 def test_wild_swing_firewall_rejects_live_breakout_bar_as_unconfirmed():
-    frame = _frame("LONG")
+    frame = _refresh_to_current_closed_snapshot(_frame("LONG"))
     frame["atr"] = 2.0
     frame["open"] = 100.0
     frame["high"] = 100.2
@@ -173,15 +214,16 @@ def test_wild_swing_firewall_rejects_live_breakout_bar_as_unconfirmed():
         "is_closed": False,
     })
     frame = pd.concat([frame, live.to_frame().T], ignore_index=True)
-    frame.attrs["timeframe_ms"] = 60_000
-    frame.attrs["entry_finality_verified"] = True
+    frame.attrs["snapshot_ms"] = time.time() * 1000
     bar_id = float(frame.iloc[-1]["timestamp"])
     context = {
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
         "entry_pattern": "BREAKOUT",
+        "entry_gate_quote": 100.1,
         "entry_signal_code": "WILD_SWING_INSTANT_BREAKOUT_INSIDE_ENTRY",
         "entry_signal_mode": "BREAKOUT",
+        "is_intrabar": True,
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {"bar_id": bar_id},
     }
@@ -323,20 +365,20 @@ def test_wild_swing_firewall_rejects_unapproved_signal_pattern(monkeypatch):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_wild_swing_firewall_accepts_only_current_math_signal_after_profit_lock(side):
-    frame = _profit_lock_continuation_frame(side)
-    timestamp_offset = 1_740_000_000_000
-    frame["timestamp"] += timestamp_offset
+    frame = _refresh_to_current_closed_snapshot(
+        _profit_lock_continuation_frame(side),
+    )
     frame["atr"] = 2.0
-    frame.attrs["timeframe_ms"] = 60_000
-    frame.attrs["entry_finality_verified"] = True
     if side == "LONG":
         frame.iloc[-1, frame.columns.get_loc("ma5")] = 100.5
         frame.iloc[-1, frame.columns.get_loc("ma15")] = 99.8
+        frame.iloc[-2, frame.columns.get_loc("ma5")] = 100.1
+        frame.iloc[-2, frame.columns.get_loc("ma15")] = 100.2
     else:
         frame.iloc[-1, frame.columns.get_loc("ma5")] = 99.3
         frame.iloc[-1, frame.columns.get_loc("ma15")] = 99.8
     bar_id = float(frame.iloc[-1]["timestamp"])
-    close_id = timestamp_offset + 600_001
+    close_id = bar_id - 60_000 + 1
     account = FakeAccount(frame)
     account.trades = [{
         "symbol": "LOBSTER/USDT",
@@ -349,8 +391,11 @@ def test_wild_swing_firewall_accepts_only_current_math_signal_after_profit_lock(
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
         "entry_pattern": "BREAKOUT",
+        "entry_gate_quote": float(frame.iloc[-1]["close"]),
         "entry_signal_code": "WILD_SWING_CONFIRMED_2BAR_BREAKOUT_ENTRY",
         "entry_signal_mode": "BREAKOUT",
+        "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
+        "is_intrabar": False,
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {
             "bar_id": bar_id,
@@ -366,14 +411,12 @@ def test_wild_swing_firewall_accepts_only_current_math_signal_after_profit_lock(
 
 
 def test_wild_swing_firewall_does_not_depend_on_legacy_profit_lock_ticket():
-    frame = _profit_lock_continuation_frame("LONG")
-    timestamp_offset = 1_740_000_000_000
-    frame["timestamp"] += timestamp_offset
+    frame = _refresh_to_current_closed_snapshot(
+        _profit_lock_continuation_frame("LONG"),
+    )
     frame["atr"] = 2.0
-    frame.attrs["timeframe_ms"] = 60_000
-    frame.attrs["entry_finality_verified"] = True
     bar_id = float(frame.iloc[-1]["timestamp"])
-    close_id = timestamp_offset + 600_001
+    close_id = bar_id - 60_000 + 1
     account = FakeAccount(frame)
     account.trades = [{
         "symbol": "LOBSTER/USDT",
@@ -382,12 +425,17 @@ def test_wild_swing_firewall_does_not_depend_on_legacy_profit_lock_ticket():
         "reason": "Wild Swing EXIT_BY_PROFIT_LOCK",
         "id": close_id,
     }]
+    frame.iloc[-2, frame.columns.get_loc("ma5")] = 100.1
+    frame.iloc[-2, frame.columns.get_loc("ma15")] = 100.2
     context = {
         "entry_mode": "WILD_SWING",
         "source": "WILD_SWING_1M",
         "entry_pattern": "BREAKOUT",
+        "entry_gate_quote": float(frame.iloc[-1]["close"]),
         "entry_signal_code": "WILD_SWING_CONFIRMED_2BAR_BREAKOUT_ENTRY",
         "entry_signal_mode": "BREAKOUT",
+        "structure_confirmation": "CONFIRMED_2BAR_BREAKOUT",
+        "is_intrabar": False,
         "channel_confirmation_bar_id": bar_id,
         "dual_tf_meta": {
             "bar_id": bar_id,
@@ -406,9 +454,11 @@ def test_engine_passes_signal_mode_into_account_entry_context():
         _numeric_wild_swing_frame,
     )
 
-    frame = _frame_with_verified_structure_history(
-        _numeric_wild_swing_frame("LONG", "INITIAL_2BAR_BREAKOUT"),
-        "LONG",
+    frame = _refresh_to_current_closed_snapshot(
+        _frame_with_verified_structure_history(
+            _numeric_wild_swing_frame("LONG", "INITIAL_2BAR_BREAKOUT"),
+            "LONG",
+        ),
     )
     frame["kc_middle"] = 100.0
     frame["kc_upper"] = 105.0

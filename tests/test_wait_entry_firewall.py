@@ -250,7 +250,6 @@ def test_final_wait_firewall_blocks_short_when_ma5_turns_up(
     monkeypatch.setattr(config, "ENTRY_DISABLED_SYMBOLS", ())
     account, candidate, frame = _wait_account(tmp_path, side="SHORT")
     frame.loc[frame.index[-2], "ma5"] = 101.5
-    frame.loc[frame.index[-2], "ma15"] = 102.0
 
     with pytest.raises(ValueError, match="VETO_SHORT_MA_CONDITION_NOT_MET"):
         asyncio.run(validate_account_entry(

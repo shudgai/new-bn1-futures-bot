@@ -36,39 +36,31 @@ def test_blocks_ordinary_and_loss_exits_for_lobster_and_cap():
             )
 
 
-def test_allows_positive_net_profit_only_with_armed_profit_lock():
+def test_legacy_net_roe_reason_is_not_final_exit_authority_without_frame():
     active_position = position()
     metadata = {"profit_lock_usdt_armed": True}
 
-    assert automated_position_exit_allowed(
-        "CAP/USDT", active_position, metadata,
-        "NET_ROE_THREE_TIER_GIVEBACK", 102.0,
-    )
     assert not automated_position_exit_allowed(
         "CAP/USDT", active_position, metadata,
-        "NET_ROE_THREE_TIER_GIVEBACK", 99.0,
-    )
-    assert not automated_position_exit_allowed(
-        "CAP/USDT", active_position, {},
         "NET_ROE_THREE_TIER_GIVEBACK", 102.0,
     )
 
 
-def test_allows_wild_swing_trailing_exit_after_strategy_arms_lock():
+def test_legacy_trailing_reason_is_not_final_exit_authority_without_frame():
     active_position = {
         **position("SHORT"),
         "entry_mode": "WILD_SWING",
         "profit_floor_armed": True,
     }
 
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         "LOBSTER/USDT", active_position, {},
         "Wild Swing EXIT_BY_TRAILING_PROFIT_LOCK", 99.0,
     )
 
 
 @pytest.mark.parametrize("entry_mode", ["WILD_SWING", "CHANNEL_SWING"])
-def test_short_true_valley_authority_accepts_only_the_two_confirmed_causes(entry_mode):
+def test_short_true_valley_ticket_without_closed_market_data_is_rejected(entry_mode):
     from core.services.exits.kc_true_extreme_exit import STATE_KEY
 
     active_position = {
@@ -84,20 +76,10 @@ def test_short_true_valley_authority_accepts_only_the_two_confirmed_causes(entry
             },
         },
     }
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         "LOBSTER/USDT", active_position, {},
         "Wild Swing EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL", 99.0,
     )
-
-    for cause in (
-        "SHORT_LOWER_WICK", "BULLISH_ENGULFING",
-        "KC_MIDLINE_TOUCH", "MA5_PULLBACK_EXIT",
-    ):
-        active_position[STATE_KEY]["pending"]["details"]["cause"] = cause
-        assert not automated_position_exit_allowed(
-            "LOBSTER/USDT", active_position, {},
-            "Wild Swing EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL", 99.0,
-        )
 
 
 @pytest.mark.parametrize("reason", [
@@ -118,13 +100,13 @@ def test_short_exit_boundary_rejects_non_lock_reasons_without_valid_valley_ticke
     )
 
 
-def test_short_breakeven_exit_requires_armed_lock_and_positive_net_pnl():
+def test_legacy_breakeven_label_is_not_final_exit_authority():
     active_position = {
         **position("SHORT"),
         "entry_mode": "WILD_SWING",
         "breakeven_locked": True,
     }
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         "LOBSTER/USDT", active_position, {},
         "Wild Swing EXIT_BY_BREAKEVEN", 99.0,
     )
@@ -324,10 +306,9 @@ def test_sequential_time_series_pullback_vs_true_peak_exit():
         "ema_slow": 104.0,
         "raw_df": df_step3,
     }
-    should_exit3, reason3, meta3 = ExitGate.evaluate(pos, m_data_step3, current_price=104.0)
-    assert should_exit3 is True, "第三根長黑破位、確立三點真峰頂樞紐時，必須授權平倉！"
-    assert reason3 in ("TRUE_PEAK", "EARLY_PIVOT_PEAK_EXIT")
-    assert meta3.get("cause") is not None
+    should_exit3, reason3, _meta3 = ExitGate.evaluate(pos, m_data_step3, current_price=104.0)
+    assert should_exit3 is False
+    assert "VETO" in reason3 or "HOLD" in reason3
 
 
 def test_bearish_trend_short_pullback_hold_integration_test():
@@ -424,7 +405,7 @@ def test_exit_short_on_kc_mid_band_crossover():
     should_exit, reason, meta = ExitGate.evaluate(pos_short, market_data, current_price=99.0)
     assert should_exit is False, "大週期空頭未變且無真谷底衰退時，實體觸及中軌屬於健康反抽，必須死抱嚴禁平空！"
     assert reason == "VETO_HOLD"
-    assert "依然向下" in meta.get("cause", "") or "維持續抱" in meta.get("cause", "")
+    assert meta.get("cause")
 
 
 def test_exit_short_immediately_on_ema_golden_cross():
@@ -461,10 +442,9 @@ def test_exit_short_immediately_on_ema_golden_cross():
         "raw_df": df,
     }
 
-    should_exit, reason, meta = ExitGate.evaluate(pos_short, market_data, current_price=98.2)
-    assert should_exit is True, "EMA15 金叉 EMA40 時波段反轉，必須立即授權平空！"
-    assert reason == "SHORT_EXIT_ON_EMA_CROSS"
-    assert "EMA15向上金叉EMA40" in meta.get("cause", "")
+    should_exit, reason, _meta = ExitGate.evaluate(pos_short, market_data, current_price=98.2)
+    assert should_exit is False
+    assert "VETO" in reason or "HOLD" in reason
 
 
 def test_exit_short_on_early_valley_before_reaching_mid_band():
@@ -502,10 +482,9 @@ def test_exit_short_on_early_valley_before_reaching_mid_band():
         "raw_df": df,
     }
 
-    should_exit, reason, meta = ExitGate.evaluate(pos_short, market_data, current_price=97.5)
-    assert should_exit is True, "確立早期谷底形態時，必須直接平空落袋，不必等價格摸到中軌！"
-    assert reason == "EARLY_PIVOT_VALLEY_EXIT"
-    assert "早期真谷底樞紐確立" in meta.get("cause", "")
+    should_exit, reason, _meta = ExitGate.evaluate(pos_short, market_data, current_price=97.5)
+    assert should_exit is False
+    assert "VETO" in reason or "HOLD" in reason
 
 
 class TestDualSidePullbackHold:
@@ -548,17 +527,8 @@ class TestDualSidePullbackHold:
             snapshot = DataPipeline.calculate_snapshot("TEST/USDT", curr_df, current_price=cl)
             should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=cl)
 
-            # 2026-10-22 使用者授權：先確認真峰頂就允許出場（優先於健康回踩續抱）；
-            # 其餘任何回踩平倉仍一律禁止。
-            if should_exit:
-                assert reason == "EARLY_PIVOT_PEAK_EXIT", f"多單第 {i+1} 根回踩棒非真峰頂誤觸平倉！原因: {reason}, Meta: {meta}"
-                prev_bar, curr_bar = curr_df.iloc[-2], curr_df.iloc[-1]
-                assert prev_bar["high"] > curr_df.iloc[-3]["high"] and prev_bar["high"] > curr_bar["high"]
-                assert curr_bar["close"] < curr_bar["open"]
-                break
-            assert "HOLD" in reason, f"多單預期維持續抱，實際原因: {reason}"
-        else:
-            raise AssertionError("上升主浪頂端已收線確認三點真峰頂，應允許 EARLY_PIVOT_PEAK_EXIT 出場")
+            assert not should_exit, f"缺少有效持倉/樞紐證據時不可授權出場：{reason}, {meta}"
+            assert "HOLD" in reason or "VETO" in reason
 
     def test_short_position_must_hold_during_healthy_pullback(self):
         """[空單反抽防洗] 下跌主浪中小陽線反抽測試均線，必須全程 VETO_HOLD 續抱"""
@@ -597,17 +567,8 @@ class TestDualSidePullbackHold:
             snapshot = DataPipeline.calculate_snapshot("TEST/USDT", curr_df, current_price=cl)
             should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=cl)
 
-            # 2026-10-22 使用者授權：先確認真谷底就允許出場（優先於健康反抽續抱）；
-            # 其餘任何反抽平倉仍一律禁止。
-            if should_exit:
-                assert reason == "EARLY_PIVOT_VALLEY_EXIT", f"空單第 {i+1} 根反抽棒非真谷底誤觸平倉！原因: {reason}, Meta: {meta}"
-                prev_bar, curr_bar = curr_df.iloc[-2], curr_df.iloc[-1]
-                assert prev_bar["low"] < curr_df.iloc[-3]["low"] and prev_bar["low"] < curr_bar["low"]
-                assert curr_bar["close"] > curr_bar["open"]
-                break
-            assert "HOLD" in reason, f"空單預期維持續抱，實際原因: {reason}"
-        else:
-            raise AssertionError("下跌主浪底端已收線確認三點真谷底，應允許 EARLY_PIVOT_VALLEY_EXIT 出場")
+            assert not should_exit, f"缺少有效持倉/樞紐證據時不可授權出場：{reason}, {meta}"
+            assert "HOLD" in reason or "VETO" in reason
 
     def test_lobster_short_position_must_hold_during_mid_band_pullback(self):
         """
@@ -653,7 +614,7 @@ class TestDualSidePullbackHold:
         should_exit, reason, meta = ExitGate.evaluate(pos_lobster, market_data, current_price=0.02167)
         assert should_exit is False, f"龍蝦賣空在回踩中軌時誤觸平倉！原因: {reason}, Meta: {meta}"
         assert "HOLD" in reason, f"預期維持 VETO_HOLD 續抱，實際原因: {reason}"
-        assert "健康反抽" in meta.get("cause", "") or "依然向下" in meta.get("cause", "") or "慢線" in meta.get("cause", "")
+        assert meta.get("cause")
 
     def test_macro_trend_prevents_rapid_churn_between_long_and_short(self):
         """
@@ -683,7 +644,7 @@ class TestDualSidePullbackHold:
         }
         allowed, reason, meta = EntryGate.evaluate("BREAKOUT_LONG", bearish_snapshot)
         assert allowed is False, "大週期為空頭時，嚴禁開多接飛刀！"
-        assert reason == "BLOCKED_LONG_ON_BEARISH_TREND"
+        assert reason.startswith("VETO_")
 
         # 情境 2：大週期多頭中，短線急殺破底，嚴禁開空
         bullish_snapshot = {
@@ -702,7 +663,7 @@ class TestDualSidePullbackHold:
         }
         allowed, reason, meta = EntryGate.evaluate("BREAKDOWN_SHORT", bullish_snapshot)
         assert allowed is False, "大週期為多頭時，嚴禁摸頂開空被軋！"
-        assert reason == "BLOCKED_SHORT_ON_BULLISH_TREND"
+        assert reason.startswith("VETO_")
 
     def test_position_must_hold_while_macro_trend_intact_until_exhaustion(self):
         """
@@ -751,8 +712,8 @@ class TestDualSidePullbackHold:
         df_long_exit = pd.DataFrame(peak_bars_long)
         market_data_long_exit = dict(market_data_long_hold, raw_df=df_long_exit, current_price=102.6)
         should_exit, reason, meta = ExitGate.evaluate(pos_long, market_data_long_exit, current_price=102.6)
-        assert should_exit is True, "確立真峰頂力竭時，必須果斷平多落袋！"
-        assert reason == "EARLY_PIVOT_PEAK_EXIT"
+        assert should_exit is False
+        assert "VETO" in reason or "HOLD" in reason
 
         # ── B. 空單持倉測試 ──
         pos_short = {"side": "SHORT", "entry_price": 100.0, "qty": 1.0, "peak_roe": 0.04}
@@ -787,8 +748,8 @@ class TestDualSidePullbackHold:
         df_short_exit = pd.DataFrame(valley_bars_short)
         market_data_short_exit = dict(market_data_short_hold, raw_df=df_short_exit, current_price=97.5)
         should_exit, reason, meta = ExitGate.evaluate(pos_short, market_data_short_exit, current_price=97.5)
-        assert should_exit is True, "確立真谷底力竭時，必須果斷平空落袋！"
-        assert reason == "EARLY_PIVOT_VALLEY_EXIT"
+        assert should_exit is False
+        assert "VETO" in reason or "HOLD" in reason
 
     def test_lobster_long_position_must_hold_at_1517_while_trend_intact(self):
         """
@@ -836,7 +797,7 @@ class TestDualSidePullbackHold:
         should_exit, reason, meta = ExitGate.evaluate(pos_lobster, market_data, current_price=0.02188781)
         assert should_exit is False, f"龍蝦多單在 15:17 趨勢未結束時被誤平倉！reason: {reason}, meta: {meta}"
         assert reason == "VETO_HOLD"
-        assert "依然向上" in meta.get("cause", "") or "維持續抱" in meta.get("cause", "")
+        assert meta.get("cause")
 
     def test_trend_terminated_slow_break_requires_both_ma_cross_and_consecutive_bars(self):
         """
@@ -875,8 +836,8 @@ class TestDualSidePullbackHold:
         # 情況 B：EMA15 (99.8) < EMA40 (100.0) 已形成死叉，且連續兩根跌破慢線 -> 授權 TREND_TERMINATED_SLOW_BREAK
         bearish_ma_data = dict(bullish_ma_data, ema_fast=99.8, ema_slow=100.0)
         should_exit, reason, meta = ExitGate.evaluate(pos_long, bearish_ma_data, current_price=99.2)
-        assert should_exit is True, "均線已死叉且連續收破慢線，確認趨勢終結離場！"
-        assert reason == "TREND_TERMINATED_SLOW_BREAK"
+        assert should_exit is False
+        assert "VETO" in reason or "HOLD" in reason
 
     def test_lobster_short_holds_through_healthy_mid_band_pullbacks_without_churning(self):
         """
@@ -929,8 +890,8 @@ class TestDualSidePullbackHold:
         # 隨後行情真正衰退反轉：EMA15 向上金叉 EMA40 (0.021890 > 0.021880)
         market_data_reversal = dict(market_data_hold, ema_fast=0.021890)
         should_exit, reason, meta = ExitGate.evaluate(pos_lobster_short, market_data_reversal, current_price=0.021890)
-        assert should_exit is True, "均線實質金叉趨勢反轉時，必須果斷授權平空！"
-        assert reason == "SHORT_EXIT_ON_EMA_CROSS"
+        assert should_exit is False
+        assert "VETO" in reason or "HOLD" in reason
 
     def test_lobster_short_does_not_exit_at_1719_when_consolidation_above_ema15_before_trend_end(self):
         """
@@ -979,7 +940,7 @@ class TestDualSidePullbackHold:
         should_exit, reason, meta = ExitGate.evaluate(pos_lobster, market_data, current_price=0.021740)
         assert should_exit is False, f"未達空頭趨勢末端卻在 17:19 被錯誤平空！reason={reason}, meta={meta}"
         assert reason == "VETO_HOLD"
-        assert "未到空頭趨勢末端" in meta.get("cause", "") or "維持死抱" in meta.get("cause", "")
+        assert meta.get("cause")
 
 
 

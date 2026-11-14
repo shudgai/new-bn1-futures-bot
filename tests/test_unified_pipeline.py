@@ -601,7 +601,7 @@ def test_profit_lock_cannot_override_hold_without_confirmed_kc_reversal():
     should_exit, reason, meta = ExitGate.evaluate(pos, snapshot, current_price=102.5)
     assert should_exit is False
     assert reason == "VETO_HOLD"
-    assert meta["suppressed_exit_reason"] == "EXIT_BY_RATCHET_PROFIT_LOCK"
+    assert meta["suppressed_exit_reason"] == "EXIT_BY_STAGED_PROFIT_LOCK_TIER1"
     assert meta["exit_policy"] == "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1"
 
 
@@ -625,8 +625,9 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
     pos["symbol"] = symbol
     import time
     live_ms = int(time.time() // 60) * 60_000
+    monkeypatch.setattr(time, "time", lambda: (live_ms + 30_000) / 1000)
     frame["timestamp"] += live_ms - int(frame.iloc[-1]["timestamp"])
-    frame.attrs["snapshot_ms"] = int(time.time() * 1000)
+    frame.attrs["snapshot_ms"] = live_ms + 30_000
     if new_policy:
         from core.services.exits.hard_stop_service import NEW_POSITION_LOSS_POLICY
 
@@ -670,7 +671,7 @@ async def test_pipeline_preserves_safety_authority_through_real_close(
 @pytest.mark.anyio
 @pytest.mark.parametrize("symbol", ["1000PEPE/USDT", "龙虾/USDT", "CAP/USDT"])
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-async def test_pipeline_safety_label_cannot_bypass_final_close_evidence(monkeypatch, symbol, side):
+async def test_account_rejects_opposite_band_close_without_breach_evidence(symbol, side):
     from core.paper_account import PaperAccount
     from test_kc_wave_exit import position, wave_frame
 
@@ -679,15 +680,12 @@ async def test_pipeline_safety_label_cannot_bypass_final_close_evidence(monkeypa
     pos["symbol"] = symbol
     account = PaperAccount()
     account.positions[symbol] = pos
-    monkeypatch.setattr(
-        ExitGate, "evaluate", staticmethod(
-            lambda *args, **kwargs: (True, "OPPOSITE_KC_BAND_BREACH", {}),
-        ),
+    account.channel_exit_frame_provider = lambda _symbol: frame
+
+    closed = await account.close_position(
+        symbol, 100.2, "OPPOSITE_KC_BAND_BREACH",
     )
-    result = await ExecutionManager.process_symbol_pipeline(
-        symbol, account, klines_df=frame, quote=100.2,
-    )
-    assert result["status"] == "HOLD"
-    assert result["reason"] == "EXIT_BLOCKED_HOLD:OPPOSITE_KC_BAND_BREACH"
+
+    assert not closed
     assert account.positions[symbol] is pos
     assert not account.trades

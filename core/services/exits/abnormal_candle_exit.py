@@ -41,7 +41,13 @@ def live_adverse_waterfall_evidence(position, frame, quote, *, now_ms=None, max_
         if (not isinstance(current.get("is_closed"), (bool, np.bool_))
                 or bool(current["is_closed"])):
             raise ValueError("current live candle finality required")
-        opened = float(position["open_timestamp"])
+        opened_at = (
+            position.get("open_timestamp")
+            or position.get("entry_timestamp")
+            or position.get("created_at")
+            or position.get("entry_time")
+        )
+        opened = float(opened_at)
         opened_ms = opened * 1000 if opened < 1e11 else opened
         if (not math.isfinite(opened_ms) or opened_ms <= 0 or opened_ms > now
                 or stamp < math.floor(opened_ms / interval) * interval):

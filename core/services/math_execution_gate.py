@@ -515,8 +515,10 @@ def validate_exit_math(
     from core.services.exits.authorized_position_exit import meme_strategy_disaster_disabled
     if meme_strategy_disaster_disabled(str(position.get("symbol") or ""), close_reason):
         return False, "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED", {"exit_type": "BLOCKED"}
-    from core.symbol_aliases import is_meme_breakout_symbol
-    if is_meme_breakout_symbol(str(position.get("symbol") or "")) and norm_reason == "EXIT_BY_EXTREME_WATERFALL":
+    if any(token in norm_reason for token in (
+        "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP",
+        "EMERGENCY_SURGE", "閃崩", "瀑布",
+    )):
         from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
         evidence = live_adverse_waterfall_evidence(
             position, frame, price, now_ms=now_ms, max_staleness_ms=max_staleness_ms,
@@ -1038,13 +1040,15 @@ async def validate_entry_at_execution(
     # account-side gates. Re-fetching here and again in entry_firewall both
     # wastes REST calls and can hold the global submit lock across settlement
     # retries.
-    frame = _extract_frame(payload)
+    frame = payload.get("entry_gate_frame")
     provider = getattr(account, "entry_frame_provider", None)
     if frame is None and callable(provider):
         frame = provider(symbol)
         if hasattr(frame, "__await__"):
             frame = await frame
-    if frame is None:
+        if frame is None:
+            return False, "BLOCKED_ENTRY_MATH_FRESH_SNAPSHOT_UNAVAILABLE"
+    elif frame is None:
         frame = _extract_frame(payload)
     if frame is None:
         snapshot = payload.get("snapshot")

@@ -1020,6 +1020,7 @@ class PaperAccount:
             entry_decision = {}
         from core.services.entry_methods import (
             KC_EARLY_MIDLINE_BREAK,
+            KC_DUAL_TREND_LOCATION,
             KC_MIDLINE_MOMENTUM,
             KC_SINGLE_BAR_BREAKOUT,
             KC_TWO_BAR_BREAKOUT,
@@ -1032,6 +1033,7 @@ class PaperAccount:
         if not is_manual or strategy_meme_entry or entry_context.get("entry_method_authority") in (
             KC_EARLY_MIDLINE_BREAK, KC_TWO_BAR_BREAKOUT,
             KC_SINGLE_BAR_BREAKOUT, KC_MIDLINE_MOMENTUM,
+            KC_DUAL_TREND_LOCATION,
         ):
             from core.services.entry_firewall import validate_account_entry
             entry_decision = await validate_account_entry(self, symbol, side, entry_context)

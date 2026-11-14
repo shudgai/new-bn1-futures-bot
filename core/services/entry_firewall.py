@@ -304,7 +304,8 @@ def ma5_ma15_entry_gate_problem(
         return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
     is_relaxed_ma = str(entry_confirmation or "").upper() in {
         "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER",
-        "MA_CROSSOVER", "MEME_PEAK_HUNTER", "BREAKOUT", "CONTINUATION",
+        "MA_CROSSOVER", "MA_CROSSOVER_WICK_FOLLOW_THROUGH",
+        "MEME_PEAK_HUNTER", "BREAKOUT", "CONTINUATION",
     }
     is_confirmed_outer_entry = is_relaxed_ma or has_valid_wild_outer_confirmation(
         frame, normalized_side, entry_confirmation, quote=quote, symbol=symbol,
@@ -614,7 +615,8 @@ def final_trend_alignment_problem(
 
         is_relaxed_ma_entry = entry_confirmation in {
             "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT", "DIP_SNIPER", "MEME_PEAK_HUNTER",
-            "MA_CROSSOVER", "BREAKOUT", "CONTINUATION",
+            "MA_CROSSOVER", "MA_CROSSOVER_WICK_FOLLOW_THROUGH",
+            "BREAKOUT", "CONTINUATION",
         }
         is_confirmed_outer_entry = is_relaxed_ma_entry or entry_confirmation in {
             INSTANT_BREAKOUT_INSIDE,
@@ -640,7 +642,13 @@ def final_trend_alignment_problem(
                 entry_confirmation=(
                     entry_confirmation if (is_confirmed_outer_entry or is_relaxed_ma_entry) else None
                 ),
-                is_continuation_entry=is_continuation_entry or is_relaxed_ma_entry,
+                is_continuation_entry=(
+                    is_continuation_entry
+                    or (
+                        is_relaxed_ma_entry
+                        and entry_confirmation != "MA_CROSSOVER_WICK_FOLLOW_THROUGH"
+                    )
+                ),
                 is_instant_breakout=(
                     entry_confirmation in (INSTANT_BREAKOUT_INSIDE, "INSTANT_BURST_BREAKOUT", "MID_LINE_BREAKDOWN", "MID_LINE_BREAKOUT")
                 ),
@@ -852,12 +860,56 @@ def require_macro_candle_structure(
 
 
 async def validate_account_entry(account, symbol, side, context):
+    context = context if isinstance(context, dict) else {}
     from core.symbol_aliases import is_auto_entry_symbol
     if not is_auto_entry_symbol(symbol):
         raise ValueError(
             "[FORBIDDEN_ENTRY] AUTOMATIC_ENTRY_SYMBOL_DISABLED: "
             + str(symbol)
         )
+    from core.services.entry_methods import (
+        ENTRY_METHODS,
+        KC_DUAL_TREND_LOCATION,
+        KC_OUTER_PIVOT_REVERSAL,
+        THREE_BAR_PIVOT_REVERSAL,
+        KC_TWO_BAR_BREAKOUT,
+        KC_EARLY_MIDLINE_BREAK,
+        MEME_GATE_ENTRY,
+        MA5_MA15_CROSS,
+        POST_CLOSE_KC_REENTRY,
+        revalidate_entry_method,
+    )
+    method = context.get("entry_method_authority")
+    dual_trend_flip = (
+        method == KC_DUAL_TREND_LOCATION
+        and context.get("entry_method_allow_same_bar_after_close") is True
+        and context.get("is_flip") is True
+        and context.get("trigger") == "TRIGGER_DUAL_TREND_REVERSAL"
+    )
+    if dual_trend_flip:
+        entry_state = getattr(account, "entry_filter_last", None)
+        tickets = (
+            entry_state.get("dual_trend_reversal_pending")
+            if isinstance(entry_state, dict) else None
+        )
+        ticket = tickets.get(symbol) if isinstance(tickets, dict) else None
+        source_position = ticket.get("source_position") if isinstance(ticket, dict) else None
+        source_side = (
+            str(source_position.get("side") or "").upper()
+            if isinstance(source_position, dict) else ""
+        )
+        exit_reason = str(ticket.get("exit_reason") or "") if isinstance(ticket, dict) else ""
+        actual_close = getattr(account, "last_closed_at", {}).get(symbol)
+        from core.services.exits.authorized_position_exit import is_dual_trend_emergency_exit
+        if (
+            not isinstance(ticket, dict)
+            or not exit_reason
+            or is_dual_trend_emergency_exit(exit_reason)
+            or source_side not in ("LONG", "SHORT")
+            or source_side == str(side).upper()
+            or actual_close is None
+        ):
+            raise ValueError("[FORBIDDEN_ENTRY] DUAL_TREND_FLIP_TICKET_INVALID")
     from core.config import is_entry_disabled
     if is_entry_disabled(symbol):
         raise ValueError("[FORBIDDEN_ENTRY] ENTRY_DISABLED_SYMBOL: " + symbol)
@@ -919,17 +971,15 @@ async def validate_account_entry(account, symbol, side, context):
         if not pv_bypass_meme_kc_lock:
             meme_gate = evaluate_meme_entry_frame(
                 fresh_meme_frame, symbol, side, context.get("entry_gate_quote"),
-                last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
+                last_closed_at=(
+                    None if dual_trend_flip
+                    else getattr(account, "last_closed_at", {}).get(symbol)
+                ),
                 macro_trend=context.get("macro_trend"),
+                allow_kc_location_override=method == KC_DUAL_TREND_LOCATION,
             )
             if not meme_gate.can_execute:
                 raise ValueError("[FORBIDDEN_ENTRY] " + meme_gate.reason)
-    from core.services.entry_methods import (
-        KC_OUTER_PIVOT_REVERSAL, KC_TWO_BAR_BREAKOUT, KC_EARLY_MIDLINE_BREAK, MEME_GATE_ENTRY,
-        THREE_BAR_PIVOT_REVERSAL, MA5_MA15_CROSS, POST_CLOSE_KC_REENTRY, ENTRY_METHODS,
-        revalidate_entry_method,
-    )
-    method = context.get("entry_method_authority")
     if method in ENTRY_METHODS:
         firewall_authority = (
             "KC_OUTER_PIVOT" if method in (KC_OUTER_PIVOT_REVERSAL, THREE_BAR_PIVOT_REVERSAL) else method
@@ -1385,17 +1435,48 @@ async def validate_account_entry(account, symbol, side, context):
                     or (context.get("dual_tf_meta", {}).get("bar_id") if isinstance(context.get("dual_tf_meta"), dict) else None)
                     or context.get("candidate_bar_id")
                 )
+                from core.services.candle_data import closed_entry_candles
+
+                closed_signal_bars = closed_entry_candles(fresh_frame)
+                if len(closed_signal_bars) < 2:
+                    raise ValueError(
+                        "[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_DATA_INSUFFICIENT"
+                    )
+                current_closed = closed_signal_bars.iloc[-1]
+                previous_closed = closed_signal_bars.iloc[-2]
+                try:
+                    ma5_current = float(current_closed["ma5"])
+                    ma5_previous = float(previous_closed["ma5"])
+                    kc_middle_current = float(current_closed["kc_middle"])
+                    kc_middle_previous = float(previous_closed["kc_middle"])
+                    current_width = float(current_closed["kc_upper"]) - float(current_closed["kc_lower"])
+                    previous_width = float(previous_closed["kc_upper"]) - float(previous_closed["kc_lower"])
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(
+                        "[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_DATA_INVALID"
+                    ) from exc
+                if not all(math.isfinite(value) for value in (
+                    ma5_current, ma5_previous, kc_middle_current,
+                    kc_middle_previous, current_width, previous_width,
+                )):
+                    raise ValueError(
+                        "[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_DATA_INVALID"
+                    )
                 signal = {
                     "side": side,
                     "structure_confirmation": confirmation,
                     "structure_confirmed": True,
-                    "channel_expanding": True,
+                    "channel_expanding": current_width > previous_width,
                     "entry_pattern": context.get("entry_pattern", confirmation),
                     "reason": context.get("entry_signal_code", confirmation),
-                    "is_intrabar": context.get("is_intrabar", True),
+                    "is_intrabar": context.get("is_intrabar") is True,
                     "bar_id": bar_id_val,
                     "wick_trigger_bar_id": context.get("wick_trigger_bar_id"),
                     "close": float(fresh_frame.iloc[-1]["close"]),
+                    "ma5_current": ma5_current,
+                    "ma5_previous": ma5_previous,
+                    "kc_middle_current": kc_middle_current,
+                    "kc_middle_previous": kc_middle_previous,
                 }
             else:
                 raise ValueError("[FORBIDDEN_ENTRY] WILD_SWING_SIGNAL_STALE_OR_INVALID")
@@ -1433,6 +1514,19 @@ async def validate_account_entry(account, symbol, side, context):
         signal_wick_bar_id = finite_bar_id(
             signal.get("wick_trigger_bar_id")
         )
+        signal_code_confirmation = {
+            "WILD_SWING_INSTANT_BREAKOUT_INSIDE_ENTRY": {INSTANT_BREAKOUT_INSIDE},
+            "WILD_SWING_CONFIRMED_2BAR_BREAKOUT_ENTRY": {CONFIRMED_2BAR_BREAKOUT},
+            "WILD_SWING_TREND_CONTINUATION": {
+                "CONTINUATION", CONTINUATION_OUTSIDE_KC,
+                "OUTSIDE_CHANNEL_CONTINUATION",
+            },
+            "WILD_SWING_MA_CROSSOVER_ENTRY": {"MA_CROSSOVER"},
+            "WILD_SWING_MA_CROSSOVER_WICK_FOLLOW_THROUGH_ENTRY": {"MA_CROSSOVER"},
+        }
+        expected_confirmations = signal_code_confirmation.get(
+            str(context.get("entry_signal_code") or "").upper()
+        )
         stale_fields = []
         if signal.get("side") != side:
             stale_fields.append("side")
@@ -1453,6 +1547,11 @@ async def validate_account_entry(account, symbol, side, context):
             stale_fields.append("confirmation_bar")
         if expected_wick_bar_id != signal_wick_bar_id:
             stale_fields.append("wick_bar")
+        if (
+            expected_confirmations is not None
+            and signal.get("structure_confirmation") not in expected_confirmations
+        ):
+            stale_fields.append("signal_code")
         if stale_fields:
             logger.warning(
                 "WILD_SWING_SIGNAL_STALE symbol=%s side=%s fields=%s "

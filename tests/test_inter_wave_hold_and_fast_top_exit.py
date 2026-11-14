@@ -389,7 +389,7 @@ def test_master_open_gatekeeper_blacklist_and_validation():
     assert decision_bullish_short.reason in {"BLOCKED_SHORT_ON_BULLISH_TREND", "BLOCKED_SHORT_MACRO_TREND_CONFLICT"}
 
 
-def test_zero_delay_entry_emergency_circuit_breaker_and_position_flip():
+def test_zero_delay_entry_emergency_circuit_breaker_and_position_flip(monkeypatch):
     """驗證：
     1. 解決太晚開倉：起漲/起跌點秒開倉 + 天花板/地板 Anti-FOMO 一票否決
     2. 解決太晚平倉：毫秒級極端斷路器 (Emergency Circuit Breaker) 豁免 is_bar_closed
@@ -455,17 +455,27 @@ def test_zero_delay_entry_emergency_circuit_breaker_and_position_flip():
             "is_closed": False,  # 盤中未收線！
         }
     ])
+    now = int(time.time() // 60) * 60
+    monkeypatch.setattr(time, "time", lambda: now + 30)
+    df_live_dump["timestamp"] = [
+        (now - (len(df_live_dump) - 1 - index) * 60) * 1000
+        for index in range(len(df_live_dump))
+    ]
+    df_live_dump.attrs.update(
+        timeframe_ms=60_000,
+        snapshot_ms=(now + 30) * 1000,
+    )
     pos_long = {
         "symbol": "1000PEPE/USDT",
         "side": "LONG",
         "entry_price": 101.8,
-        "open_timestamp": 1700000000000,
+        "open_timestamp": now - 60 + 10,
     }
     wf_hit, wf_reason, wf_ev = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
         "1000PEPE/USDT", pos_long, {}, 100.1, frame=df_live_dump,
     )
     assert wf_hit is True
-    assert wf_reason == "EXIT_LONG_EMERGENCY_WATERFALL"
+    assert wf_reason == "EXIT_BY_EXTREME_WATERFALL"
     assert UltimateShortExitGatekeeper.can_execute_exit(
         "1000PEPE/USDT", pos_long, {}, wf_reason, 100.1, frame=df_live_dump, is_bar_closed=False,
     ) is True

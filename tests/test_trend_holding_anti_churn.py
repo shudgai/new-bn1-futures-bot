@@ -1,3 +1,4 @@
+import math
 import time
 import pandas as pd
 import pytest
@@ -86,9 +87,9 @@ def test_short_position_in_bearish_trend_vetoes_exit():
     assert "VETO_HOLD" in verdict.code
 
 
-def test_waterfall_emergency_exit_vetoed_in_bullish_trend():
-    """Verify that unclosed live drop is vetoed when macro trend is bullish."""
-    now = time.time()
+def test_live_waterfall_overrides_bullish_trend_hold():
+    """A qualifying live dump closes immediately even when the macro trend is bullish."""
+    now = math.floor(time.time() / 60) * 60
     t1 = (int(now // 60) - 1) * 60_000
     t2 = int(now // 60) * 60_000
 
@@ -97,19 +98,23 @@ def test_waterfall_emergency_exit_vetoed_in_bullish_trend():
         {"timestamp": t2, "open": 0.01752, "high": 0.01753, "low": 0.01730, "close": 0.01732, "atr": 0.00010, "kc_middle": 0.01752, "ma15": 0.01746, "is_closed": False},
     ]
     df = pd.DataFrame(rows)
+    df.attrs.update(timeframe_ms=60_000, snapshot_ms=(time.time() * 1000))
     df.attrs["macro_trend"] = "BULLISH"
 
-    position = {"symbol": "龙虾/USDT", "side": "LONG", "entry_price": 0.01750}
+    position = {
+        "symbol": "龙虾/USDT", "side": "LONG", "entry_price": 0.01750,
+        "open_timestamp": now - 60 + 10,
+    }
     hit, reason, evidence = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
         "龙虾/USDT", position, {}, 0.01732, frame=df,
     )
-    assert hit is False
-    assert reason == "VETO_HOLD_WATERFALL_IN_BULLISH_TREND"
+    assert hit is True
+    assert reason == "EXIT_BY_EXTREME_WATERFALL"
 
 
-def test_surge_emergency_exit_vetoed_in_bearish_trend():
-    """Verify that unclosed live pump is vetoed when macro trend is bearish."""
-    now = time.time()
+def test_live_surge_overrides_bearish_trend_hold():
+    """A qualifying live surge closes immediately even when the macro trend is bearish."""
+    now = math.floor(time.time() / 60) * 60
     t1 = (int(now // 60) - 1) * 60_000
     t2 = int(now // 60) * 60_000
 
@@ -118,12 +123,16 @@ def test_surge_emergency_exit_vetoed_in_bearish_trend():
         {"timestamp": t2, "open": 0.01748, "high": 0.01770, "low": 0.01748, "close": 0.01768, "atr": 0.00010, "kc_middle": 0.01748, "ma15": 0.01754, "is_closed": False},
     ]
     df = pd.DataFrame(rows)
+    df.attrs.update(timeframe_ms=60_000, snapshot_ms=(time.time() * 1000))
     df.attrs["macro_trend"] = "BEARISH"
 
-    position = {"symbol": "1000PEPE/USDT", "side": "SHORT", "entry_price": 0.01750}
+    position = {
+        "symbol": "1000PEPE/USDT", "side": "SHORT", "entry_price": 0.01750,
+        "open_timestamp": now - 60 + 10,
+    }
     hit, reason, evidence = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
         "1000PEPE/USDT", position, {}, 0.01768, frame=df,
     )
-    assert hit is False
-    assert reason == "VETO_HOLD_SURGE_IN_BEARISH_TREND"
+    assert hit is True
+    assert reason == "EXIT_BY_EXTREME_WATERFALL"
 

@@ -261,6 +261,7 @@ async def test_confirmed_dual_reversal_opens_opposite_after_flat(
     from types import SimpleNamespace
 
     from core.gates.master_gate_funnel import MasterGateFunnel
+    import core.services.entry_methods as entry_methods
     from core.services.execution_manager import ExecutionManager
 
     frame, opened = _frame(
@@ -272,7 +273,12 @@ async def test_confirmed_dual_reversal_opens_opposite_after_flat(
         "entry_price": 100.0,
         "qty": 1.0,
     }
-    account = SimpleNamespace(positions={}, position_meta={})
+    last_closed_at = float(frame.iloc[-1]["timestamp"]) / 1000 + 30
+    account = SimpleNamespace(
+        positions={},
+        position_meta={},
+        last_closed_at={"CAP/USDT": last_closed_at},
+    )
     snapshot = SimpleNamespace(
         kc_middle=101.0,
         kc_middle_prev=100.0,
@@ -303,11 +309,32 @@ async def test_confirmed_dual_reversal_opens_opposite_after_flat(
         MasterGateFunnel, "evaluate_open_long",
         staticmethod(lambda *_args, **_kwargs: allow),
     )
+    signal = {
+        "method": "KC_DUAL_TREND_LOCATION",
+        "side": "LONG",
+        "event_id": "dual-trend-flip",
+        "confirmation_bar_id": int(frame.iloc[-1]["timestamp"]),
+        "entry_pattern": "REVERSAL",
+        "structure_confirmation": "KC_DUAL_TREND_LOCATION",
+        "structure_confirmed": True,
+        "channel_expanding": False,
+        "entry_atr": 1.0,
+    }
+    monkeypatch.setattr(
+        entry_methods, "evaluate_entry_method",
+        lambda *_args, **_kwargs: signal,
+    )
+    monkeypatch.setattr(
+        entry_methods, "revalidate_entry_method",
+        lambda *_args, **_kwargs: (True, "ENTRY_METHOD_REVALIDATED"),
+    )
 
     async def fake_open_position(
         _cls, engine_or_account, symbol, side, price, reason, meta=None,
     ):
         assert symbol not in engine_or_account.positions
+        assert meta["entry_method_authority"] == "KC_DUAL_TREND_LOCATION"
+        assert meta["is_flip"] is True
         engine_or_account.positions[symbol] = {"side": side}
         return True
 

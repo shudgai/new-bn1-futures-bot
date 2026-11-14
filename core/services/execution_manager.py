@@ -547,6 +547,7 @@ class ExecutionManager:
             MA5_MA15_CROSS,
             KC_SINGLE_BAR_BREAKOUT,
             KC_MIDLINE_MOMENTUM,
+            KC_DUAL_TREND_LOCATION,
             POST_CLOSE_KC_REENTRY,
             THREE_BAR_PIVOT_REVERSAL,
             evaluate_entry_method,
@@ -568,6 +569,7 @@ class ExecutionManager:
             tuple(
                 m for m in (
                     MEME_GATE_ENTRY,
+                    KC_DUAL_TREND_LOCATION,
                     KC_OUTER_PIVOT_REVERSAL,
                     KC_TWO_BAR_BREAKOUT,
                     THREE_BAR_PIVOT_REVERSAL,
@@ -1133,6 +1135,26 @@ class ExecutionManager:
                 market_data=market_data,
                 account=account,
             )
+            if (
+                gate_should_exit
+                and gate_reason in ExitGate.ABSOLUTE_SAFETY_REASONS
+            ):
+                success = await cls.close_position(
+                    account=account,
+                    symbol=symbol,
+                    price=curr_quote,
+                    reason=gate_reason,
+                    meta={**(gate_meta or {}), "raw_df": raw_df},
+                )
+                return {
+                    "status": "EXIT_EXECUTED" if success else "HOLD",
+                    "symbol": symbol,
+                    "reason": (
+                        gate_reason
+                        if success else f"EXIT_BLOCKED_HOLD:{gate_reason}"
+                    ),
+                    "success": success,
+                }
             pv_pos_meta = getattr(account, "position_meta", {}).get(symbol, {})
             dual_trend_exit_candidate = cls._confirmed_dual_trend_exit_candidate(
                 current_position,
@@ -1435,23 +1457,18 @@ class ExecutionManager:
                     and not bool(raw_df.iloc[-1].get("is_closed", True))
                 )
                 if not structure_reason and is_emerg_bar_open:
-                    pos_macro_aligned = (
-                        (pos_side == "LONG" and (macro_trend == "BULLISH" or kc_mid >= float(p_k.get("kc_middle", kc_mid))))
-                        or (pos_side == "SHORT" and (macro_trend == "BEARISH" or kc_mid <= float(p_k.get("kc_middle", kc_mid))))
+                    wf_hit, wf_reason, _ = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
+                        symbol,
+                        current_position,
+                        getattr(account, "position_meta", {}).get(symbol, {}),
+                        curr_quote,
+                        frame=raw_df,
                     )
-                    if not pos_macro_aligned:
-                        wf_hit, wf_reason, _ = UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
-                            symbol,
-                            current_position,
-                            getattr(account, "position_meta", {}).get(symbol, {}),
-                            curr_quote,
-                            frame=raw_df,
-                        )
-                        if wf_hit:
-                            structure_reason = wf_reason
+                    if wf_hit:
+                        structure_reason = wf_reason
                 if structure_reason:
                     is_closed_flag = not (
-                        structure_reason in ("EXIT_LONG_EMERGENCY_WATERFALL", "EXIT_SHORT_EMERGENCY_SURGE")
+                        structure_reason == "EXIT_BY_EXTREME_WATERFALL"
                         and is_emerg_bar_open
                     ) and structure_reason not in MA5_ANGLE_REVERSAL_EXIT_REASONS.values()
                     success = await cls.close_position(
@@ -1730,25 +1747,6 @@ class ExecutionManager:
                         can_exit_short_on_candle and closed_c > closed_kc_u + short_need and curr_quote > kc_u
                     ):
                         is_absolute_safety = False
-                # 若為 EXIT_BY_EXTREME_WATERFALL，依 2026-11-01 最高指示：出現大賣壓/大買盤暴跌暴漲 (單根實體 >= 0.9 ATR 或貫穿中軌) 立即市價平倉避險，不用等破中軌！
-                elif "EXTREME_WATERFALL" in str(gate_reason).upper():
-                    if pos_side == "LONG" and not (
-                        can_exit_long_on_candle
-                        and (
-                            (closed_o - closed_c >= 0.9 * atr_v)
-                            or (closed_o >= closed_kc_mid and closed_c < closed_kc_mid)
-                        )
-                    ):
-                        is_absolute_safety = False
-                    elif pos_side == "SHORT" and not (
-                        can_exit_short_on_candle
-                        and (
-                            (closed_c - closed_o >= 0.9 * atr_v)
-                            or (closed_o <= closed_kc_mid and closed_c > closed_kc_mid)
-                        )
-                    ):
-                        is_absolute_safety = False
-
             if is_absolute_safety:
                 should_exit = True
                 reason = gate_reason
@@ -5626,6 +5624,9 @@ class ExecutionManager:
         if candidate is None:
             return None
         target_side, trigger = candidate
+        is_dual_trend_location = bool(
+            dual_trend_reversal and trigger == "TRIGGER_DUAL_TREND_REVERSAL"
+        )
         if (target_side == "LONG" and snapshot.kc_middle <= snapshot.kc_middle_prev) or (
             target_side == "SHORT" and snapshot.kc_middle >= snapshot.kc_middle_prev
         ):
@@ -5636,7 +5637,67 @@ class ExecutionManager:
             }
         if symbol in getattr(account, "positions", {}):
             return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
-        if angle_exit:
+        dual_trend_entry_context = None
+        if is_dual_trend_location:
+            expected_macro = "BULLISH" if target_side == "LONG" else "BEARISH"
+            if str(snapshot.macro_trend).upper() != expected_macro:
+                return {
+                    "success": False,
+                    "side": target_side,
+                    "reason": "DUAL_TREND_MACRO_ALIGNMENT_STALE",
+                }
+            from core.services.entry_methods import (
+                KC_DUAL_TREND_LOCATION,
+                evaluate_entry_method,
+                revalidate_entry_method,
+            )
+
+            last_closed_at = getattr(account, "last_closed_at", {}).get(symbol)
+            if last_closed_at is None:
+                return {
+                    "success": False,
+                    "side": target_side,
+                    "reason": "DUAL_TREND_CLOSE_IDENTITY_UNAVAILABLE",
+                }
+            signal = evaluate_entry_method(
+                frame,
+                quote=quote,
+                symbol=symbol,
+                last_exit_timestamp=last_closed_at,
+                expected_method=KC_DUAL_TREND_LOCATION,
+                allow_same_bar_after_close=True,
+            )
+            if signal is None or signal.get("side") != target_side:
+                return {
+                    "success": False,
+                    "side": target_side,
+                    "reason": "DUAL_TREND_LOCATION_NOT_READY",
+                }
+            dual_trend_entry_context = {
+                "entry_method_authority": KC_DUAL_TREND_LOCATION,
+                "entry_method_signal": signal,
+                "entry_method_bar_id": signal["confirmation_bar_id"],
+                "entry_method_event_id": signal["event_id"],
+                "entry_method_last_exit_timestamp": last_closed_at,
+                "entry_method_allow_same_bar_after_close": True,
+                "entry_type": "STRUCTURE_REVERSAL",
+                "is_flip": True,
+                "trigger": trigger,
+            }
+            method_allowed, method_reason = revalidate_entry_method(
+                frame,
+                symbol=symbol,
+                side=target_side,
+                quote=quote,
+                context=dual_trend_entry_context,
+            )
+            if not method_allowed:
+                return {
+                    "success": False,
+                    "side": target_side,
+                    "reason": method_reason,
+                }
+        elif angle_exit:
             angle_signal = UltimateShortExitGatekeeper.ma5_angle_opportunity(frame, quote)
             if not angle_signal or angle_signal[0] != target_side:
                 return {"success": False, "side": target_side, "reason": "LIVE_MA5_ANGLE_SIGNAL_STALE"}
@@ -5682,7 +5743,7 @@ class ExecutionManager:
             )
             if not macro_allowed:
                 return {"success": False, "side": target_side, "reason": macro_reason}
-        if not is_true_3pt_flip:
+        if not is_true_3pt_flip and not is_dual_trend_location:
             location_veto = MasterGateFunnel.pivot_kc_location_veto(snapshot, target_side)
             if location_veto:
                 logger.info(
@@ -5715,7 +5776,24 @@ class ExecutionManager:
                     "side": target_side,
                     "reason": "DUAL_TREND_REVERSAL_EVIDENCE_STALE",
                 }
-            if not is_true_3pt_flip:
+            if is_dual_trend_location:
+                from core.services.entry_methods import revalidate_entry_method
+
+                current_allowed, current_reason = revalidate_entry_method(
+                    frame,
+                    symbol=symbol,
+                    side=target_side,
+                    quote=quote,
+                    context=dual_trend_entry_context,
+                    final_submission=True,
+                )
+                if not current_allowed:
+                    return {
+                        "success": False,
+                        "side": target_side,
+                        "reason": current_reason,
+                    }
+            elif not is_true_3pt_flip:
                 current_gate = (
                     MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
                     if target_side == "LONG"
@@ -5753,6 +5831,21 @@ class ExecutionManager:
                 ),
                 "intrabar_authorized": bool(angle_exit and not snapshot.is_closed),
             }
+            if dual_trend_entry_context is not None:
+                entry_meta.update(dual_trend_entry_context)
+                signal = dual_trend_entry_context["entry_method_signal"]
+                entry_meta.update({
+                    "entry_type": "STRUCTURE_REVERSAL",
+                    "entry_pattern": signal["entry_pattern"],
+                    "structure_confirmation": signal["structure_confirmation"],
+                    "structure_confirmed": True,
+                    "channel_expanding": signal["channel_expanding"],
+                    "signal_id": signal["event_id"],
+                    "bar_timestamp": signal["confirmation_bar_id"],
+                    "channel_confirmation_bar_id": signal["confirmation_bar_id"],
+                    "source": "UNIFIED_PIPELINE|ENTRY_METHOD|KC_DUAL_TREND_LOCATION",
+                    "is_flip": True,
+                })
             if is_true_3pt_flip:
                 entry_meta["direction_override"] = True
                 entry_meta["allow_kc_internal"] = True

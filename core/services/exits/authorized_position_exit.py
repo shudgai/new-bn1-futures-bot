@@ -15,7 +15,10 @@ def meme_strategy_disaster_disabled(symbol: str, reason: str) -> bool:
     normalized = str(reason).upper()
     if not is_meme_breakout_symbol(symbol) or not is_emergency_exit(reason):
         return False
-    if normalized == "EXIT_BY_EXTREME_WATERFALL":
+    if any(token in normalized for token in (
+        "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP",
+        "EMERGENCY_SURGE", "閃崩", "瀑布",
+    )):
         return False
     if any(token in normalized for token in (
         "LIQUIDATION", "DATA_OUTAGE", "ACCOUNT_CIRCUIT_BREAKER",
@@ -27,9 +30,8 @@ def meme_strategy_disaster_disabled(symbol: str, reason: str) -> bool:
     )):
         return False
     if any(token in normalized for token in (
-        "WATERFALL", "CATASTROPHIC",
-        "ADVERSE_STOP_LOSS", "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
-        "急速反向", "閃崩", "瀑布",
+        "CATASTROPHIC", "ADVERSE_STOP_LOSS",
+        "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM", "急速反向",
     )):
         return True
     return not any(token in normalized for token in (
@@ -79,7 +81,7 @@ def is_dual_trend_emergency_exit(reason: str) -> bool:
         "EMERGENCY_EXTREME_ADVERSE_BAR", "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
         "EXIT_LONG_ON_TOP_WATERFALL_DUMP", "FAIL_SAFE_EMERGENCY_EXIT",
         "OPPOSITE_KC_BAND_BREACH", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP",
-        "極端瀑布", "極端閃崩",
+        "WATERFALL", "EMERGENCY_SURGE", "閃崩", "瀑布", "極端瀑布", "極端閃崩",
     ))
 
 

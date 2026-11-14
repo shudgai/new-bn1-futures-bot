@@ -244,7 +244,7 @@ def test_hold_path_still_checks_emergency_waterfall(monkeypatch):
     ("trend_block", "should_close"),
     [(None, True), ("VETO_EXIT_MACRO_TREND_NOT_REVERSED", False)],
 )
-def test_layered_hold_yields_only_to_confirmed_dual_trend_structure_exit(
+def test_layered_hold_yields_only_to_confirmed_dual_trend_exit(
     monkeypatch, trend_block, should_close,
 ):
     from core.gates.unified_pipeline_gates import ExitGate
@@ -329,7 +329,7 @@ def test_layered_hold_yields_only_to_confirmed_dual_trend_structure_exit(
 
     assert bool(close_calls) is should_close, result
     if should_close:
-        assert close_calls == ["EXIT_LONG_TREND_REVERSAL"]
+        assert close_calls == ["ACTIVE_EXIT_DUAL_TREND_REVERSAL"]
         assert result["status"] == "EXIT_EXECUTED"
     else:
         assert result["status"] == "HOLD"
@@ -429,24 +429,32 @@ def test_failed_wave_close_retries_without_opening_another_position(monkeypatch,
 @pytest.mark.parametrize("emergency", [
     "CIRCUIT_BREAKER_HARD_SL", "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
 ])
-def test_disabled_strategy_safety_labels_cannot_replace_true_pivot(monkeypatch, side, emergency):
+def test_safety_exit_candidates_still_require_final_evidence(monkeypatch, side, emergency):
     from core.gates.unified_pipeline_gates import ExitGate
 
     frame = wave_frame(side)
+    pos = position(side, frame)
     monkeypatch.setattr(ExitGate, "_evaluate_core", staticmethod(
         lambda *args, **kwargs: (True, emergency, {"safety_evidence": True}),
     ))
-    should_exit, reason, evidence = ExitGate.evaluate(
-        position(side, frame), {"raw_df": frame, "current_price": 100.2},
+    should_exit, reason, _evidence = ExitGate.evaluate(
+        pos, {"raw_df": frame, "current_price": 100.2},
     )
-    assert not should_exit
-    assert reason == "VETO_HOLD"
-    assert evidence["safety_evidence"]
+    assert should_exit
+    assert reason == emergency
     assert emergency in ExitGate.ABSOLUTE_SAFETY_REASONS
+
+    account = SimpleNamespace(
+        _channel_exit_frames={"CAP/USDT": frame}, position_meta={},
+    )
+    allowed, _final_reason, _details = validate_exit_at_execution(
+        account, "CAP/USDT", pos, 100.2, emergency,
+    )
+    assert not allowed
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_disabled_two_closed_abnormal_does_not_restore_a_profit_lock_exit(monkeypatch, side):
+def test_confirmed_two_closed_abnormal_supersedes_profit_lock_candidate(monkeypatch, side):
     from core.gates.unified_pipeline_gates import ExitGate
 
     frame = wave_frame(side)
@@ -460,6 +468,16 @@ def test_disabled_two_closed_abnormal_does_not_restore_a_profit_lock_exit(monkey
     should_exit, reason, evidence = ExitGate.evaluate(
         position(side, frame), {"raw_df": frame, "current_price": 100.2},
     )
-    assert not should_exit
-    assert reason == "VETO_HOLD"
-    assert evidence["suppressed_exit_reason"] == "EXIT_BY_RATCHET_PROFIT_LOCK"
+    assert should_exit
+    assert reason == "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL"
+    assert evidence["safety_evidence"]
+
+    monkeypatch.undo()
+    account = SimpleNamespace(
+        _channel_exit_frames={"CAP/USDT": frame}, position_meta={},
+    )
+    allowed, _final_reason, _details = validate_exit_at_execution(
+        account, "CAP/USDT", position(side, frame), 100.2,
+        "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
+    )
+    assert not allowed

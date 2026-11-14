@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from core.services.entry_methods import (
+    KC_DUAL_TREND_LOCATION,
     KC_MIDLINE_MOMENTUM,
     KC_SINGLE_BAR_BREAKOUT,
     KC_TWO_BAR_BREAKOUT,
@@ -41,6 +42,30 @@ def candle(timestamp, *, opened, high, low, close, upper, lower, middle,
         "atr": atr,
         "is_closed": is_closed,
     }
+
+
+def mock_dual_trend_master_gate(monkeypatch, *, allowed=True):
+    from types import SimpleNamespace
+
+    from core.gates.master_gate_funnel import MasterGateFunnel
+
+    monkeypatch.setattr(
+        "core.gates.master_gate_funnel.market_snapshot_from_frame",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    def evaluate_entry_filters(_snapshot, _side, _cooldown=False, **kwargs):
+        assert kwargs["allow_kc_location_override"] is True
+        return SimpleNamespace(
+            can_execute=allowed,
+            reason="PASS" if allowed else "VETO_NON_LOCATION_FILTER",
+        )
+
+    monkeypatch.setattr(
+        MasterGateFunnel,
+        "evaluate_entry_filters",
+        staticmethod(evaluate_entry_filters),
+    )
 
 
 @pytest.mark.parametrize(
@@ -302,6 +327,157 @@ def test_kc_midline_momentum_uses_directional_ma5_angle(side, rows, quote):
         market, quote=quote, symbol="BTC/USDT",
         expected_method=KC_MIDLINE_MOMENTUM,
     ) is None
+
+
+@pytest.mark.parametrize(
+    "side,rows,quote,macro",
+    [
+        (
+            "LONG",
+            [
+                candle(60_000, opened=100.0, high=101.2, low=99.8, close=101.0,
+                       upper=102, lower=98, middle=100.0, short_ma=100.5,
+                       ma15=100.4),
+                candle(120_000, opened=101.0, high=101.8, low=100.7, close=101.5,
+                       upper=102, lower=98, middle=100.2, short_ma=101.0,
+                       ma15=100.8),
+            ],
+            101.6,
+            "BULLISH",
+        ),
+        (
+            "SHORT",
+            [
+                candle(60_000, opened=100.0, high=101.2, low=99.0, close=99.5,
+                       upper=102, lower=98, middle=100.0, short_ma=99.8,
+                       ma15=100.5),
+                candle(120_000, opened=99.5, high=99.8, low=98.2, close=98.7,
+                       upper=102, lower=98, middle=99.8, short_ma=99.2,
+                       ma15=99.5),
+            ],
+            98.6,
+            "BEARISH",
+        ),
+    ],
+)
+def test_dual_trend_location_entry_allows_only_aligned_half_channel(
+    monkeypatch, side, rows, quote, macro,
+):
+    mock_dual_trend_master_gate(monkeypatch)
+    market = frame(rows)
+    market.attrs.update(entry_finality_verified=True, macro_trend_htf=macro)
+    signal = evaluate_entry_method(
+        market,
+        quote=quote,
+        symbol="BTC/USDT",
+        expected_method=KC_DUAL_TREND_LOCATION,
+    )
+    assert signal is not None
+    assert signal["side"] == side
+    allowed, reason = revalidate_entry_method(
+        market,
+        symbol="BTC/USDT",
+        side=side,
+        quote=quote,
+        context=method_context(signal),
+    )
+    assert allowed, reason
+
+
+def test_dual_trend_location_entry_fails_closed_on_trend_or_location_mismatch():
+    rows = [
+        candle(60_000, opened=100.0, high=101.2, low=99.8, close=101.0,
+               upper=102, lower=98, middle=100.0, short_ma=100.5, ma15=100.4),
+        candle(120_000, opened=101.0, high=101.8, low=100.7, close=101.5,
+               upper=102, lower=98, middle=100.2, short_ma=101.0, ma15=100.8),
+    ]
+    market = frame(rows)
+    market.attrs.update(entry_finality_verified=True, macro_trend_htf="BEARISH")
+    assert evaluate_entry_method(
+        market,
+        quote=101.6,
+        symbol="BTC/USDT",
+        expected_method=KC_DUAL_TREND_LOCATION,
+    ) is None
+
+    market.attrs["macro_trend_htf"] = "BULLISH"
+    assert evaluate_entry_method(
+        market,
+        quote=100.1,
+        symbol="BTC/USDT",
+        expected_method=KC_DUAL_TREND_LOCATION,
+    ) is None
+
+
+def test_dual_trend_location_allows_confirmed_close_bar_flip_only_with_ticket_context(monkeypatch):
+    mock_dual_trend_master_gate(monkeypatch)
+    rows = [
+        candle(60_000, opened=100.0, high=101.2, low=99.8, close=101.0,
+               upper=102, lower=98, middle=100.0, short_ma=100.5, ma15=100.4),
+        candle(120_000, opened=101.0, high=101.8, low=100.7, close=101.5,
+               upper=102, lower=98, middle=100.2, short_ma=101.0, ma15=100.8),
+    ]
+    market = frame(rows)
+    market.attrs.update(entry_finality_verified=True, macro_trend_htf="BULLISH")
+    exit_timestamp = float(market.iloc[-1]["timestamp"]) / 1000 + 30
+
+    assert evaluate_entry_method(
+        market,
+        quote=101.6,
+        symbol="BTC/USDT",
+        last_exit_timestamp=exit_timestamp,
+        expected_method=KC_DUAL_TREND_LOCATION,
+    ) is None
+    signal = evaluate_entry_method(
+        market,
+        quote=101.6,
+        symbol="BTC/USDT",
+        last_exit_timestamp=exit_timestamp,
+        expected_method=KC_DUAL_TREND_LOCATION,
+        allow_same_bar_after_close=True,
+    )
+    assert signal is not None
+    context = method_context(signal, last_exit_timestamp=exit_timestamp)
+    context.update(
+        entry_method_allow_same_bar_after_close=True,
+        is_flip=True,
+        trigger="TRIGGER_DUAL_TREND_REVERSAL",
+    )
+    assert revalidate_entry_method(
+        market,
+        symbol="BTC/USDT",
+        side="LONG",
+        quote=101.6,
+        context=context,
+    ) == (True, "ENTRY_METHOD_REVALIDATED:" + KC_DUAL_TREND_LOCATION)
+
+
+def test_dual_trend_location_keeps_non_location_master_gate_veto(monkeypatch):
+    mock_dual_trend_master_gate(monkeypatch, allowed=False)
+    rows = [
+        candle(60_000, opened=100.0, high=101.2, low=99.8, close=101.0,
+               upper=102, lower=98, middle=100.0, short_ma=100.5, ma15=100.4),
+        candle(120_000, opened=101.0, high=101.8, low=100.7, close=101.5,
+               upper=102, lower=98, middle=100.2, short_ma=101.0, ma15=100.8),
+    ]
+    market = frame(rows)
+    market.attrs.update(entry_finality_verified=True, macro_trend_htf="BULLISH")
+    signal = evaluate_entry_method(
+        market,
+        quote=101.6,
+        symbol="BTC/USDT",
+        expected_method=KC_DUAL_TREND_LOCATION,
+    )
+    assert signal is not None
+    allowed, reason = revalidate_entry_method(
+        market,
+        symbol="BTC/USDT",
+        side="LONG",
+        quote=101.6,
+        context=method_context(signal),
+    )
+    assert not allowed
+    assert reason == "BLOCKED_ENTRY_METHOD_MASTER_GATE:VETO_NON_LOCATION_FILTER"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

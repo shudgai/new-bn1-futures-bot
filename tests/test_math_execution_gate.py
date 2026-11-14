@@ -125,6 +125,24 @@ def test_execution_entry_validation_prefers_fresh_market_frame_over_signal_cache
     )
 
 
+def test_execution_entry_validation_does_not_fall_back_to_cache_without_fresh_frame():
+    import asyncio
+
+    from core.services.math_execution_gate import validate_entry_at_execution
+    from test_early_midline_entry import early_frame
+
+    stale_frame = early_frame("LONG")
+
+    class Account:
+        entry_frame_provider = staticmethod(lambda _symbol: None)
+
+    allowed, reason = asyncio.run(validate_entry_at_execution(
+        Account(), "CAP/USDT", "LONG", {"frame": stale_frame},
+    ))
+    assert not allowed
+    assert reason == "BLOCKED_ENTRY_MATH_FRESH_SNAPSHOT_UNAVAILABLE"
+
+
 def test_exit_math_true_peak_and_middle_trend_hold_veto():
     position = dict(side="LONG", entry_price=100, qty=1, margin=100,
                     highest_price=106, lowest_price=100)

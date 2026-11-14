@@ -375,6 +375,7 @@ class MacroCandleStructureGate:
                 "TOP_BOTTOM_DIVERGENCE",
                 "PINBAR_EXHAUSTION_TURN",
                 "CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS",
+                "KC_DUAL_TREND_LOCATION",
                 "SWING_PIVOT",
                 "MEME_PEAK_HUNTER",
             }
