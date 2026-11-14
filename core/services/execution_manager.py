@@ -510,6 +510,32 @@ class ExecutionManager:
         return cls._save_dual_trend_reversal_ticket_state(account, symbol)
 
     @classmethod
+    def _confirmed_dual_trend_structure_exit_candidate(
+        cls,
+        symbol: str,
+        position: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+        price: float,
+        frame: Optional[pd.DataFrame],
+    ) -> Optional[str]:
+        from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+        from core.services.exits.authorized_position_exit import dual_trend_exit_block_reason
+
+        reason = UltimateShortExitGatekeeper.structure_exit_candidate(
+            symbol, position, metadata or {}, price, frame,
+        )
+        if not reason:
+            return None
+        block_reason = dual_trend_exit_block_reason(position, frame, metadata)
+        if block_reason:
+            logger.info(
+                "DUAL_TREND_STRUCTURE_EXIT_HELD symbol=%s reason=%s gate=%s",
+                symbol, reason, block_reason,
+            )
+            return None
+        return reason
+
+    @classmethod
     async def _evaluate_closed_entry_methods(
         cls,
         *,
@@ -1137,6 +1163,9 @@ class ExecutionManager:
 
             # 🎯 峰谷轉向低延遲即時平倉與條件式即時反手引擎（統一接管所有持倉，含舊通道開的單）
             pv_pos_meta = getattr(account, "position_meta", {}).get(symbol, {})
+            layered_reversal_reason = None
+            from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
+
             if isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
                 from core.services.low_latency_exit import (
                     evaluate_peak_valley_exit,
@@ -1261,8 +1290,7 @@ class ExecutionManager:
                                     exit_result["dual_trend_flip_retry"] = True
                         return exit_result
 
-                # 🛡️ KC 三層出場主控權鎖定：未觸及第一層硬止損 / 第三層移動止損 / 第二層收盤確認中軌緩衝或反轉時，
-                # 一律明確 HOLD，禁止回落舊版快線 MA5 觸碰或無緩衝中軌微動邏輯造成盤中洗出場！
+                # The layered hold must not mask a separately confirmed KC + HTF reversal.
                 if pv_exit.get("exit_policy") == "KC_LAYERED_3TIER_V1":
                     wf_hit, wf_reason, wf_meta = (
                         UltimateShortExitGatekeeper.check_waterfall_emergency_exit(
@@ -1287,35 +1315,49 @@ class ExecutionManager:
                             "reason": wf_reason if success else "EXIT_BLOCKED_HOLD:" + wf_reason,
                             "success": success,
                         }
-                    trailing_stop_p = float(current_position.get("trailing_stop_price", 0.0) or 0.0)
-                    if trailing_stop_p > 0 and account is not None:
-                        from core.services.ExchangeOrderManager import ExchangeOrderManager
-                        try:
-                            asyncio.create_task(
-                                ExchangeOrderManager.place_or_update_native_stop_order(
-                                    account=account,
-                                    symbol=symbol,
-                                    position=current_position,
-                                    target_stop_price=trailing_stop_p,
-                                    atr=atr_v,
+                    layered_reversal_reason = None
+                    if _is_meme_exit_symbol(symbol):
+                        layered_reversal_reason = cls._confirmed_dual_trend_structure_exit_candidate(
+                            symbol,
+                            current_position,
+                            pv_pos_meta if isinstance(pv_pos_meta, dict) else {},
+                            curr_quote,
+                            raw_df,
+                        )
+                    if layered_reversal_reason:
+                        logger.info(
+                            "DUAL_TREND_STRUCTURE_EXIT_OVERRIDES_LAYERED_HOLD symbol=%s reason=%s",
+                            symbol, layered_reversal_reason,
+                        )
+                    else:
+                        trailing_stop_p = float(current_position.get("trailing_stop_price", 0.0) or 0.0)
+                        if trailing_stop_p > 0 and account is not None:
+                            from core.services.ExchangeOrderManager import ExchangeOrderManager
+                            try:
+                                asyncio.create_task(
+                                    ExchangeOrderManager.place_or_update_native_stop_order(
+                                        account=account,
+                                        symbol=symbol,
+                                        position=current_position,
+                                        target_stop_price=trailing_stop_p,
+                                        atr=atr_v,
+                                    )
                                 )
-                            )
-                        except Exception as err:
-                            logger.warning(f"⚠️ [NATIVE_STOP_TRIGGER_ERR] {symbol}: {err}")
-                    return {
-                        "status": "HOLD",
-                        "symbol": symbol,
-                        "reason": pv_exit.get("reason", "HOLD_KC_TREND_INTACT"),
-                        "trigger_level": pv_exit.get("trigger_level", "NONE"),
-                        "exit_policy": "KC_LAYERED_3TIER_V1",
-                        "metrics": pv_exit.get("metrics"),
-                        "should_flip": False,
-                        "flipped": False,
-                        "success": False,
-                    }
+                            except Exception as err:
+                                logger.warning(f"⚠️ [NATIVE_STOP_TRIGGER_ERR] {symbol}: {err}")
+                        return {
+                            "status": "HOLD",
+                            "symbol": symbol,
+                            "reason": pv_exit.get("reason", "HOLD_KC_TREND_INTACT"),
+                            "trigger_level": pv_exit.get("trigger_level", "NONE"),
+                            "exit_policy": "KC_LAYERED_3TIER_V1",
+                            "metrics": pv_exit.get("metrics"),
+                            "should_flip": False,
+                            "flipped": False,
+                            "success": False,
+                        }
 
             # 🛡️ 妖幣平倉唯一結構出口：波段方向鎖定（KC中軌未轉向不平倉）/ 完整結構破壞 / 緊急斷路器
-            from core.symbol_aliases import is_meme_breakout_symbol as _is_meme_exit_symbol
             if _is_meme_exit_symbol(symbol):
                 # 🚀 優先評估波段方向鎖平倉機制 (evaluate_exit_with_trend_lock: 中軌方向沒變一律不平倉，跌破中軌或極端風控才離場)
                 from core.strategies.true_peak_trough_strategy import evaluate_exit_with_trend_lock, PositionState as _TruePosState
@@ -1359,9 +1401,17 @@ class ExecutionManager:
                     structure_reason = f"ACTIVE_EXIT_{_active_exit_res['action']}|{_active_exit_res.get('reason', '')}"
                     logger.info(f"⚡ [ACTIVE_EXIT_TRIGGERED] {symbol} {pos_side} 觸發波段反轉/風控平倉: {structure_reason}")
                 elif _active_exit_res and _active_exit_res.get("action") == "HOLD":
-                    # 🔴 核心鐵律：波段走向未變，一票否決平倉 (VETO_HOLD)
-                    structure_reason = None
-                    logger.info(f"🛡️ [TREND_LOCK_HOLD] {symbol} {pos_side} {_active_exit_res.get('reason', '')}，阻斷任何普通平倉！")
+                    structure_reason = layered_reversal_reason
+                    if structure_reason:
+                        logger.info(
+                            "DUAL_TREND_STRUCTURE_EXIT_RELEASED_FROM_TREND_LOCK symbol=%s reason=%s",
+                            symbol, structure_reason,
+                        )
+                    else:
+                        logger.info(
+                            "🛡️ [TREND_LOCK_HOLD] %s %s %s，阻斷任何普通平倉！",
+                            symbol, pos_side, _active_exit_res.get("reason", ""),
+                        )
                 else:
                     # 🛡️ 中軌方向鐵律：只有 KC 中軌確實反向（翻向），才允許觸發結構性出場
                     # 多單持倉：中軌向下才算翻向；空單持倉：中軌向上才算翻向

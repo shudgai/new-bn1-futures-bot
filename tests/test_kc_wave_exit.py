@@ -240,6 +240,102 @@ def test_hold_path_still_checks_emergency_waterfall(monkeypatch):
     assert result["status"] == "HOLD"
 
 
+@pytest.mark.parametrize(
+    ("trend_block", "should_close"),
+    [(None, True), ("VETO_EXIT_MACRO_TREND_NOT_REVERSED", False)],
+)
+def test_layered_hold_yields_only_to_confirmed_dual_trend_structure_exit(
+    monkeypatch, trend_block, should_close,
+):
+    from core.gates.unified_pipeline_gates import ExitGate
+    from core.gates.ultimate_short_exit_gatekeeper import UltimateShortExitGatekeeper
+    from core.services import candle_data, low_latency_exit
+    from core.services.data_pipeline import DataPipeline
+    from core.services.execution_manager import ExecutionManager
+    from core.services.exits import trend_lock
+    from core.services.exits import authorized_position_exit
+    from core.strategies import true_peak_trough_strategy
+
+    frame = wave_frame("LONG", live=True)
+    frame.loc[frame.index[-2], "kc_middle"] = frame.iloc[-3]["kc_middle"] - 0.01
+    frame.loc[frame.index[-1], "kc_middle"] = frame.iloc[-2]["kc_middle"] - 0.01
+    quote = 100.2
+    pos = position("LONG", frame)
+    snapshot = DataPipeline.calculate_snapshot(
+        "CAP/USDT", frame, current_price=quote, position=pos,
+    )
+    assert snapshot is not None
+    snapshot.raw_df = frame
+    snapshot.curr_k = frame.iloc[-1].to_dict()
+    snapshot.prev_k = frame.iloc[-2].to_dict()
+    snapshot.kc_middle = float(frame.iloc[-1]["kc_middle"])
+    snapshot.kc_middle_slope = -0.01
+    snapshot.macro_trend = "BEARISH"
+
+    monkeypatch.setattr(
+        DataPipeline, "calculate_snapshot", staticmethod(lambda *_a, **_k: snapshot),
+    )
+    monkeypatch.setattr(
+        low_latency_exit, "evaluate_peak_valley_exit",
+        lambda *_a, **_k: {
+            "should_exit": False, "exit_policy": "KC_LAYERED_3TIER_V1",
+            "reason": "HOLD_KC_TREND_INTACT",
+        },
+    )
+    monkeypatch.setattr(candle_data, "confirmed_kc_midline_slope", lambda *_a, **_k: -0.01)
+    monkeypatch.setattr(trend_lock, "update_trend_lock_state", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        true_peak_trough_strategy, "evaluate_exit_with_trend_lock",
+        lambda **_k: {"action": "HOLD", "reason": "trend lock"},
+    )
+    monkeypatch.setattr(
+        UltimateShortExitGatekeeper, "structure_exit_candidate",
+        classmethod(lambda *_a, **_k: "EXIT_LONG_TREND_REVERSAL"),
+    )
+    monkeypatch.setattr(
+        authorized_position_exit, "dual_trend_exit_block_reason",
+        lambda *_a, **_k: trend_block,
+    )
+    monkeypatch.setattr(
+        UltimateShortExitGatekeeper, "check_waterfall_emergency_exit",
+        classmethod(lambda *_a, **_k: (False, "", {})),
+    )
+    monkeypatch.setattr(
+        ExitGate, "evaluate", staticmethod(lambda *_a, **_k: (False, "HOLD", {})),
+    )
+
+    account = SimpleNamespace(
+        positions={"CAP/USDT": pos}, position_meta={}, entry_filter_last={},
+        save_state=lambda **_k: None,
+    )
+    close_calls = []
+
+    async def close_position(_cls, account, symbol, price, reason, meta=None):
+        close_calls.append(reason)
+        account.positions.pop(symbol, None)
+        return True
+
+    monkeypatch.setattr(
+        ExecutionManager, "close_position", classmethod(close_position),
+    )
+    monkeypatch.setattr(
+        ExecutionManager, "_store_dual_trend_reversal_ticket",
+        classmethod(lambda *_a, **_k: False),
+    )
+
+    result = asyncio.run(ExecutionManager.process_symbol_pipeline(
+        "CAP/USDT", account, klines_df=frame, quote=quote,
+    ))
+
+    assert bool(close_calls) is should_close, result
+    if should_close:
+        assert close_calls == ["EXIT_LONG_TREND_REVERSAL"]
+        assert result["status"] == "EXIT_EXECUTED"
+    else:
+        assert result["status"] == "HOLD"
+        assert account.positions["CAP/USDT"] is pos
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_real_testnet_wave_close_uses_authoritative_frame_and_reduce_only(
     tmp_path, monkeypatch, side,
