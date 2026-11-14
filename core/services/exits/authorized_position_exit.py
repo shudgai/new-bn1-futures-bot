@@ -18,8 +18,16 @@ def meme_strategy_disaster_disabled(symbol: str, reason: str) -> bool:
     if normalized == "EXIT_BY_EXTREME_WATERFALL":
         return False
     if any(token in normalized for token in (
-        "WATERFALL", "TWO_CLOSED_ADVERSE_ABNORMAL", "CATASTROPHIC",
+        "LIQUIDATION", "DATA_OUTAGE", "ACCOUNT_CIRCUIT_BREAKER",
+        "CIRCUIT_BREAKER", "ACCOUNT_HARD_STOP", "HARD_STOP_LOSS",
+        "HARD_STOP", "MARGIN_LOSS", "MAXIMUM_LOSS",
         "OPPOSITE_KC_BAND_BREACH", "反側KC",
+        "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
+        "EXIT_LONG_EMERGENCY_WATERFALL", "EXIT_LONG_ON_TOP_WATERFALL_DUMP",
+    )):
+        return False
+    if any(token in normalized for token in (
+        "WATERFALL", "CATASTROPHIC",
         "ADVERSE_STOP_LOSS", "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
         "急速反向", "閃崩", "瀑布",
     )):
@@ -58,6 +66,91 @@ def strategy_exit_bar_block_reason(
     return None
 
 
+def is_dual_trend_emergency_exit(reason: str) -> bool:
+    normalized = str(reason or "").upper().replace(" ", "_")
+    return any(token in normalized for token in (
+        "ACCOUNT_HARD_STOP", "ACCOUNT_CIRCUIT_BREAKER",
+        "CIRCUIT_BREAKER_HARD_SL", "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
+        "CIRCUIT_BREAKER", "HARD_STOP_LOSS", "HARD_STOP",
+        "LIQUIDATION", "MARGIN_LOSS", "DATA_OUTAGE_HARD_STOP",
+        "CIRCUIT_BREAKER_EMERGENCY_DATA_OUTAGE",
+        "EXIT_BY_EXTREME_WATERFALL", "EXIT_LONG_EMERGENCY_WATERFALL",
+        "EXIT_SHORT_EMERGENCY_SURGE", "EMERGENCY_DUMP_EXIT",
+        "EMERGENCY_EXTREME_ADVERSE_BAR", "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
+        "EXIT_LONG_ON_TOP_WATERFALL_DUMP", "FAIL_SAFE_EMERGENCY_EXIT",
+        "OPPOSITE_KC_BAND_BREACH", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP",
+        "極端瀑布", "極端閃崩",
+    ))
+
+
+def dual_trend_exit_block_reason(
+    position: Mapping[str, Any],
+    frame: Any,
+    metadata: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Require post-entry closed KC reversal and an opposing HTF macro trend."""
+    import pandas as pd
+
+    side = str(position.get("side") or "").upper()
+    if side not in ("LONG", "SHORT") or not isinstance(frame, pd.DataFrame):
+        return "VETO_EXIT_TREND_DATA_UNAVAILABLE"
+
+    from core.services.candle_data import (
+        closed_entry_candles, confirmed_kc_midline_slope,
+    )
+
+    closed = closed_entry_candles(frame)
+    slope = confirmed_kc_midline_slope(frame)
+    if slope is None or len(closed) < 2:
+        return "VETO_EXIT_TREND_DATA_UNAVAILABLE"
+
+    raw_opened = position.get("open_timestamp")
+    if raw_opened is None:
+        raw_opened = (metadata or {}).get("open_timestamp")
+    if raw_opened is None:
+        return "VETO_EXIT_OPEN_TIME_INVALID"
+    try:
+        opened_ms = float(raw_opened)
+        if opened_ms < 1e11:
+            opened_ms *= 1000.0
+        latest_stamp = float(closed.iloc[-1]["timestamp"])
+        if latest_stamp < 1e11:
+            latest_stamp *= 1000.0
+        interval = float(frame.attrs.get("timeframe_ms", 60_000))
+        snapshot_ms = float(frame.attrs.get("snapshot_ms", time.time() * 1000.0))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return "VETO_EXIT_TREND_DATA_UNAVAILABLE"
+    if snapshot_ms < 1e11:
+        snapshot_ms *= 1000.0
+    if not all(math.isfinite(value) and value > 0 for value in (opened_ms, latest_stamp, interval, snapshot_ms)):
+        return "VETO_EXIT_TREND_DATA_UNAVAILABLE"
+    if interval < 1_000:
+        interval *= 1_000.0
+    latest_close_ms = latest_stamp + interval
+    if latest_close_ms <= opened_ms:
+        return "VETO_EXIT_NO_POST_ENTRY_KC_CONFIRMATION"
+    if latest_close_ms > snapshot_ms or snapshot_ms - latest_close_ms > 180_000:
+        return "VETO_EXIT_TREND_DATA_STALE"
+
+    attrs = getattr(frame, "attrs", {})
+    macro_trend = str(
+        attrs.get("macro_trend_htf", attrs.get("macro_trend", ""))
+    ).upper()
+    if macro_trend not in ("BULLISH", "BEARISH"):
+        return "VETO_EXIT_MACRO_TREND_UNKNOWN"
+
+    kc_reversed = (side == "LONG" and slope < 0) or (side == "SHORT" and slope > 0)
+    macro_reversed = (
+        (side == "LONG" and macro_trend == "BEARISH")
+        or (side == "SHORT" and macro_trend == "BULLISH")
+    )
+    if not kc_reversed:
+        return "VETO_EXIT_KC_TREND_NOT_REVERSED"
+    if not macro_reversed:
+        return "VETO_EXIT_MACRO_TREND_NOT_REVERSED"
+    return None
+
+
 class UltimateExitGatekeeper:
     """Shared final veto; no signal label can substitute for market evidence."""
 
@@ -84,6 +177,29 @@ class UltimateExitGatekeeper:
         if not math.isfinite(exit_price) or exit_price <= 0:
             logger.error("ULTIMATE_EXIT_INVALID_PRICE symbol=%s price=%s", symbol, price)
             return False
+
+        if not is_dual_trend_emergency_exit(reason):
+            trend_block = dual_trend_exit_block_reason(position, frame, metadata)
+            if trend_block is not None:
+                logger.info(
+                    "[VETO_HOLD_%s] %s symbol=%s reason=%s",
+                    position.get("side"), trend_block, symbol, reason,
+                )
+                return False
+
+        if is_dual_trend_emergency_exit(reason):
+            from core.services.math_execution_gate import (
+                is_emergency_exit, validate_exit_math,
+            )
+
+            if is_emergency_exit(reason):
+                if meme_strategy_disaster_disabled(symbol, reason):
+                    return False
+                allowed, _code, _evidence = validate_exit_math(
+                    {**position, "symbol": symbol}, frame, exit_price, metadata,
+                    close_reason=str(reason),
+                )
+                return bool(allowed)
 
         normalized_reason = str(reason or "").upper()
         from core.services.exits.kc_true_extreme_exit import (

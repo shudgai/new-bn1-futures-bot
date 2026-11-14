@@ -55,6 +55,7 @@ def pivot_frame(side, *, gain=1.0, atr=1.0, profit_offset=PIVOT_PROFIT_OFFSET):
     # Shift the whole structure so the pivot closes beyond the 1 ATR minimum-profit rule.
     price_columns = ["open", "high", "low", "close", "ma3", "ma5", "ma15", "kc_middle", "kc_upper", "kc_lower"]
     frame[price_columns] = frame[price_columns] + sign * profit_offset * atr
+    frame.attrs["macro_trend_htf"] = "BEARISH" if side == "LONG" else "BULLISH"
     return frame
 
 
@@ -269,7 +270,7 @@ def test_invalid_saved_pivot_evidence_cannot_authorize_close(side, field, value,
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_pipeline_closes_real_paper_position_on_pivot_without_reversal(
+def test_pipeline_closes_real_paper_position_on_pivot_after_dual_trend_reversal(
     symbol, side, tmp_path, monkeypatch,
 ):
     from core.paper_account import PaperAccount
@@ -282,6 +283,7 @@ def test_pipeline_closes_real_paper_position_on_pivot_without_reversal(
     quote = float(frame.iloc[-1]["close"])
     snapshot = DataPipeline.calculate_snapshot(symbol, frame, current_price=quote, position=pos)
     snapshot.raw_df = frame
+    snapshot.macro_trend = "BEARISH" if side == "LONG" else "BULLISH"
     snapshot.curr_k, snapshot.prev_k = frame.iloc[-1].to_dict(), frame.iloc[-2].to_dict()
     snapshot.kc_upper, snapshot.kc_lower, snapshot.atr = 110.0, 90.0, 1.0
     monkeypatch.setattr(DataPipeline, "calculate_snapshot", staticmethod(lambda *a, **k: snapshot))
@@ -293,6 +295,29 @@ def test_pipeline_closes_real_paper_position_on_pivot_without_reversal(
     assert result["status"] == "EXIT_EXECUTED", result
     assert symbol not in account.positions
     assert [trade["action"] for trade in account.trades] == ["CLOSE_" + side]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_paper_account_holds_confirmed_pivot_until_macro_trend_reverses(
+    side, tmp_path, monkeypatch,
+):
+    import core.paper_account as paper_module
+    from core.paper_account import PaperAccount
+
+    monkeypatch.setattr(paper_module, "STATE_FILE", str(tmp_path / "paper-hold.json"))
+    frame = pivot_frame(side)
+    frame.attrs["macro_trend_htf"] = "BULLISH" if side == "LONG" else "BEARISH"
+    pos = position(side, frame)
+    quote = float(frame.iloc[-1]["close"])
+    reason = profitable_true_pivot_exit(pos, frame)[0]
+    account = PaperAccount()
+    account.positions["CAP/USDT"] = pos
+    account.position_meta["CAP/USDT"] = {}
+    account._channel_exit_frames = {"CAP/USDT": frame}
+
+    assert not asyncio.run(account.close_position("CAP/USDT", quote, reason))
+    assert account.positions["CAP/USDT"] is pos
+    assert not account.trades
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

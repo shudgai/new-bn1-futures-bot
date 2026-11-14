@@ -289,9 +289,11 @@ async def test_early_short_execution_pipeline_flow():
 
 
 @pytest.mark.anyio
-async def test_exit_gate_holds_plain_kc_reversal_without_true_pivot():
-    """單純 KC 中軌反向不平倉，不自動反手。"""
+async def test_dual_trend_reversal_retries_after_entry_gate_veto(monkeypatch):
+    """雙趨勢反轉可先平倉；反向入場遭標準 Gate 否決時保留重試票據。"""
+    from types import SimpleNamespace
     from core.paper_account import PaperAccount
+    from core.gates.master_gate_funnel import MasterGateFunnel
     import time
     now_ms = int(time.time() // 60) * 60_000 - 60_000
     account = PaperAccount()
@@ -332,10 +334,40 @@ async def test_exit_gate_holds_plain_kc_reversal_without_true_pivot():
         klines_df=df,
         quote=98.2,
     )
-    assert res["status"] == "HOLD"
-    assert res["reason"] == "HOLD_UNTIL_PROFIT_CONFIRMED_TRUE_PIVOT"
-    assert "CAP/USDT" in account.positions
-    assert not account.trades
+    assert res["status"] == "EXIT_EXECUTED"
+    assert "CAP/USDT" not in account.positions
+    assert account.trades[-1]["action"] == "CLOSE_SHORT"
+    ticket = account.entry_filter_last["dual_trend_reversal_pending"]["CAP/USDT"]
+    assert ticket["source_position"]["side"] == "SHORT"
+
+    allow = SimpleNamespace(can_execute=True, reason="PASS")
+    monkeypatch.setattr(
+        MasterGateFunnel, "pivot_kc_location_veto",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        MasterGateFunnel, "evaluate_open_long",
+        staticmethod(lambda *_args, **_kwargs: allow),
+    )
+
+    async def open_long(_cls, engine_or_account, symbol, side, price, reason, meta=None):
+        assert symbol not in engine_or_account.positions
+        engine_or_account.positions[symbol] = {"side": side}
+        return True
+
+    monkeypatch.setattr(
+        ExecutionManager, "open_position", classmethod(open_long),
+    )
+    retry = await ExecutionManager.process_symbol_pipeline(
+        symbol="CAP/USDT",
+        engine_or_account=account,
+        klines_df=df,
+        quote=98.2,
+    )
+
+    assert retry["status"] == "SUCCESS_FLIP"
+    assert account.positions["CAP/USDT"]["side"] == "LONG"
+    assert "dual_trend_reversal_pending" not in account.entry_filter_last
 
 
 @pytest.mark.anyio

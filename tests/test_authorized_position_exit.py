@@ -144,13 +144,13 @@ def test_short_breakeven_exit_requires_armed_lock_and_positive_net_pnl():
     "reason",
     ["Wild Swing EXIT_BY_HARD_STOP_LOSS", "CIRCUIT_BREAKER_HARD_SL"],
 )
-def test_allows_safety_exit_for_restricted_symbols(symbol, reason):
+def test_safety_exit_labels_require_confirmed_account_risk(symbol, reason):
     active_position = {
         **position("SHORT"),
         "entry_mode": "WILD_SWING",
     }
 
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         symbol, active_position, {}, reason, 101.0,
     )
 
@@ -177,14 +177,14 @@ def test_retired_confirmed_pivot_ticket_no_longer_authorizes_exit():
     )
 
 
-def test_manual_close_is_explicit_and_other_symbols_keep_existing_policy():
+def test_manual_close_is_explicit_and_ordinary_exit_needs_dual_trend_evidence():
     assert automated_position_exit_allowed(
         "CAP/USDT", position(), {}, "手動平倉", 99.0, is_manual=True,
     )
     assert not automated_position_exit_allowed(
         "CAP/USDT", position(), {}, "人工例外", 99.0, is_manual=True,
     )
-    assert automated_position_exit_allowed(
+    assert not automated_position_exit_allowed(
         "DOGE/USDT", position(), {}, "觸發止損", 99.0,
     )
 
@@ -221,7 +221,7 @@ def test_account_close_boundary_blocks_unauthorized_exit(account_module, class_n
     "exchange_symbol,internal_symbol",
     [("CAPUSDT", "CAP/USDT"), ("LOBSTERUSDT", "LOBSTER/USDT")],
 )
-def test_account_circuit_breaker_does_not_software_close_restricted_symbols(
+def test_account_circuit_breaker_can_close_restricted_symbols(
     exchange_symbol, internal_symbol,
 ):
     from core.testnet_account import BinanceTestnetAccount
@@ -244,10 +244,9 @@ def test_account_circuit_breaker_does_not_software_close_restricted_symbols(
     assert report["close_attempts"] == [{
         "symbol": internal_symbol,
         "qty": "1",
-        "ok": False,
-        "blocked": "SOFTWARE_EXIT_POLICY_PROFIT_LOCK_OR_CONFIRMED_PIVOT",
+        "ok": True,
     }]
-    account._raw_create_order.assert_not_awaited()
+    account._raw_create_order.assert_awaited_once()
 
 
 def test_sequential_time_series_pullback_vs_true_peak_exit():

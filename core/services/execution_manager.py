@@ -431,6 +431,85 @@ class ExecutionManager:
     _pv_flip_watch_records: Dict[str, Dict[str, Any]] = {}
 
     @classmethod
+    def _save_dual_trend_reversal_ticket_state(cls, account: Any, symbol: str) -> bool:
+        save_state = getattr(account, "save_state", None)
+        if not callable(save_state):
+            logger.error(
+                "DUAL_TREND_REVERSAL_TICKET_PERSISTENCE_UNAVAILABLE symbol=%s",
+                symbol,
+            )
+            return False
+        try:
+            try:
+                save_state(strict=True)
+            except TypeError:
+                save_state()
+        except Exception as exc:
+            logger.error(
+                "DUAL_TREND_REVERSAL_TICKET_PERSISTENCE_FAILED symbol=%s error=%s",
+                symbol, exc,
+            )
+            return False
+        return True
+
+    @classmethod
+    def _store_dual_trend_reversal_ticket(
+        cls,
+        account: Any,
+        symbol: str,
+        position: Dict[str, Any],
+        position_meta: Optional[Dict[str, Any]],
+        exit_reason: str,
+    ) -> bool:
+        state = getattr(account, "entry_filter_last", None)
+        if not isinstance(state, dict):
+            state = {}
+            account.entry_filter_last = state
+        tickets = state.get("dual_trend_reversal_pending")
+        if not isinstance(tickets, dict):
+            tickets = {}
+            state["dual_trend_reversal_pending"] = tickets
+
+        def finite_number(value: Any) -> Optional[float]:
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return number if math.isfinite(number) else None
+
+        tickets[symbol] = {
+            "source_position": {
+                "side": str(position.get("side") or "").upper(),
+                "open_timestamp": finite_number(
+                    position.get("open_timestamp")
+                    if position.get("open_timestamp") is not None
+                    else (position_meta or {}).get("open_timestamp")
+                ),
+                "entry_price": finite_number(position.get("entry_price")),
+                "qty": finite_number(position.get("qty", position.get("amount"))),
+            },
+            "source_position_meta": {
+                "open_timestamp": finite_number(
+                    (position_meta or {}).get("open_timestamp")
+                ),
+            },
+            "exit_reason": str(exit_reason),
+            "created_at": time.time(),
+        }
+        return cls._save_dual_trend_reversal_ticket_state(account, symbol)
+
+    @classmethod
+    def _clear_dual_trend_reversal_ticket(cls, account: Any, symbol: str) -> bool:
+        state = getattr(account, "entry_filter_last", None)
+        tickets = state.get("dual_trend_reversal_pending") if isinstance(state, dict) else None
+        if not isinstance(tickets, dict) or symbol not in tickets:
+            return True
+        tickets.pop(symbol, None)
+        if not tickets:
+            state.pop("dual_trend_reversal_pending", None)
+        return cls._save_dual_trend_reversal_ticket_state(account, symbol)
+
+    @classmethod
     async def _evaluate_closed_entry_methods(
         cls,
         *,
@@ -702,6 +781,8 @@ class ExecutionManager:
         # 1. 抓取數據與計算純數值指標 (Data Layer)
         current_position = account.positions.get(symbol)
         has_position = bool(current_position and abs(float(current_position.get("amount", 0.0) or current_position.get("qty", 0.0))) > 0)
+        if has_position:
+            cls._clear_dual_trend_reversal_ticket(account, symbol)
 
         if klines_df is None or klines_df.empty:
             if hasattr(engine_or_account, "fetch_klines"):
@@ -824,6 +905,7 @@ class ExecutionManager:
         is_zoomed_out_bearish = is_macro_htf_bearish = is_3bar_bear_slope_ready = entry_kc_down
         cls._symbol_macro_trend[symbol] = macro_trend
         if hasattr(raw_df, "attrs"):
+            raw_df.attrs["macro_trend_htf"] = getattr(market_data, "macro_trend", None)
             raw_df.attrs["macro_trend"] = macro_trend
         entry_m5_c = float(c_k.get("ma5", math.nan))
         entry_m5_p = float(p_k.get("ma5", math.nan))
@@ -1092,7 +1174,7 @@ class ExecutionManager:
                 if pv_exit.get("should_exit"):
                     flip_lock = cls._position_flip_locks.setdefault(symbol, asyncio.Lock())
                     async with flip_lock:
-                        return await execute_peak_valley_exit_and_conditional_flip(
+                        exit_result = await execute_peak_valley_exit_and_conditional_flip(
                             account=account,
                             engine_or_account=engine_or_account,
                             symbol=symbol,
@@ -1109,6 +1191,75 @@ class ExecutionManager:
                             macro_trend=macro_trend,
                             atr=atr_v,
                         )
+                        if (
+                            exit_result.get("success")
+                            and exit_result.get("position_zero_confirmed")
+                            and symbol not in getattr(account, "positions", {})
+                            and not exit_result.get("flipped")
+                        ):
+                            from core.services.exits.authorized_position_exit import (
+                                dual_trend_exit_block_reason,
+                                is_dual_trend_emergency_exit,
+                            )
+
+                            exit_reason = str(
+                                exit_result.get("reason") or pv_exit.get("reason") or ""
+                            )
+                            position_meta = (
+                                pv_pos_meta if isinstance(pv_pos_meta, dict) else None
+                            )
+                            if (
+                                not is_dual_trend_emergency_exit(exit_reason)
+                                and dual_trend_exit_block_reason(
+                                    current_position, raw_df, position_meta,
+                                ) is None
+                            ):
+                                if not cls._store_dual_trend_reversal_ticket(
+                                    account,
+                                    symbol,
+                                    current_position,
+                                    position_meta,
+                                    exit_reason,
+                                ):
+                                    exit_result["dual_trend_flip_status"] = (
+                                        "PERSISTENCE_BLOCKED"
+                                    )
+                                else:
+                                    dual_flip = await cls._try_structure_position_flip(
+                                        account=account,
+                                        symbol=symbol,
+                                        position_side=pos_side,
+                                        frame=raw_df,
+                                        quote=curr_quote,
+                                        macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
+                                        exit_reason=exit_reason,
+                                        position=current_position,
+                                        position_meta=position_meta,
+                                    )
+                                    if dual_flip and dual_flip.get("success"):
+                                        if not cls._clear_dual_trend_reversal_ticket(
+                                            account, symbol,
+                                        ):
+                                            logger.critical(
+                                                "DUAL_TREND_REVERSAL_TICKET_CLEAR_FAILED_AFTER_OPEN symbol=%s",
+                                                symbol,
+                                            )
+                                        return {
+                                            "status": "SUCCESS_FLIP",
+                                            "symbol": symbol,
+                                            "side": dual_flip["side"],
+                                            "reason": dual_flip["reason"],
+                                            "success": True,
+                                            "close_result": exit_result,
+                                        }
+                                    exit_result["dual_trend_flip_status"] = "PENDING"
+                                    exit_result["dual_trend_flip_reason"] = (
+                                        dual_flip.get("reason")
+                                        if isinstance(dual_flip, dict)
+                                        else "REVERSAL_ENTRY_NOT_AUTHORIZED"
+                                    )
+                                    exit_result["dual_trend_flip_retry"] = True
+                        return exit_result
 
                 # 🛡️ KC 三層出場主控權鎖定：未觸及第一層硬止損 / 第三層移動止損 / 第二層收盤確認中軌緩衝或反轉時，
                 # 一律明確 HOLD，禁止回落舊版快線 MA5 觸碰或無緩衝中軌微動邏輯造成盤中洗出場！
@@ -1212,11 +1363,29 @@ class ExecutionManager:
                     structure_reason = None
                     logger.info(f"🛡️ [TREND_LOCK_HOLD] {symbol} {pos_side} {_active_exit_res.get('reason', '')}，阻斷任何普通平倉！")
                 else:
-                    structure_reason = UltimateShortExitGatekeeper.structure_exit_candidate(
-                        symbol, current_position,
-                        getattr(account, "position_meta", {}).get(symbol, {}),
-                        curr_quote, raw_df,
+                    # 🛡️ 中軌方向鐵律：只有 KC 中軌確實反向（翻向），才允許觸發結構性出場
+                    # 多單持倉：中軌向下才算翻向；空單持倉：中軌向上才算翻向
+                    # 中軌走平（kc_mid == p_kc_mid）視為「方向未變」→ 一票否決 structure_exit_candidate
+                    _kc_mid_curr = kc_mid  # 當前 KC 中軌（第 773 行已計算）
+                    _kc_mid_prev = float(p_k.get("kc_middle", _kc_mid_curr))  # 前根 KC 中軌
+                    _kc_direction_flipped = (
+                        (pos_side == "LONG" and _kc_mid_curr < _kc_mid_prev)
+                        or (pos_side == "SHORT" and _kc_mid_curr > _kc_mid_prev)
                     )
+                    if _kc_direction_flipped:
+                        structure_reason = UltimateShortExitGatekeeper.structure_exit_candidate(
+                            symbol, current_position,
+                            getattr(account, "position_meta", {}).get(symbol, {}),
+                            curr_quote, raw_df,
+                        )
+                    else:
+                        # KC 中軌方向未翻向（走平或與持倉同向）→ 絕對禁止非峰谷出場
+                        structure_reason = None
+                        logger.info(
+                            f"🛡️ [KC_DIRECTION_HOLD] {symbol} {pos_side} "
+                            f"KC 中軌方向未翻向 (curr={_kc_mid_curr:.6f} vs prev={_kc_mid_prev:.6f})，"
+                            f"一票否決 structure_exit_candidate，只有真峰谷才能出場！"
+                        )
                 is_emerg_bar_open = bool(
                     raw_df is not None
                     and isinstance(raw_df, pd.DataFrame)
@@ -1248,12 +1417,50 @@ class ExecutionManager:
                         reason=structure_reason, meta={"raw_df": raw_df, "is_bar_closed": is_closed_flag},
                     )
                     flip = None
+                    dual_trend_ready = False
                     if success and symbol not in getattr(account, "positions", {}):
                         acc_key = cls._get_account_key(account, symbol)
                         cls._last_exit_record.pop(acc_key, None)
                         cls._last_exit_record.pop(symbol, None)
                         cls._last_trade_bar_time.pop(symbol, None)
-                        if structure_reason in MA5_ANGLE_REVERSAL_EXIT_REASONS.values():
+                        from core.services.exits.authorized_position_exit import (
+                            dual_trend_exit_block_reason,
+                            is_dual_trend_emergency_exit,
+                        )
+                        position_meta = (
+                            pv_pos_meta if isinstance(pv_pos_meta, dict) else None
+                        )
+                        dual_trend_ready = bool(
+                            not is_dual_trend_emergency_exit(structure_reason)
+                            and dual_trend_exit_block_reason(
+                                current_position, raw_df, position_meta,
+                            ) is None
+                        )
+                        if dual_trend_ready:
+                            if cls._store_dual_trend_reversal_ticket(
+                                account,
+                                symbol,
+                                current_position,
+                                position_meta,
+                                structure_reason,
+                            ):
+                                flip = await cls._try_structure_position_flip(
+                                    account=account,
+                                    symbol=symbol,
+                                    position_side=pos_side,
+                                    frame=raw_df,
+                                    quote=curr_quote,
+                                    macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
+                                    exit_reason=structure_reason,
+                                    position=current_position,
+                                    position_meta=position_meta,
+                                )
+                            else:
+                                flip = {
+                                    "success": False,
+                                    "reason": "DUAL_TREND_REVERSAL_PERSISTENCE_BLOCKED",
+                                }
+                        elif structure_reason in MA5_ANGLE_REVERSAL_EXIT_REASONS.values():
                             angle_signal = UltimateShortExitGatekeeper.ma5_angle_opportunity(
                                 raw_df, curr_quote,
                             )
@@ -1268,6 +1475,8 @@ class ExecutionManager:
                                     quote=curr_quote,
                                     macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
                                     exit_reason=structure_reason,
+                                    position=current_position,
+                                    position_meta=pv_pos_meta,
                                 )
                         else:
                             flip = await cls._try_structure_position_flip(
@@ -1278,8 +1487,17 @@ class ExecutionManager:
                                 quote=curr_quote,
                                 macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
                                 exit_reason=structure_reason,
+                                position=current_position,
+                                position_meta=pv_pos_meta,
                             )
                     if flip and flip.get("success"):
+                        if dual_trend_ready and not cls._clear_dual_trend_reversal_ticket(
+                            account, symbol,
+                        ):
+                            logger.critical(
+                                "DUAL_TREND_REVERSAL_TICKET_CLEAR_FAILED_AFTER_OPEN symbol=%s",
+                                symbol,
+                            )
                         return {
                             "status": "SUCCESS_FLIP",
                             "symbol": symbol,
@@ -1295,6 +1513,11 @@ class ExecutionManager:
                         **(
                             {"flip_status": "VETO", "flip_reason": flip["reason"]}
                             if flip else {}
+                        ),
+                        **(
+                            {"dual_trend_flip_retry": True}
+                            if dual_trend_ready and flip and not flip.get("success")
+                            else {}
                         ),
                     }
 
@@ -2372,6 +2595,96 @@ class ExecutionManager:
         # =========================================================================
         method_rejection: Optional[Dict[str, Any]] = None
         if not has_position:
+            state = getattr(account, "entry_filter_last", None)
+            pending_tickets = (
+                state.get("dual_trend_reversal_pending")
+                if isinstance(state, dict) else None
+            )
+            pending_ticket = (
+                pending_tickets.get(symbol)
+                if isinstance(pending_tickets, dict) else None
+            )
+            if pending_ticket is not None:
+                from core.services.exits.authorized_position_exit import (
+                    dual_trend_exit_block_reason,
+                )
+
+                source_position = pending_ticket.get("source_position")
+                source_meta = pending_ticket.get("source_position_meta")
+                if (
+                    not isinstance(source_position, dict)
+                    or str(source_position.get("side") or "").upper() not in ("LONG", "SHORT")
+                ):
+                    logger.error(
+                        "DUAL_TREND_REVERSAL_TICKET_INVALID symbol=%s",
+                        symbol,
+                    )
+                    if not cls._clear_dual_trend_reversal_ticket(account, symbol):
+                        return {
+                            "status": "DUAL_TREND_REVERSAL_STATE_ERROR",
+                            "symbol": symbol,
+                            "reason": "INVALID_TICKET_CLEAR_FAILED",
+                        }
+                    pending_ticket = None
+                else:
+                    trend_block = dual_trend_exit_block_reason(
+                        source_position,
+                        raw_df,
+                        source_meta if isinstance(source_meta, dict) else None,
+                    )
+                    if trend_block in (
+                        "VETO_EXIT_KC_TREND_NOT_REVERSED",
+                        "VETO_EXIT_MACRO_TREND_NOT_REVERSED",
+                    ):
+                        if not cls._clear_dual_trend_reversal_ticket(account, symbol):
+                            return {
+                                "status": "DUAL_TREND_REVERSAL_STATE_ERROR",
+                                "symbol": symbol,
+                                "reason": "REVERSAL_INVALIDATION_PERSISTENCE_FAILED",
+                            }
+                        pending_ticket = None
+                    elif trend_block is not None:
+                        return {
+                            "status": "DUAL_TREND_REVERSAL_WAITING_DATA",
+                            "symbol": symbol,
+                            "reason": trend_block,
+                        }
+                    else:
+                        flip = await cls._try_structure_position_flip(
+                            account=account,
+                            symbol=symbol,
+                            position_side=source_position["side"],
+                            frame=raw_df,
+                            quote=curr_quote,
+                            macro_trend=getattr(market_data, "macro_trend", None) or macro_trend,
+                            exit_reason=str(
+                                pending_ticket.get("exit_reason") or "DUAL_TREND_REVERSAL"
+                            ),
+                            position=source_position,
+                            position_meta=source_meta if isinstance(source_meta, dict) else None,
+                        )
+                        if flip and flip.get("success"):
+                            if not cls._clear_dual_trend_reversal_ticket(account, symbol):
+                                logger.critical(
+                                    "DUAL_TREND_REVERSAL_TICKET_CLEAR_FAILED_AFTER_OPEN symbol=%s",
+                                    symbol,
+                                )
+                            return {
+                                "status": "SUCCESS_FLIP",
+                                "symbol": symbol,
+                                "side": flip["side"],
+                                "reason": flip["reason"],
+                                "success": True,
+                            }
+                        return {
+                            "status": "DUAL_TREND_REVERSAL_PENDING",
+                            "symbol": symbol,
+                            "reason": (
+                                flip.get("reason") if isinstance(flip, dict)
+                                else "REVERSAL_ENTRY_NOT_AUTHORIZED"
+                            ),
+                        }
+
             acc_key_watch = cls._get_account_key(account, symbol)
             active_watch = cls._pv_flip_watch_records.get(acc_key_watch)
             if active_watch and isinstance(raw_df, pd.DataFrame) and len(raw_df) >= 3:
@@ -5173,12 +5486,18 @@ class ExecutionManager:
         macro_trend: Optional[str],
         *,
         exit_reason: Optional[str] = None,
+        position: Optional[Dict[str, Any]] = None,
+        position_meta: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Re-evaluate and enter the opposite side only after a confirmed close is flat."""
         from core.gates.master_gate_funnel import (
             MasterGateFunnel, market_snapshot_from_frame,
         )
         from core.services.candle_data import closed_entry_candles
+        from core.services.exits.authorized_position_exit import (
+            dual_trend_exit_block_reason,
+            is_dual_trend_emergency_exit,
+        )
 
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             return None
@@ -5201,13 +5520,23 @@ class ExecutionManager:
         held = str(position_side or "").upper()
         sharp_exit = exit_reason in SHARP_REVERSAL_EXIT_REASONS.values()
         angle_exit = exit_reason in MA5_ANGLE_REVERSAL_EXIT_REASONS.values()
+        dual_trend_reversal = bool(
+            position
+            and exit_reason
+            and not is_dual_trend_emergency_exit(exit_reason)
+            and dual_trend_exit_block_reason(position, frame, position_meta) is None
+        )
         candidate = (
-            (
-                "SHORT" if held == "LONG" else "LONG",
-                "TRIGGER_MA5_75_DEGREE" if angle_exit else "TRIGGER_SHARP_REVERSAL_15ATR",
+            ("SHORT" if held == "LONG" else "LONG", "TRIGGER_DUAL_TREND_REVERSAL")
+            if dual_trend_reversal
+            else (
+                (
+                    "SHORT" if held == "LONG" else "LONG",
+                    "TRIGGER_MA5_75_DEGREE" if angle_exit else "TRIGGER_SHARP_REVERSAL_15ATR",
+                )
+                if sharp_exit or angle_exit
+                else MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
             )
-            if sharp_exit or angle_exit
-            else MasterGateFunnel.evaluate_position_flip(snapshot, position_side)
         )
         is_true_3pt_flip = False
         if (
@@ -5336,6 +5665,14 @@ class ExecutionManager:
         async with lock:
             if symbol in getattr(account, "positions", {}):
                 return {"success": False, "side": target_side, "reason": "POSITION_NOT_FLAT"}
+            if dual_trend_reversal and dual_trend_exit_block_reason(
+                position, frame, position_meta,
+            ) is not None:
+                return {
+                    "success": False,
+                    "side": target_side,
+                    "reason": "DUAL_TREND_REVERSAL_EVIDENCE_STALE",
+                }
             if not is_true_3pt_flip:
                 current_gate = (
                     MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
@@ -5875,15 +6212,23 @@ class ExecutionManager:
                 current_open = float(last_f_row.get("open", eval_f_o))
                 current_price = float(price)
 
-                # 提取 MA5 與 MA15 數值（優先使用最新未收盤值，確保即時性）
-                live_ma5 = float(last_f_row.get("ma5", prev_f_row.get("ma5", 0.0)))
-                prev_ma5 = float(prev_f_row.get("ma5", live_ma5))
-                live_ma15 = float(last_f_row.get("ma15", prev_f_row.get("ma15", 0.0)))
-                if not bool(last_f_row.get("is_closed", True)):
+                # 提取 MA5 與 MA15 數值（若最新未收盤或為 NaN，透過 quote_adjusted_entry_mas 動態推算）
+                raw_last_ma5 = last_f_row.get("ma5")
+                raw_prev_ma5 = prev_f_row.get("ma5")
+                raw_last_ma15 = last_f_row.get("ma15")
+
+                live_ma5 = float(raw_last_ma5) if raw_last_ma5 is not None and not pd.isna(raw_last_ma5) else (float(raw_prev_ma5) if raw_prev_ma5 is not None and not pd.isna(raw_prev_ma5) else 0.0)
+                prev_ma5 = float(raw_prev_ma5) if raw_prev_ma5 is not None and not pd.isna(raw_prev_ma5) else live_ma5
+                live_ma15 = float(raw_last_ma15) if raw_last_ma15 is not None and not pd.isna(raw_last_ma15) else (float(prev_f_row.get("ma15", 0.0)) if not pd.isna(prev_f_row.get("ma15")) else 0.0)
+
+                if not bool(last_f_row.get("is_closed", True)) or pd.isna(raw_last_ma5) or pd.isna(raw_last_ma15):
                     from core.services.ma5_entry_slope import quote_adjusted_entry_mas
 
                     live_mas = quote_adjusted_entry_mas(frame, current_price)
-                    if live_mas is None:
+                    if live_mas is None or not all(
+                        math.isfinite(float(value)) and float(value) > 0
+                        for value in live_mas
+                    ):
                         cls._last_open_error[symbol] = "BLOCKED_INVALID_LIVE_MA_DATA"
                         logger.critical(
                             "BLOCKED_INVALID_LIVE_MA_DATA symbol=%s bar=%s",

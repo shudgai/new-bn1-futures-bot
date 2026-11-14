@@ -402,6 +402,7 @@ class DataPipeline:
         # downstream gates can distinguish a valid neutral market from a
         # missing macro-trend calculation.
         df_calc.attrs["macro_trend"] = macro_trend
+        df_calc.attrs["macro_trend_htf"] = macro_trend
         if has_live_bar:
             # Live OHLC has no computed indicators; carry the canonical snapshot
             # middle with its candle identity rather than inventing a live EMA.
