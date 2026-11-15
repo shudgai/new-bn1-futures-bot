@@ -7,32 +7,42 @@ from core.services.exits.authorized_position_exit import (
     UltimateExitGatekeeper,
     dual_trend_exit_block_reason,
     is_dual_trend_emergency_exit,
+    macro_kc_midline_exit_block_reason,
 )
 
 
 def _frame(side, *, kc_reversed, macro_reversed, opened=None):
     latest_start = (int(time.time() * 1000) // 60_000) * 60_000 - 120_000
     latest_close = latest_start + 60_000
+    first_stamp = latest_close - 119 * 60_000
     if opened is None:
-        opened = (latest_start - 30_000) / 1000
+        opened = (first_stamp + 30 * 60_000) / 1000
     direction = -1 if (side == "LONG") == kc_reversed else 1
-    middle = [100.0, 100.0 + direction]
+    middle = [100.0] * 120
+    middle[-1] = middle[-2] + direction
     macro = (
         "BEARISH" if (side == "LONG") == macro_reversed else "BULLISH"
     )
+    now_ms = int(time.time() * 1000)
+    trend_sign = (
+        (-1 if side == "LONG" else 1)
+        if macro_reversed else (1 if side == "LONG" else -1)
+    )
+    closes = [100.0 + trend_sign * index * 0.01 for index in range(120)]
     frame = pd.DataFrame({
-        "timestamp": [latest_start, latest_close],
-        "open": [100.0, 100.0],
-        "high": [101.0, 102.0],
-        "low": [99.0, 100.0],
-        "close": [100.0, 101.0],
+        "timestamp": [first_stamp + index * 60_000 for index in range(120)],
+        "open": closes,
+        "high": [close + 1.0 for close in closes],
+        "low": [close - 1.0 for close in closes],
+        "close": closes,
         "kc_middle": middle,
-        "is_closed": [True, True],
+        "is_closed": [True] * 120,
     })
     frame.attrs.update({
         "timeframe_ms": 60_000,
         "macro_trend": "NEUTRAL",
         "macro_trend_htf": macro,
+        "snapshot_ms": now_ms,
     })
     return frame, opened
 
@@ -201,6 +211,128 @@ def test_dual_trend_exit_fails_closed_when_closed_market_data_is_stale():
     }
 
     assert dual_trend_exit_block_reason(position, frame) == "VETO_EXIT_TREND_DATA_STALE"
+
+
+def test_dual_trend_exit_requires_actual_macro_kc_midline_reversal():
+    frame, opened = _frame(
+        "LONG", kc_reversed=True, macro_reversed=True,
+    )
+    frame["close"] = [100.0 + index * 0.01 for index in range(len(frame))]
+    position = {
+        "side": "LONG",
+        "open_timestamp": opened,
+        "entry_price": 100.0,
+        "qty": 1.0,
+    }
+
+    assert dual_trend_exit_block_reason(position, frame) == (
+        "VETO_EXIT_MACRO_KC_MIDLINE_NOT_REVERSED"
+    )
+
+
+@pytest.mark.parametrize(
+    ("descending", "expected"),
+    [(True, None), (False, "VETO_EXIT_MACRO_KC_MIDLINE_NOT_REVERSED")],
+)
+def test_macro_kc_gate_derives_confirmed_5m_trend_from_closed_1m_data(
+    descending, expected,
+):
+    now_ms = int(time.time() * 1000)
+    last_start = (now_ms // 60_000) * 60_000 - 60_000
+    timestamps = [last_start - (119 - index) * 60_000 for index in range(120)]
+    closes = [
+        200.0 + (index * 0.1 if not descending else -index * 0.1)
+        for index in range(120)
+    ]
+    opens = [
+        close + 0.02 if descending else close - 0.02
+        for close in closes
+    ]
+    frame = pd.DataFrame({
+        "timestamp": timestamps,
+        "open": opens,
+        "high": [max(opened, close) + 0.01 for opened, close in zip(opens, closes)],
+        "low": [min(opened, close) - 0.01 for opened, close in zip(opens, closes)],
+        "close": closes,
+        "is_closed": [True] * len(timestamps),
+    })
+    frame.attrs.update({
+        "timeframe_ms": 60_000,
+        "snapshot_ms": now_ms,
+    })
+    position = {
+        "side": "LONG",
+        "open_timestamp": timestamps[0] / 1000,
+    }
+
+    assert macro_kc_midline_exit_block_reason(position, frame) == expected
+
+
+@pytest.mark.parametrize(
+    ("macro_reversed", "expected"),
+    [(False, False), (True, True)],
+)
+def test_meme_waterfall_exit_requires_macro_kc_midline_reversal(
+    monkeypatch, macro_reversed, expected,
+):
+    import core.services.math_execution_gate as math_gate
+
+    frame, opened = _frame(
+        "LONG", kc_reversed=False, macro_reversed=macro_reversed,
+    )
+    position = {
+        "side": "LONG",
+        "open_timestamp": opened,
+        "entry_price": 100.0,
+        "qty": 1.0,
+    }
+    monkeypatch.setattr(
+        math_gate, "validate_exit_math",
+        lambda *_args, **_kwargs: (True, "WATERFALL_CONFIRMED", {}),
+    )
+    monkeypatch.setattr(
+        "core.services.exits.authorized_position_exit.meme_strategy_disaster_disabled",
+        lambda *_args, **_kwargs: False,
+    )
+
+    assert UltimateExitGatekeeper.can_execute_exit(
+        "龙虾/USDT", position, {}, "EXIT_BY_EXTREME_WATERFALL", 99.0,
+        frame=frame,
+    ) is expected
+
+
+def test_meme_account_hard_stop_remains_ungated_by_macro_kc(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.gates.ultimate_short_exit_gatekeeper import (
+        DEFER, UltimateShortExitGatekeeper,
+    )
+    import core.services.math_execution_gate as math_gate
+
+    monkeypatch.setattr(
+        UltimateShortExitGatekeeper,
+        "evaluate",
+        lambda *_args, **_kwargs: SimpleNamespace(verdict=DEFER, allowed=False),
+    )
+    monkeypatch.setattr(
+        math_gate, "validate_exit_math",
+        lambda *_args, **_kwargs: (True, "ACCOUNT_HARD_STOP_CONFIRMED", {}),
+    )
+    monkeypatch.setattr(
+        "core.services.exits.authorized_position_exit.meme_strategy_disaster_disabled",
+        lambda *_args, **_kwargs: False,
+    )
+    position = {
+        "side": "LONG",
+        "open_timestamp": time.time() - 600,
+        "entry_price": 100.0,
+        "qty": 1.0,
+    }
+
+    assert UltimateExitGatekeeper.can_execute_exit(
+        "龙虾/USDT", position, {},
+        "ACCOUNT_HARD_STOP_EMERGENCY_WATERFALL", 95.0,
+    )
 
 
 def test_hard_emergency_exit_bypasses_dual_trend_gate(monkeypatch):

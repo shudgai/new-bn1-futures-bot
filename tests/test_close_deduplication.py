@@ -139,7 +139,7 @@ async def test_strategy_failure_cooldown_keeps_manual_override(side, tmp_path, m
     reason = profitable_true_pivot_exit(pos, frame)[0]
     create = ex.create_order
     ex.create_order = AsyncMock(side_effect=RuntimeError("order rejected"))
-    quote = 100.2 if side == "LONG" else 99.8
+    quote = float(frame.iloc[-1]["close"])
     assert not await a.close_position("DOGE/USDT", quote, reason, True)
     assert "DOGE/USDT" in a.positions and not closes(a)
     assert not await a.close_position("DOGE/USDT", quote, reason, True)

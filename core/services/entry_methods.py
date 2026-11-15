@@ -782,7 +782,7 @@ def revalidate_entry_method(
         if not gate.can_execute:
             return False, "BLOCKED_ENTRY_METHOD_MASTER_GATE:" + gate.reason
 
-    if final_submission:
+    if final_submission and method != KC_TWO_BAR_BREAKOUT:
         live_candle_veto = _live_candle_veto(frame, symbol, side, quote)
         if live_candle_veto:
             return False, live_candle_veto

@@ -85,6 +85,98 @@ def is_dual_trend_emergency_exit(reason: str) -> bool:
     ))
 
 
+def macro_kc_midline_exit_block_reason(
+    position: Mapping[str, Any],
+    frame: Any,
+    metadata: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Require a post-entry, closed higher-timeframe KC midline reversal."""
+    import pandas as pd
+
+    side = str(position.get("side") or "").upper()
+    if side not in ("LONG", "SHORT") or not isinstance(frame, pd.DataFrame):
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+
+    attrs = getattr(frame, "attrs", {})
+    try:
+        snapshot_ms = float(attrs.get("snapshot_ms", time.time() * 1000.0))
+        if snapshot_ms < 1e11:
+            snapshot_ms *= 1000.0
+    except (TypeError, ValueError, OverflowError):
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+    if not math.isfinite(snapshot_ms) or snapshot_ms <= 0:
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+
+    raw_interval = attrs.get("timeframe_ms", 60_000)
+    try:
+        raw_interval = float(raw_interval)
+    except (TypeError, ValueError, OverflowError):
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+    if raw_interval < 1_000:
+        raw_interval *= 1_000.0
+    if not math.isfinite(raw_interval) or raw_interval != 60_000:
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+
+    from core.services.candle_data import closed_entry_candles
+    from core.services.low_latency_exit import resample_1m_to_5m
+
+    one_minute = closed_entry_candles(frame)
+    if len(one_minute) < 100:
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+    for key in ("macro_frame", "frame_5m"):
+        one_minute.attrs.pop(key, None)
+    macro_frame = resample_1m_to_5m(one_minute)
+    if macro_frame.empty:
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+    macro_frame["is_closed"] = (
+        pd.to_numeric(macro_frame["timestamp"], errors="coerce") + 300_000
+        <= snapshot_ms
+    )
+    macro_frame.attrs["timeframe_ms"] = 300_000
+    macro_frame.attrs["snapshot_ms"] = snapshot_ms
+    closed_macro = closed_entry_candles(macro_frame)
+    if len(closed_macro) < 20:
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+    latest_stamp = float(closed_macro.iloc[-1]["timestamp"])
+    latest_close_ms = latest_stamp + 300_000
+    if (
+        not math.isfinite(latest_close_ms)
+        or latest_close_ms > snapshot_ms
+        or snapshot_ms - latest_close_ms > 600_000
+    ):
+        return "VETO_EXIT_MACRO_KC_DATA_STALE"
+
+    raw_opened = position.get("open_timestamp")
+    if raw_opened is None:
+        raw_opened = (metadata or {}).get("open_timestamp")
+    try:
+        opened_ms = float(raw_opened)
+        if opened_ms < 1e11:
+            opened_ms *= 1000.0
+    except (TypeError, ValueError, OverflowError):
+        return "VETO_EXIT_OPEN_TIME_INVALID"
+    if not math.isfinite(opened_ms) or opened_ms <= 0:
+        return "VETO_EXIT_OPEN_TIME_INVALID"
+    if latest_close_ms <= opened_ms:
+        return "VETO_EXIT_NO_POST_ENTRY_MACRO_KC_CONFIRMATION"
+
+    middle = pd.to_numeric(closed_macro["close"], errors="coerce").ewm(
+        span=20, adjust=False,
+    ).mean()
+    try:
+        previous_middle, latest_middle = map(float, middle.iloc[-2:])
+    except (TypeError, ValueError, OverflowError):
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+    if not all(math.isfinite(value) and value > 0 for value in (previous_middle, latest_middle)):
+        return "VETO_EXIT_MACRO_KC_DATA_UNAVAILABLE"
+
+    macro_reversed = (
+        (side == "LONG" and latest_middle < previous_middle)
+        or (side == "SHORT" and latest_middle > previous_middle)
+    )
+    return None if macro_reversed else "VETO_EXIT_MACRO_KC_MIDLINE_NOT_REVERSED"
+
+
 def dual_trend_exit_block_reason(
     position: Mapping[str, Any],
     frame: Any,
@@ -150,6 +242,9 @@ def dual_trend_exit_block_reason(
         return "VETO_EXIT_KC_TREND_NOT_REVERSED"
     if not macro_reversed:
         return "VETO_EXIT_MACRO_TREND_NOT_REVERSED"
+    macro_kc_block = macro_kc_midline_exit_block_reason(position, frame, metadata)
+    if macro_kc_block is not None:
+        return macro_kc_block
     return None
 
 
@@ -179,6 +274,27 @@ class UltimateExitGatekeeper:
         if not math.isfinite(exit_price) or exit_price <= 0:
             logger.error("ULTIMATE_EXIT_INVALID_PRICE symbol=%s price=%s", symbol, price)
             return False
+
+        normalized_reason = str(reason or "").upper()
+        if (
+            any(token in normalized_reason for token in ("WATERFALL", "瀑布", "閃崩"))
+            and not any(token in normalized_reason for token in (
+                "ACCOUNT_", "CIRCUIT_BREAKER", "HARD_STOP", "LIQUIDATION",
+                "MARGIN_LOSS", "DATA_OUTAGE",
+            ))
+        ):
+            from core.symbol_aliases import is_meme_breakout_symbol
+
+            if is_meme_breakout_symbol(symbol):
+                macro_kc_block = macro_kc_midline_exit_block_reason(
+                    position, frame, metadata,
+                )
+                if macro_kc_block is not None:
+                    logger.info(
+                        "[VETO_HOLD_%s] %s symbol=%s reason=%s",
+                        position.get("side"), macro_kc_block, symbol, reason,
+                    )
+                    return False
 
         if not is_dual_trend_emergency_exit(reason):
             trend_block = dual_trend_exit_block_reason(position, frame, metadata)

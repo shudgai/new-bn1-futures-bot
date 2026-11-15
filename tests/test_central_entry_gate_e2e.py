@@ -65,7 +65,7 @@ def _create_mock_candles(n=30, side="LONG", closed=True):
             "kc_middle": 100.0,
             "kc_middle_slope": 0.25,  # >= 0.1 * 2.0 = 0.2
             "ma5": 101.5,
-            "ma15": 98.5,
+            "ma15": 101.0,
             "ma3": 101.8,
             "macro_trend": "BULLISH",
         }

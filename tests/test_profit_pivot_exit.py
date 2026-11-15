@@ -2,9 +2,11 @@
 
 import asyncio
 import copy
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 from core.gates.unified_pipeline_gates import ExitGate
@@ -24,6 +26,26 @@ SYMBOLS = ["1000PEPE/USDT", "龙虾/USDT", "CAP/USDT"]
 PIVOT_PROFIT_OFFSET = 1.0
 
 
+@pytest.fixture(autouse=True)
+def _freeze_market_clock_at_five_minute_boundary(monkeypatch):
+    snapshot_seconds = int(time.time() // 300) * 300
+    monkeypatch.setattr(time, "time", lambda: snapshot_seconds)
+
+
+def _shape_pre_pivot_trend(frame, direction):
+    start, end = (105.0, 103.0) if direction < 0 else (95.0, 97.0)
+    indices = range(len(frame) - 30, len(frame) - 3)
+    for offset, index in enumerate(indices):
+        close = start + (end - start) * offset / 26
+        opened = close + 0.02 if direction < 0 else close - 0.02
+        frame.loc[index, ["open", "high", "low", "close"]] = [
+            opened,
+            max(opened, close) + 0.02,
+            min(opened, close) - 0.02,
+            close,
+        ]
+
+
 def pivot_quote(side, close=100.2):
     """Literal quote inside the default pivot_frame, shifted like the frame."""
     sign = 1 if side == "LONG" else -1
@@ -32,6 +54,15 @@ def pivot_quote(side, close=100.2):
 
 def pivot_frame(side, *, gain=1.0, atr=1.0, profit_offset=PIVOT_PROFIT_OFFSET):
     frame = wave_frame(side, reversed_direction=False)
+    original_attrs = dict(frame.attrs)
+    first_timestamp = int(frame.iloc[0]["timestamp"])
+    prefix_rows = []
+    for index in range(100):
+        row = frame.iloc[0].to_dict()
+        row["timestamp"] = first_timestamp - (100 - index) * 60_000
+        prefix_rows.append(row)
+    frame = pd.concat([pd.DataFrame(prefix_rows), frame], ignore_index=True)
+    frame.attrs.update(original_attrs)
     frame["kc_upper"], frame["kc_lower"], frame["atr"] = 110.0, 90.0, atr
     frame[["open", "close", "ma5"]] = 100.0
     frame["high"], frame["low"] = 100.0 + 0.1 * gain, 100.0 - 0.1 * gain
@@ -55,6 +86,7 @@ def pivot_frame(side, *, gain=1.0, atr=1.0, profit_offset=PIVOT_PROFIT_OFFSET):
     # Shift the whole structure so the pivot closes beyond the 1 ATR minimum-profit rule.
     price_columns = ["open", "high", "low", "close", "ma3", "ma5", "ma15", "kc_middle", "kc_upper", "kc_lower"]
     frame[price_columns] = frame[price_columns] + sign * profit_offset * atr
+    _shape_pre_pivot_trend(frame, -1 if side == "LONG" else 1)
     frame.attrs["macro_trend_htf"] = "BEARISH" if side == "LONG" else "BULLISH"
     return frame
 
@@ -215,14 +247,14 @@ def test_exact_profit_thresholds(side, gain, roe, expected):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_earlier_post_entry_profit_still_qualifies_later_pivot(side):
+def test_earlier_post_entry_profit_does_not_override_current_profit_floor(side):
     frame = pivot_frame(side, gain=0.2)
     frame.loc[frame.index[-5], "high" if side == "LONG" else "low"] = (
         101.0 if side == "LONG" else 99.0
     )
     pos = position(side, frame)
     pos["leverage"] = 1.0
-    assert profitable_true_pivot_exit(pos, frame) is not None
+    assert profitable_true_pivot_exit(pos, frame) is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -307,6 +339,7 @@ def test_paper_account_holds_confirmed_pivot_until_macro_trend_reverses(
     monkeypatch.setattr(paper_module, "STATE_FILE", str(tmp_path / "paper-hold.json"))
     frame = pivot_frame(side)
     frame.attrs["macro_trend_htf"] = "BULLISH" if side == "LONG" else "BEARISH"
+    _shape_pre_pivot_trend(frame, 1 if side == "LONG" else -1)
     pos = position(side, frame)
     quote = float(frame.iloc[-1]["close"])
     reason = profitable_true_pivot_exit(pos, frame)[0]

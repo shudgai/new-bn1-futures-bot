@@ -1130,6 +1130,12 @@ class ExecutionManager:
                 tier1_drawback_pct=0.20,
             )
 
+            pv_pos_meta = getattr(account, "position_meta", {}).get(symbol, {})
+            dual_trend_exit_candidate = cls._confirmed_dual_trend_exit_candidate(
+                current_position,
+                pv_pos_meta if isinstance(pv_pos_meta, dict) else None,
+                raw_df,
+            )
             gate_should_exit, gate_reason, gate_meta = ExitGate.evaluate(
                 pos=current_position,
                 market_data=market_data,
@@ -1155,17 +1161,11 @@ class ExecutionManager:
                     ),
                     "success": success,
                 }
-            pv_pos_meta = getattr(account, "position_meta", {}).get(symbol, {})
-            dual_trend_exit_candidate = cls._confirmed_dual_trend_exit_candidate(
-                current_position,
-                pv_pos_meta if isinstance(pv_pos_meta, dict) else None,
-                raw_df,
-            )
             from core.services.exits.strict_true_pivot import PROFIT_PIVOT_REASONS
             if (
                 gate_should_exit
                 and gate_reason in PROFIT_PIVOT_REASONS
-                and not dual_trend_exit_candidate
+                and dual_trend_exit_candidate
             ):
                 success = await cls.close_position(
                     account=account,

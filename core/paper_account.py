@@ -798,6 +798,12 @@ class PaperAccount:
             or entry_context.get("source") == "MANUAL"
             or reason == "MANUAL"
         )
+        if is_manual_request and eval_frame is None:
+            self.log(
+                f"ENTRY_MATH_GATE {symbol} BLOCKED_INSUFFICIENT_DATA",
+                "WARNING",
+            )
+            raise ValueError("BLOCKED_INSUFFICIENT_DATA")
         if not is_manual_request:
             provider = getattr(self, "entry_frame_provider", None)
             if callable(provider) and entry_context.get("entry_gate_frame") is None:
