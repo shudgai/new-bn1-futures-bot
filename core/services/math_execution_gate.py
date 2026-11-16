@@ -1483,6 +1483,21 @@ def validate_exit_at_execution(
     metadata = getattr(account, "position_meta", {}).get(symbol, {})
     if str(close_reason or "").strip() == "手動平倉":
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
+    from core.services.mtf_kc_state_machine import (
+        MTF_KC_EXIT_REASON_PREFIX,
+        mtf_exit_is_authorized,
+    )
+    if str(close_reason or "").upper().startswith(MTF_KC_EXIT_REASON_PREFIX):
+        if not mtf_exit_is_authorized(
+            metadata,
+            close_reason,
+            price,
+            str(position.get("side") or "").upper(),
+        ):
+            return False, "BLOCKED_MTF_EXIT_AUTHORITY", {"exit_type": "BLOCKED"}
+        ticket = metadata.get("mtf_kc_exit_authority", {})
+        evidence = ticket.get("evidence", {}) if isinstance(ticket, Mapping) else {}
+        return True, "MTF_KC_STATE_MACHINE_EXIT_APPROVED", dict(evidence)
     if str(close_reason or "").strip().upper() == "ACTIVE_EXIT_DUAL_TREND_REVERSAL":
         from core.services.exits.authorized_position_exit import dual_trend_exit_block_reason
 

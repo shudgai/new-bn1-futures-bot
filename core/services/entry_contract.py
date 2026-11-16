@@ -126,6 +126,48 @@ ENTRY_CODES = NEW_TRIGGER_CODES | KC_PENDING_CODES | MEME_ENTRY_CODES | frozense
 CHOP_MA_OVERLAP_ATR = 0.1
 CHOP_FLAT_MOVE_ATR = 0.1
 CHOP_MA5_RANGE_ATR = 1.0
+
+
+def ma5_ma15_kc_midline_entry_problem(
+    side, ma5, ma15, kc_middle, atr, previous_kc_middle=None,
+):
+    """Require aligned KC/MA direction and reject a tightly clustered setup."""
+    normalized_side = str(side or "").upper()
+    if normalized_side not in ("LONG", "SHORT"):
+        return "BLOCKED_FINAL_ENTRY_SIDE_INVALID"
+    try:
+        ma5_value, ma15_value, middle_value, atr_value = map(
+            float, (ma5, ma15, kc_middle, atr),
+        )
+    except (TypeError, ValueError, OverflowError):
+        return "BLOCKED_MA_ALIGNMENT_DATA_INVALID"
+    if not all(
+        math.isfinite(value) and value > 0
+        for value in (ma5_value, ma15_value, middle_value, atr_value)
+    ):
+        return "BLOCKED_MA_ALIGNMENT_DATA_INVALID"
+    if previous_kc_middle is not None:
+        try:
+            previous_middle_value = float(previous_kc_middle)
+        except (TypeError, ValueError, OverflowError):
+            return "BLOCKED_MA_ALIGNMENT_DATA_INVALID"
+        if not math.isfinite(previous_middle_value) or previous_middle_value <= 0:
+            return "BLOCKED_MA_ALIGNMENT_DATA_INVALID"
+        if normalized_side == "LONG" and middle_value <= previous_middle_value:
+            return "BLOCKED_KC_MIDLINE_NOT_RISING"
+        if normalized_side == "SHORT" and middle_value >= previous_middle_value:
+            return "BLOCKED_KC_MIDLINE_NOT_FALLING"
+    if normalized_side == "LONG" and ma5_value <= ma15_value:
+        return "BLOCKED_MA5_NOT_ABOVE_MA15"
+    if normalized_side == "SHORT" and ma5_value >= ma15_value:
+        return "BLOCKED_MA5_NOT_BELOW_MA15"
+    if max(ma5_value, ma15_value, middle_value) - min(
+        ma5_value, ma15_value, middle_value,
+    ) <= CHOP_MA_OVERLAP_ATR * atr_value:
+        return "BLOCKED_MA5_MA15_KC_MIDDLE_OVERLAP"
+    return None
+
+
 ENTRY_EVIDENCE_KEYS = (
     "kc_confirmation_edge", "pending_signal_id", "pending_second_bar_id",
     "pending_wait_bars", "pending_max_wait_bars", "breakout_bar_id",

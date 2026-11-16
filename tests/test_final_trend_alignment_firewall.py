@@ -52,7 +52,7 @@ def trend_frame(direction, side):
 def test_blocks_short_when_completed_kc_is_up(symbol):
     frame = trend_frame("UP", "SHORT")
 
-    with pytest.raises(ValueError, match="BLOCKED_SHORT_KC_NOT_DOWN"):
+    with pytest.raises(ValueError, match="BLOCKED_KC_MIDLINE_NOT_FALLING"):
         require_final_trend_alignment(frame, "SHORT", symbol)
 
 
@@ -60,7 +60,7 @@ def test_blocks_short_when_completed_kc_is_up(symbol):
 def test_blocks_short_when_ma5_is_above_ma15(symbol):
     frame = trend_frame("DOWN", "LONG")
 
-    with pytest.raises(ValueError, match="VETO_(SHORT_MA_CONDITION_NOT_MET|BLOCKED_SHORT_ON_RISING_MA15)"):
+    with pytest.raises(ValueError, match="BLOCKED_MA5_NOT_BELOW_MA15"):
         require_final_trend_alignment(frame, "SHORT", symbol)
 
 
@@ -121,8 +121,8 @@ def test_allows_only_aligned_kc_and_ma_direction(direction, side):
 @pytest.mark.parametrize(
     "direction,side,expected",
     [
-        ("DOWN", "LONG", "BLOCKED_LONG_KC_NOT_UP"),
-        ("UP", "SHORT", "BLOCKED_SHORT_KC_NOT_DOWN"),
+        ("DOWN", "LONG", "BLOCKED_KC_MIDLINE_NOT_RISING"),
+        ("UP", "SHORT", "BLOCKED_KC_MIDLINE_NOT_FALLING"),
     ],
 )
 def test_blocks_side_opposed_to_kc_trend(direction, side, expected):
@@ -162,7 +162,7 @@ def test_long_blocks_when_kc_down_label_conflicts_with_numeric_slope():
     )
     frame.loc[frame.index[-1], "channel_state"] = "KC向下"
     assert final_trend_alignment_problem(frame, "LONG") == (
-        "BLOCKED_LONG_KC_NOT_UP"
+        "BLOCKED_KC_MIDLINE_NOT_RISING"
     )
 
 
@@ -178,7 +178,7 @@ def test_hard_ma_relation_gate_rejects_long_below_ma15_even_with_rising_ma5():
     frame.loc[frame.index[-1], "ma15"] = 101.5
 
     assert ma5_ma15_entry_gate_problem(frame, "LONG") == (
-        "VETO_LONG_MA_CONDITION_NOT_MET"
+        "BLOCKED_MA5_NOT_ABOVE_MA15"
     )
 
 
@@ -188,7 +188,36 @@ def test_hard_ma_relation_gate_rejects_short_above_ma15_even_with_falling_ma5():
     frame.loc[frame.index[-1], "ma15"] = 101.0
 
     assert ma5_ma15_entry_gate_problem(frame, "SHORT") == (
-        "VETO_SHORT_MA_CONDITION_NOT_MET"
+        "BLOCKED_MA5_NOT_BELOW_MA15"
+    )
+
+
+@pytest.mark.parametrize(
+    "side,ma5,ma15,reason",
+    [
+        ("LONG", 101.0, 101.5, "BLOCKED_MA5_NOT_ABOVE_MA15"),
+        ("SHORT", 101.5, 101.0, "BLOCKED_MA5_NOT_BELOW_MA15"),
+    ],
+)
+def test_market_structure_gate_enforces_ma_order_even_for_overrides(
+    side, ma5, ma15, reason,
+):
+    frame = trend_frame("UP" if side == "LONG" else "DOWN", side)
+    frame.loc[frame.index[-1], "ma5"] = ma5
+    frame.loc[frame.index[-1], "ma15"] = ma15
+
+    assert market_structure_gate_problem(
+        frame, side, is_manual=True,
+    ) == reason
+
+
+def test_market_structure_gate_rejects_ma5_ma15_midline_overlap():
+    frame = trend_frame("UP", "LONG")
+    frame.loc[frame.index[-1], "ma5"] = 102.02
+    frame.loc[frame.index[-1], "ma15"] = 101.98
+
+    assert market_structure_gate_problem(frame, "LONG") == (
+        "BLOCKED_MA5_MA15_KC_MIDDLE_OVERLAP"
     )
 
 
@@ -206,7 +235,7 @@ def test_market_structure_gate_fails_closed_with_fewer_than_15_closed_bars():
         ("ma5", 103.0, "VETO_LINE_PARALLEL_OR_FLAT_MA5"),
         ("ma15", 102.0, "VETO_LINE_PARALLEL_OR_FLAT_MA15"),
         ("kc_upper", 112.0, "VETO_LINE_PARALLEL_OR_FLAT_KC_UPPER"),
-        ("kc_middle", 100.0, "VETO_LINE_PARALLEL_OR_FLAT_KC_MIDDLE"),
+        ("kc_middle", 100.0, "BLOCKED_KC_MIDLINE_NOT_RISING"),
         ("kc_lower", 90.0, "VETO_LINE_PARALLEL_OR_FLAT_KC_LOWER"),
     ],
 )
@@ -224,7 +253,7 @@ def test_market_structure_gate_rejects_ma_compression():
     frame.loc[frame.index[-1], "ma5"] = 102.1
 
     assert market_structure_gate_problem(frame, "LONG") == (
-        "VETO_MA_TOO_CLOSE (dist: 0.10000000 < min: 0.30000000)"
+        "BLOCKED_MA5_MA15_KC_MIDDLE_OVERLAP"
     )
 
 
@@ -366,9 +395,10 @@ def test_exchange_order_boundary_blocks_top_reversal_short_in_bull_trend():
         "entry_signal_code": "AUTHORIZED_BY_TOP_WATERFALL_FLIP_SHORT",
         "entry_phase": "KC_TOP_WATERFALL_FLIP",
         "entry_gate_quote": float(frame.iloc[-1]["close"]),
+        "source": "UNIFIED_PIPELINE",
     }
 
-    with pytest.raises(ValueError, match=r"BLOCKED_SHORT_KC_DIRECTION|BLOCKED_SHORT_ON_BULLISH_TREND"):
+    with pytest.raises(ValueError, match=r"BLOCKED_KC_MIDLINE_NOT_FALLING|BLOCKED_SHORT_KC_DIRECTION|BLOCKED_SHORT_ON_BULLISH_TREND"):
         asyncio.run(account._send_order(
             "CAP/USDT",
             "market",

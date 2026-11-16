@@ -175,6 +175,9 @@ ENTRY_CONTEXT_KEYS = (
     "entry_source",
     "entry_method_authority", "entry_method_signal", "entry_method_bar_id",
     "entry_method_event_id", "entry_method_last_exit_timestamp",
+    "mtf_kc_state_machine", "mtf_ltf_atr", "mtf_kc_lower_15m",
+    "mtf_kc_upper_15m", "mtf_kc_state", "mtf_normalized_slope",
+    "mtf_kc_stop_price", "mtf_peak_favorable_price",
     "is_peak_valley_inflection", "entry_swing_low", "entry_swing_high",
     "entry_kc_width_pct", "pv_peak_price", "pv_trough_price",
     "pv_peak_profit_pct", "pv_trailing_armed",
@@ -673,6 +676,10 @@ class PaperAccount:
                         or entry_context.get("is_swing_pivot")
                         or entry_context.get("_entry_method_validated")
                     )
+                    is_mtf_entry = (
+                        entry_context.get("entry_method_authority")
+                        == "MTF_KC_STATE_MACHINE"
+                    )
 
                     # 🛑 規則：KC 通道中軌斜率一票否決 (物理硬阻斷；已驗證之雙向峰谷轉向與條件式反手例外放行)
                     pv_override = bool(entry_context.get("is_peak_valley_inflection"))
@@ -683,13 +690,19 @@ class PaperAccount:
                             eval_frame, side=side_up, live_price=price, context=entry_context, symbol=symbol,
                         )
                     if kc_m_p is not None and math.isfinite(kc_m_p) and not pv_override and not pv_flip_verified:
-                        if not entry_context.get("_entry_method_validated") and side_up == "SHORT" and kc_m >= kc_m_p:
+                        if (
+                            (not entry_context.get("_entry_method_validated") or is_mtf_entry)
+                            and side_up == "SHORT" and kc_m >= kc_m_p
+                        ):
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向上 (kc_mid={kc_m:.6f} >= prev={kc_m_p:.6f})，未明確向下 100% 嚴禁開空！"
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
                                 raise RuntimeError(err_msg)
                             return False
-                        elif not entry_context.get("_entry_method_validated") and side_up == "LONG" and kc_m <= kc_m_p:
+                        elif (
+                            (not entry_context.get("_entry_method_validated") or is_mtf_entry)
+                            and side_up == "LONG" and kc_m <= kc_m_p
+                        ):
                             err_msg = f"🛑 [DIRECTION_LOCK_BLOCK] {symbol} KC 通道中軌斜率走平或向下 (kc_mid={kc_m:.6f} <= prev={kc_m_p:.6f})，未明確向上 100% 嚴禁開多！"
                             self.log(err_msg, "CRITICAL")
                             if entry_context.get("raise_on_direction_lock"):
@@ -1929,12 +1942,16 @@ class PaperAccount:
                 "WARNING",
             )
             return False
+        mtf_exit_approved = math_reason == "MTF_KC_STATE_MACHINE_EXIT_APPROVED"
         emergency_exit = is_emergency_exit(close_reason)
         from core.services.exits.authorized_position_exit import (
             UltimateExitGatekeeper,
         )
         exit_frame = None
-        if not is_manual or str(close_reason).strip() != "手動平倉":
+        if (
+            not mtf_exit_approved
+            and (not is_manual or str(close_reason).strip() != "手動平倉")
+        ):
             frame_provider = getattr(self, "channel_exit_frame_provider", None)
             if not callable(frame_provider):
                 frame_provider = getattr(self, "entry_frame_provider", None)
@@ -1991,7 +2008,8 @@ class PaperAccount:
             and close_reason == "觸發移動止利 (Trailing Take-Profit)"
         )
         pv_exit_approved = (math_reason == "PEAK_VALLEY_LOW_LATENCY_EXIT_APPROVED")
-        if (DISABLE_STOP_LOSS and not is_manual and not profit_lock_close and not emergency_exit
+        if (DISABLE_STOP_LOSS and not is_manual and not mtf_exit_approved
+                and not profit_lock_close and not emergency_exit
                 and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
                 and not pv_exit_approved):
             reject_key = (symbol, close_reason)
@@ -2000,7 +2018,7 @@ class PaperAccount:
                 self._auto_close_reject_logged_at[reject_key] = now_ts
                 self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
-        if (not is_manual and ONLY_CLOSE_ON_PROFIT and not emergency_exit
+        if (not is_manual and not mtf_exit_approved and ONLY_CLOSE_ON_PROFIT and not emergency_exit
                 and math_reason != "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
                 and not pv_exit_approved):
             pos = self.positions[symbol]

@@ -11,8 +11,8 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-SLOPE_THRESHOLD = 0.02
-MAX_ENTRY_BAND_RATIO = 0.65
+SLOPE_THRESHOLD = 0.005
+MAX_ENTRY_BAND_RATIO = 1.0
 INITIAL_STOP_ATR = 2.0
 RATCHET_ARM_ATR = 1.5
 RATCHET_GIVEBACK_ATR = 1.0
@@ -189,20 +189,30 @@ def evaluate_mtf_entry(
 
     kc = compute_keltner_channels(live_frame, ema_period=20, atr_period=14, multiplier=1.5)
     middle = _number(kc.iloc[-1], "kc_middle")
+    middle_previous = _number(kc.iloc[-2], "kc_middle") if len(kc) >= 2 else None
     upper = _number(kc.iloc[-1], "kc_upper")
     lower = _number(kc.iloc[-1], "kc_lower")
     values = (
-        open_price, live_high, live_low, live_close, middle, upper, lower,
-        previous_atr,
+        open_price, live_high, live_low, live_close, middle, middle_previous,
+        upper, lower, previous_atr,
     )
     if (
         any(value is None for value in values)
         or live_high < max(open_price, live_close)
         or live_low > min(open_price, live_close)
         or open_price <= 0 or middle <= 0 or lower <= 0 or upper <= lower
-        or not lower < middle < upper or previous_atr <= 0
+        or middle_previous <= 0 or not lower < middle < upper or previous_atr <= 0
     ):
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_KC_INDICATORS_INVALID"}
+
+    expected_side = "LONG" if htf["state"] == "UPTREND" else "SHORT"
+    from core.services.entry_contract import ma5_ma15_kc_midline_entry_problem
+    alignment_problem = ma5_ma15_kc_midline_entry_problem(
+        expected_side, ma5_current, ma15_current, middle, previous_atr,
+        middle_previous,
+    )
+    if alignment_problem:
+        return {**htf, "allowed": False, "reason": alignment_problem}
 
     half_width = middle - lower
     bandwidth_pct = (upper - lower) / middle
@@ -227,25 +237,25 @@ def evaluate_mtf_entry(
         ratio = distance / half_width
 
         if is_long:
-            ma_aligned = ma5_current > ma15_current and ma5_current > ma5_previous
+            ma_slope_aligned = ma5_current > ma5_previous
             candle_aligned = quote_value > open_price
             breakout_edge_offset = quote_value - upper if quote_value > upper else 0.0
             breakout_allowed = (
                 quote_value > upper
                 and 0.0 < breakout_edge_offset <= 0.35 * half_width
-                and ma_aligned
+                and ma_slope_aligned
             )
         else:
-            ma_aligned = ma5_current < ma15_current and ma5_current < ma5_previous
+            ma_slope_aligned = ma5_current < ma5_previous
             candle_aligned = quote_value < open_price
             breakout_edge_offset = lower - quote_value if quote_value < lower else 0.0
             breakout_allowed = (
                 quote_value < lower
                 and 0.0 < breakout_edge_offset <= 0.35 * half_width
-                and ma_aligned
+                and ma_slope_aligned
             )
 
-        location_allowed = distance > 0 and ratio < MAX_ENTRY_BAND_RATIO
+        location_allowed = -1.0 < ratio < MAX_ENTRY_BAND_RATIO
 
         pending_matches_next_bar = False
         pending_source_state = ""
@@ -277,7 +287,7 @@ def evaluate_mtf_entry(
             if (
                 state_still_valid
                 and location_allowed
-                and ma_aligned
+                and ma_slope_aligned
             ):
                 if candle_aligned:
                     return {
@@ -316,7 +326,7 @@ def evaluate_mtf_entry(
 
         # A fresh outside-band breakout is evaluated immediately without
         # requiring candle color, while retaining the extension cap.
-        if not breakout_allowed and (not location_allowed or not ma_aligned):
+        if not breakout_allowed and (not location_allowed or not ma_slope_aligned):
             continue
 
         if not breakout_allowed and not candle_aligned:
@@ -379,11 +389,25 @@ def evaluate_mtf_entry(
     }
 
 
+def is_mtf_managed_position(
+    position: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> bool:
+    return any(
+        isinstance(source, Mapping)
+        and (
+            source.get("mtf_kc_state_machine")
+            or source.get("entry_method_authority") == MTF_KC_STATE_MACHINE
+        )
+        for source in (position, metadata)
+    )
+
+
 def update_mtf_position_protection(
     position: dict[str, Any], metadata: dict[str, Any], price: float,
 ) -> dict[str, Any] | None:
     """Update the 2 ATR hard stop and 1 ATR ratchet for an MTF-managed position."""
-    if not (position.get("mtf_kc_state_machine") or metadata.get("mtf_kc_state_machine")):
+    if not is_mtf_managed_position(position, metadata):
         return None
     try:
         quote = float(price)
@@ -459,6 +483,8 @@ def authorize_mtf_exit(
     if not isinstance(meta, dict):
         return False
     position = getattr(account, "positions", {}).get(symbol, {})
+    if not is_mtf_managed_position(position, meta):
+        return False
     meta["mtf_kc_exit_authority"] = {
         "reason": reason,
         "side": str(position.get("side") or "").upper(),
@@ -506,4 +532,5 @@ def mtf_exit_is_authorized(
     return (
         math.isfinite(ticket_price) and ticket_price > 0
         and math.isfinite(exit_price) and exit_price > 0
+        and math.isclose(ticket_price, exit_price, rel_tol=1e-12, abs_tol=0.0)
     )

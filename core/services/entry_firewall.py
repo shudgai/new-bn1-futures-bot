@@ -23,6 +23,7 @@ from core.gates.breakout_continuation_entry_gate import (
 from core.gates.meme_coin_gate import MEME_ENTRY_CODES
 from core.services.entry_contract import (
     ENTRY_CODES, ENTRY_EVIDENCE_KEYS, KC_PENDING_CODES,
+    ma5_ma15_kc_midline_entry_problem,
     evaluate_entry_contract,
 )
 from core.services.wait_entry_authority import WaitEntryAuthority
@@ -446,6 +447,16 @@ def market_structure_gate_problem(
             < values["kc_upper"][-1]
         ):
             return veto("BLOCKED_MARKET_STRUCTURE_DATA_INVALID")
+        alignment_problem = ma5_ma15_kc_midline_entry_problem(
+            normalized_side,
+            values["ma5"][-1],
+            values["ma15"][-1],
+            values["kc_middle"][-1],
+            current_atr,
+            values["kc_middle"][-2],
+        )
+        if alignment_problem:
+            return veto(alignment_problem)
 
         def normalized_slope(series):
             window = series[-3:]

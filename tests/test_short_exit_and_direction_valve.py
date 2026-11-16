@@ -189,11 +189,9 @@ def test_breakdown_short_and_continuation_entries():
     assert "破軌爆發" in reason_bo
 
 
-def test_market_structure_gate_allows_breakout_short_without_lagging_ma15_veto():
+def test_market_structure_gate_blocks_short_when_kc_midline_is_not_falling():
     """
-    【下單防火牆破軌加速測試】
-    在價格跌破下軌且在 MA5 下方時，即使 MA15 過去線性擬合微幅向上，
-    嚴禁觸發 VETO_BLOCKED_SHORT_ON_RISING_MA15 阻斷！
+    An outer-band breakout cannot override the explicit KC midline direction lock.
     """
     records = []
     for i in range(15):
@@ -214,7 +212,7 @@ def test_market_structure_gate_allows_breakout_short_without_lagging_ma15_veto()
         enforce_ma_direction=False,  # 破軌模式
         is_confirmed_outer_entry=True,
     )
-    assert problem is None
+    assert problem == "BLOCKED_KC_MIDLINE_NOT_FALLING"
 
 
 def test_long_exit_veto_when_breaking_kc_upper():

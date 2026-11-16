@@ -797,6 +797,7 @@ class ExecutionManager:
             authorize_mtf_exit,
             evaluate_htf_kc_state,
             evaluate_mtf_entry,
+            is_mtf_managed_position,
             update_mtf_position_protection,
         )
 
@@ -807,10 +808,7 @@ class ExecutionManager:
         if not isinstance(metadata, dict):
             metadata = {}
         managed_position = bool(
-            position and (
-                position.get("mtf_kc_state_machine")
-                or metadata.get("mtf_kc_state_machine")
-            )
+            position and is_mtf_managed_position(position, metadata)
         )
         htf = (
             evaluate_htf_kc_state(frame_15m)
@@ -6771,6 +6769,8 @@ class ExecutionManager:
                 "pv_flip_origin_exit_reason": (meta or {}).get("pv_flip_origin_exit_reason"),
                 "pv_flip_watch_state": (meta or {}).get("pv_flip_watch_state"),
                 "frame_5m": (meta or {}).get("frame_5m"),
+                "frame_15m": (meta or {}).get("frame_15m"),
+                "mtf_pending_candidate": (meta or {}).get("mtf_pending_candidate"),
                 "entry_type": (
                     (meta or {}).get("entry_type")
                     if (meta or {}).get("entry_type")
@@ -6909,7 +6909,7 @@ class ExecutionManager:
                     # 條件 A: MA5 > MA15
                     # 條件 B: MA5 向上 (live_ma5 > prev_ma5)
                     # 條件 C: 嚴格綠 K (current_price > current_open)
-                    if not pv_entry_verified_exec and not (live_ma5 > live_ma15):
+                    if not (live_ma5 > live_ma15):
                         logger.critical(
                             f"🛑 [防呆攔截] {symbol} 準備開多但 MA5 未大於 MA15 (MA5={live_ma5:.6f} <= MA15={live_ma15:.6f})，取消下單"
                         )
@@ -6936,7 +6936,7 @@ class ExecutionManager:
                     # 條件 A: MA5 < MA15
                     # 條件 B: MA5 向下 (live_ma5 < prev_ma5)
                     # 條件 C: 嚴格紅 K (current_price < current_open)
-                    if not pv_entry_verified_exec and not (live_ma5 < live_ma15):
+                    if not (live_ma5 < live_ma15):
                         logger.critical(
                             f"🛑 [防呆攔截] {symbol} 準備開空但 MA5 未小於 MA15 (MA5={live_ma5:.6f} >= MA15={live_ma15:.6f})，取消下單"
                         )
