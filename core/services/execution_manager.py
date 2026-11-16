@@ -795,7 +795,9 @@ class ExecutionManager:
             MTF_KC_EXIT_REASON_PREFIX,
             MTF_KC_STATE_MACHINE,
             authorize_mtf_exit,
+            close_in_current_live_1m_bar,
             evaluate_htf_kc_state,
+            evaluate_mtf_exit_confirmation,
             evaluate_mtf_entry,
             is_mtf_managed_position,
             update_mtf_position_protection,
@@ -810,20 +812,97 @@ class ExecutionManager:
         managed_position = bool(
             position and is_mtf_managed_position(position, metadata)
         )
+        if managed_position and position is not None:
+            from core.services.exits.abnormal_candle_exit import (
+                live_adverse_waterfall_evidence,
+            )
+
+            waterfall_evidence = live_adverse_waterfall_evidence(
+                position, frame_1m, quote,
+            )
+            if waterfall_evidence is not None:
+                waterfall_reason = "EXIT_BY_EXTREME_WATERFALL"
+                if not authorize_mtf_exit(
+                    account, symbol, waterfall_reason, quote, waterfall_evidence,
+                ):
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_EXIT_AUTHORITY_PERSISTENCE",
+                        "success": False,
+                    }
+                closed = await cls.close_position(
+                    account,
+                    symbol,
+                    quote,
+                    waterfall_reason,
+                    meta={"raw_df": frame_1m, "is_bar_closed": False},
+                )
+                return {
+                    "status": "EXIT_EXECUTED" if closed else "HOLD",
+                    "symbol": symbol,
+                    "reason": waterfall_reason,
+                    "success": bool(closed),
+                }
         htf = (
             evaluate_htf_kc_state(frame_15m)
             if frame_15m is not None
             else {"valid": False, "reason": "BLOCKED_HTF_KC_FRAME_UNAVAILABLE"}
         )
+
+        def persist_exit_confirmation() -> bool:
+            save_state = getattr(account, "save_state", None)
+            if not callable(save_state):
+                return False
+            try:
+                try:
+                    save_state(strict=True)
+                except TypeError:
+                    save_state()
+            except Exception as exc:
+                logger.error(
+                    "MTF_EXIT_CONFIRMATION_PERSIST_FAILED symbol=%s error=%s",
+                    symbol, exc,
+                )
+                return False
+            return True
+
         if not htf.get("valid"):
             if managed_position and position is not None:
                 protection = update_mtf_position_protection(
                     position, metadata, quote,
                 )
                 protection_reason = protection.get("reason") if protection else None
-                if protection_reason and not str(protection_reason).startswith("BLOCKED_"):
+                if protection_reason and str(protection_reason).startswith("BLOCKED_"):
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": protection_reason,
+                        "success": False,
+                    }
+                exit_decision = evaluate_mtf_exit_confirmation(
+                    frame_1m,
+                    position,
+                    metadata,
+                    protection_reason,
+                    protection or {},
+                )
+                if (
+                    exit_decision.get("changed")
+                    and not exit_decision.get("allowed")
+                    and not persist_exit_confirmation()
+                ):
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_PERSISTENCE",
+                        "success": False,
+                    }
+                if exit_decision.get("allowed"):
+                    protection_reason = str(exit_decision["reason"])
                     if not authorize_mtf_exit(
-                        account, symbol, str(protection_reason), quote, protection,
+                        account, symbol, protection_reason, quote,
+                        exit_decision.get("evidence") or {},
                     ):
                         return {
                             "status": "HOLD",
@@ -835,7 +914,7 @@ class ExecutionManager:
                         account,
                         symbol,
                         quote,
-                        str(protection_reason),
+                        protection_reason,
                         meta={"raw_df": frame_1m, "is_bar_closed": False},
                     )
                     return {
@@ -843,6 +922,13 @@ class ExecutionManager:
                         "symbol": symbol,
                         "reason": protection_reason,
                         "success": bool(closed),
+                    }
+                if exit_decision.get("waiting"):
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": exit_decision.get("reason"),
+                        "success": False,
                     }
                 logger.warning(
                     "MTF_POSITION_HTF_DATA_UNAVAILABLE symbol=%s reason=%s",
@@ -906,7 +992,28 @@ class ExecutionManager:
                 exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}{htf['state']}_REVERSAL_EXIT"
                 exit_evidence = htf
 
-            if not exit_reason:
+            exit_decision = evaluate_mtf_exit_confirmation(
+                frame_1m,
+                position,
+                metadata,
+                exit_reason,
+                exit_evidence,
+            )
+            if not exit_decision.get("allowed"):
+                if exit_decision.get("changed") and not persist_exit_confirmation():
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_PERSISTENCE",
+                        "success": False,
+                    }
+                if exit_decision.get("waiting"):
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": exit_decision.get("reason"),
+                        "success": False,
+                    }
                 logger.info(
                     "[大週期狀態: %s] | [標準化斜率: %.4f] | [持倉: %s] | [決策: HOLD]",
                     htf["state"], htf["normalized_slope"], side,
@@ -916,6 +1023,8 @@ class ExecutionManager:
                     save_state()
                 return {"status": "HOLD", "symbol": symbol, "reason": "MTF_TREND_HOLD"}
 
+            exit_reason = str(exit_decision["reason"])
+            exit_evidence = exit_decision.get("evidence") or {}
             if not authorize_mtf_exit(
                 account, symbol, str(exit_reason), quote, exit_evidence,
             ):
@@ -979,6 +1088,23 @@ class ExecutionManager:
             pending_candidates = {}
         account_entry_state["mtf_kc_pending_candidates"] = pending_candidates
         pending_candidate = pending_candidates.get(symbol)
+        same_bar_close = close_in_current_live_1m_bar(
+            frame_1m, getattr(account, "last_closed_at", {}).get(symbol),
+        )
+        if same_bar_close is None:
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "BLOCKED_MTF_REENTRY_CLOSE_BAR_ID_INVALID",
+                "success": False,
+            }
+        if same_bar_close:
+            return {
+                "status": "HOLD",
+                "symbol": symbol,
+                "reason": "BLOCKED_MTF_REENTRY_AFTER_CLOSE_SAME_1M_BAR",
+                "success": False,
+            }
         entry = evaluate_mtf_entry(
             frame_1m,
             frame_15m,

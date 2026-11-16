@@ -53,10 +53,18 @@ def _stub_entry_math(
     closed = pd.DataFrame(
         [
             {
-                "open": frame.attrs["previous_close"],
+                "open": (
+                    frame.attrs["previous_close"] - 0.1
+                    if htf_state == "UPTREND"
+                    else frame.attrs["previous_close"] + 0.1
+                ),
                 "high": frame.attrs["previous_close"] + 1.0,
                 "low": frame.attrs["previous_close"] - 1.0,
-                "close": frame.attrs["previous_close"],
+                "close": (
+                    frame.attrs["previous_close"] + 0.1
+                    if htf_state == "UPTREND"
+                    else frame.attrs["previous_close"] - 0.1
+                ),
                 "kc_middle": 100.0,
                 "atr": 2.0,
                 "timestamp": 60_000,
@@ -280,8 +288,10 @@ def test_flat_cycle_blocks_midline_and_outer_band_entries(monkeypatch):
         assert result["reason"] == "BLOCKED_MTF_KC_CYCLE_NOT_DIRECTIONAL"
 
 
-def test_breakout_bar_allows_short_even_without_red_candle(monkeypatch):
-    frame, _closed, _live = _entry_frames(previous_close=100.0, open_price=101.0)
+def test_breakout_requires_a_closed_red_bar_for_short(monkeypatch):
+    frame, closed, _live = _entry_frames(previous_close=100.0, open_price=101.0)
+    closed["open"] = 100.2
+    closed["close"] = 100.0
     monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
         "valid": True,
         "state": "DOWNTREND",
@@ -292,7 +302,7 @@ def test_breakout_bar_allows_short_even_without_red_candle(monkeypatch):
         "atr": 5.0,
         "bar_timestamp": 900_000,
     })
-    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (_closed, pd.Series({
+    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (closed, pd.Series({
         "open": 101.0,
         "high": 101.5,
         "low": 98.5,
@@ -318,6 +328,65 @@ def test_breakout_bar_allows_short_even_without_red_candle(monkeypatch):
 
     assert result["allowed"]
     assert result["reason"] == "MTF_KC_BREAKOUT_ENTRY"
+
+
+def test_breakout_rejects_without_closed_red_confirmation(monkeypatch):
+    frame, closed, _live = _entry_frames(previous_close=100.0, open_price=101.0)
+    _stub_entry_math(
+        monkeypatch, frame, htf_state="DOWNTREND", mas=(101.2, 103.0, 102.4),
+    )
+    closed["open"] = 100.0
+    closed["close"] = 100.2
+    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (closed, frame.iloc[-1]))
+
+    result = mtf.evaluate_mtf_entry(
+        frame, pd.DataFrame(), quote=98.7, side="SHORT",
+    )
+
+    assert not result["allowed"]
+    assert result["reason"] == "BLOCKED_MTF_LTF_CLOSED_BAR_COLOR"
+
+
+def test_breakout_cannot_bypass_live_candle_color(monkeypatch):
+    frame, closed, _live = _entry_frames(previous_close=100.0, open_price=98.0)
+    closed["open"] = 100.2
+    closed["close"] = 100.0
+    monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
+        "valid": True,
+        "state": "DOWNTREND",
+        "normalized_slope": -0.04,
+        "kc_middle": 100.0,
+        "kc_upper": 101.0,
+        "kc_lower": 99.0,
+        "atr": 5.0,
+        "bar_timestamp": 900_000,
+    })
+    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (closed, pd.Series({
+        "open": 98.0,
+        "high": 99.0,
+        "low": 97.5,
+        "close": 98.7,
+        "timestamp": 960_000,
+        "is_closed": False,
+    })))
+    monkeypatch.setattr(
+        "core.services.ma5_entry_slope.quote_adjusted_entry_mas",
+        lambda _frame, _quote: (98.0, 99.0, 99.0),
+    )
+    monkeypatch.setattr(
+        "core.services.technical_indicators.compute_keltner_channels",
+        lambda _frame, **_kwargs: pd.DataFrame([
+            {"kc_middle": 100.1, "kc_upper": 101.1, "kc_lower": 99.1},
+            {"kc_middle": 100.0, "kc_upper": 101.0, "kc_lower": 99.0},
+        ]),
+    )
+
+    result = mtf.evaluate_mtf_entry(
+        frame, pd.DataFrame(), quote=98.7, side="SHORT",
+    )
+
+    assert not result["allowed"]
+    assert result["reason"] == "WAIT_MTF_KC_NEXT_BAR_COLOR"
 
 
 def test_wrong_color_arms_one_bar_candidate_and_next_green_bar_confirms(monkeypatch):
@@ -377,7 +446,7 @@ def test_deferred_candidate_does_not_survive_more_than_one_bar(monkeypatch):
     assert result["reason"] == "BLOCKED_MTF_KC_ENTRY_CONDITIONS"
 
 
-def test_flat_cycle_closes_managed_position_immediately(monkeypatch):
+def test_flat_cycle_waits_for_closed_adverse_1m_bar(monkeypatch):
     from core.services.execution_manager import ExecutionManager
 
     account = type("Account", (), {
@@ -391,7 +460,7 @@ def test_flat_cycle_closes_managed_position_immediately(monkeypatch):
         "side": "LONG",
         "entry_price": 100.0,
         "amount": 1.0,
-        "open_timestamp": 0.0,
+        "open_timestamp": 900_000,
         "entry_method_authority": "MTF_KC_STATE_MACHINE",
     }
     account.positions["龙虾/USDT"] = position
@@ -410,6 +479,20 @@ def test_flat_cycle_closes_managed_position_immediately(monkeypatch):
         mtf, "update_mtf_position_protection", lambda *_args: None,
     )
     monkeypatch.setattr(mtf, "authorize_mtf_exit", lambda *_args: True)
+    closed_bar = pd.DataFrame([{
+        "open": 100.0,
+        "close": 100.0,
+        "timestamp": 900_000,
+    }])
+    live_bar = pd.Series({
+        "open": 100.0,
+        "close": 100.0,
+        "timestamp": 960_000,
+        "is_closed": False,
+    })
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame", lambda *_args: (closed_bar, live_bar),
+    )
 
     async def close_position(_cls, _account, symbol, quote, reason, meta=None):
         close_calls.append((symbol, quote, reason))
@@ -428,15 +511,102 @@ def test_flat_cycle_closes_managed_position_immediately(monkeypatch):
         position=position,
     ))
 
+    assert result["status"] == "HOLD"
+    assert result["reason"] == "WAIT_MTF_EXIT_CLOSED_BAR_COLOR"
+    assert close_calls == []
+
+    closed_bar = pd.DataFrame([{
+        "open": 101.0,
+        "close": 100.5,
+        "timestamp": 960_000,
+    }])
+    live_bar = pd.Series({
+        "open": 100.5,
+        "close": 100.6,
+        "timestamp": 1_020_000,
+        "is_closed": False,
+    })
+    result = asyncio.run(ExecutionManager._process_mtf_kc_state_machine(
+        symbol="龙虾/USDT",
+        account=account,
+        engine_or_account=account,
+        frame_1m=pd.DataFrame([{"timestamp": 1_020_000}]),
+        frame_15m=pd.DataFrame(),
+        quote=100.6,
+        position=position,
+    ))
+
     assert result["status"] == "EXIT_EXECUTED"
     assert close_calls == [(
         "龙虾/USDT",
-        101.0,
+        100.6,
         "MTF_KC_STATE_MACHINE_FLAT_CYCLE_END_EXIT",
     )]
 
 
-def test_mtf_protection_recognizes_existing_entry_method_authority():
+def test_favorable_closed_bar_cancels_pending_mtf_exit(monkeypatch):
+    holder = {
+        "closed": pd.DataFrame([{
+            "open": 100.0,
+            "close": 100.0,
+            "timestamp": 900_000,
+        }]),
+        "live": pd.Series({"timestamp": 960_000, "is_closed": False}),
+    }
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame",
+        lambda *_args: (holder["closed"], holder["live"]),
+    )
+
+    for side, favorable_open, favorable_close in (
+        ("LONG", 100.0, 100.5),
+        ("SHORT", 100.5, 100.0),
+    ):
+        holder["closed"] = pd.DataFrame([{
+            "open": 100.0,
+            "close": 100.0,
+            "timestamp": 900_000,
+        }])
+        holder["live"] = pd.Series({"timestamp": 960_000, "is_closed": False})
+        position = {
+            "side": side,
+            "entry_price": 100.0,
+            "open_timestamp": 900_000,
+        }
+        metadata = {}
+        armed = mtf.evaluate_mtf_exit_confirmation(
+            pd.DataFrame(), position, metadata,
+            "MTF_KC_STATE_MACHINE_FLAT_CYCLE_END_EXIT",
+        )
+        assert armed["waiting"]
+
+        holder["closed"] = pd.DataFrame([{
+            "open": favorable_open,
+            "close": favorable_close,
+            "timestamp": 960_000,
+        }])
+        holder["live"] = pd.Series({"timestamp": 1_020_000, "is_closed": False})
+        confirmed = mtf.evaluate_mtf_exit_confirmation(
+            pd.DataFrame(), position, metadata, None,
+        )
+
+        assert not confirmed["allowed"]
+        assert confirmed["changed"]
+        assert "mtf_pending_closed_bar_exit" not in metadata
+
+
+def test_close_in_current_live_bar_fails_closed_for_stale_or_invalid_identity(monkeypatch):
+    live = pd.Series({"timestamp": 960_000})
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame", lambda *_args: (pd.DataFrame(), live),
+    )
+
+    assert mtf.close_in_current_live_1m_bar(pd.DataFrame(), 960_000) is True
+    assert mtf.close_in_current_live_1m_bar(pd.DataFrame(), 900_000) is False
+    assert mtf.close_in_current_live_1m_bar(pd.DataFrame(), 1_020_000) is None
+
+
+def test_mtf_position_loss_does_not_create_a_per_position_hard_stop():
     position = {
         "side": "LONG",
         "entry_price": 100.0,
@@ -446,10 +616,8 @@ def test_mtf_protection_recognizes_existing_entry_method_authority():
 
     result = mtf.update_mtf_position_protection(position, {}, 89.0)
 
-    assert result == {
-        "reason": "MTF_KC_STATE_MACHINE_HARD_STOP",
-        "stop": 90.0,
-    }
+    assert result is None
+    assert "mtf_kc_stop_price" not in position
 
 
 def test_mtf_exit_ticket_passes_execution_gate_only_at_authorized_price():
@@ -622,7 +790,7 @@ def test_execution_manager_persists_next_bar_candidate(monkeypatch):
     assert account.saves == 1
 
 
-def test_ratchet_stop_closes_after_one_atr_giveback():
+def test_midcycle_retracement_does_not_create_an_exit():
     position = {
         "side": "LONG",
         "entry_price": 100.0,
@@ -633,10 +801,9 @@ def test_ratchet_stop_closes_after_one_atr_giveback():
 
     result = mtf.update_mtf_position_protection(position, metadata, 102.0)
 
-    assert result == {
-        "reason": "MTF_KC_STATE_MACHINE_RATCHET_STOP",
-        "stop": 102.0,
-    }
+    assert result is None
+    assert position["mtf_peak_favorable_price"] == 103.0
+    assert "mtf_kc_stop_price" not in position
 
 
 def test_mtf_exit_authority_requires_matching_reason_and_position_side():
@@ -645,7 +812,7 @@ def test_mtf_exit_authority_requires_matching_reason_and_position_side():
     position = {"side": "LONG"}
     metadata = {
         "mtf_kc_exit_authority": {
-            "reason": "MTF_KC_STATE_MACHINE_HARD_STOP",
+            "reason": "MTF_KC_STATE_MACHINE_ACCOUNT_CIRCUIT_BREAKER_HARD_STOP",
             "side": "LONG",
             "price": 98.0,
         }
@@ -655,7 +822,7 @@ def test_mtf_exit_authority_requires_matching_reason_and_position_side():
         "CAP/USDT",
         position,
         metadata,
-        "MTF_KC_STATE_MACHINE_HARD_STOP",
+        "MTF_KC_STATE_MACHINE_ACCOUNT_CIRCUIT_BREAKER_HARD_STOP",
         98.0,
     )
     assert not UltimateExitGatekeeper.can_execute_exit(
@@ -667,20 +834,77 @@ def test_mtf_exit_authority_requires_matching_reason_and_position_side():
     )
 
 
-def test_hard_stop_remains_active_before_ratchet_arms():
+def test_account_hard_stop_bypasses_closed_bar_exit_confirmation():
     position = {
         "side": "SHORT",
         "entry_price": 100.0,
         "mtf_ltf_atr": 1.0,
+        "open_timestamp": 900_000,
     }
-    metadata = {"mtf_kc_state_machine": True, "mtf_kc_upper_15m": 110.0}
+    metadata = {"mtf_kc_state_machine": True}
 
-    result = mtf.update_mtf_position_protection(position, metadata, 102.0)
+    result = mtf.evaluate_mtf_exit_confirmation(
+        frame_1m=None,
+        position=position,
+        metadata=metadata,
+        reason="ACCOUNT_CIRCUIT_BREAKER_HARD_STOP",
+        evidence={"loss": 0.1},
+    )
 
-    assert result == {
-        "reason": "MTF_KC_STATE_MACHINE_HARD_STOP",
-        "stop": 102.0,
+    assert result["allowed"]
+    assert result["reason"] == "ACCOUNT_CIRCUIT_BREAKER_HARD_STOP"
+    assert result["evidence"] == {"loss": 0.1}
+
+    waterfall = mtf.evaluate_mtf_exit_confirmation(
+        frame_1m=None,
+        position=position,
+        metadata=metadata,
+        reason="EXIT_BY_EXTREME_WATERFALL",
+        evidence={"threshold": 1.5},
+    )
+    assert waterfall["allowed"]
+    assert waterfall["reason"] == "EXIT_BY_EXTREME_WATERFALL"
+
+
+def test_mtf_midcycle_exit_reasons_are_not_authorized():
+    position = {
+        "side": "LONG",
+        "entry_method_authority": "MTF_KC_STATE_MACHINE",
     }
+    metadata = {"entry_method_authority": "MTF_KC_STATE_MACHINE"}
+
+    result = mtf.evaluate_mtf_exit_confirmation(
+        frame_1m=None,
+        position=position,
+        metadata=metadata,
+        reason="MTF_KC_STATE_MACHINE_RATCHET_STOP",
+    )
+
+    assert not result["allowed"]
+    assert result["reason"] == "BLOCKED_MTF_EXIT_REASON_NOT_AUTHORIZED"
+
+
+def test_mtf_midcycle_exit_is_blocked_at_execution_gate():
+    from types import SimpleNamespace
+
+    from core.services.math_execution_gate import validate_exit_at_execution
+
+    symbol = "龙虾/USDT"
+    position = {
+        "side": "LONG",
+        "entry_method_authority": "MTF_KC_STATE_MACHINE",
+    }
+    account = SimpleNamespace(
+        positions={symbol: position},
+        position_meta={symbol: {"entry_method_authority": "MTF_KC_STATE_MACHINE"}},
+    )
+
+    allowed, reason, _evidence = validate_exit_at_execution(
+        account, symbol, position, 99.0, "觸發移動止利 (Trailing Take-Profit)",
+    )
+
+    assert not allowed
+    assert reason == "BLOCKED_MTF_MIDCYCLE_EXIT"
 
 
 def test_final_mtf_open_preserves_htf_frame_and_pending_candidate(monkeypatch):

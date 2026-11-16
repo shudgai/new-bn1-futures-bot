@@ -13,11 +13,31 @@ import pandas as pd
 
 SLOPE_THRESHOLD = 0.005
 MAX_ENTRY_BAND_RATIO = 1.0
-INITIAL_STOP_ATR = 2.0
-RATCHET_ARM_ATR = 1.5
-RATCHET_GIVEBACK_ATR = 1.0
 MTF_KC_STATE_MACHINE = "MTF_KC_STATE_MACHINE"
 MTF_KC_EXIT_REASON_PREFIX = "MTF_KC_STATE_MACHINE_"
+MTF_CYCLE_EXIT_REASONS = frozenset({
+    "MTF_KC_STATE_MACHINE_FLAT_CYCLE_END_EXIT",
+    "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT",
+    "MTF_KC_STATE_MACHINE_DOWNTREND_REVERSAL_EXIT",
+})
+
+
+def _is_mtf_emergency_exit(reason: Any) -> bool:
+    normalized = str(reason or "").upper()
+    return any(token in normalized for token in (
+        "ACCOUNT_HARD_STOP", "ACCOUNT_CIRCUIT_BREAKER", "CIRCUIT_BREAKER",
+        "HARD_STOP_LOSS", "DATA_OUTAGE_HARD_STOP", "LIQUIDATION",
+        "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP",
+        "熔斷", "瀑布", "帳戶硬止損",
+    ))
+
+
+def _is_mtf_cycle_exit(reason: Any) -> bool:
+    return str(reason or "").upper() in MTF_CYCLE_EXIT_REASONS
+
+
+def mtf_exit_reason_allowed(reason: Any) -> bool:
+    return _is_mtf_cycle_exit(reason) or _is_mtf_emergency_exit(reason)
 
 
 def _number(row: Mapping[str, Any], key: str) -> Optional[float]:
@@ -80,6 +100,205 @@ def _valid_live_frame(frame: Any, interval_ms: float) -> tuple[pd.DataFrame, pd.
     if not any(math.isclose(live_stamp - closed_stamp, gap, rel_tol=0, abs_tol=1) for gap in allowed_gaps):
         return None
     return closed, live
+
+
+def _timestamp_ms(value: Any) -> Optional[float]:
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(timestamp) or timestamp <= 0:
+        return None
+    return timestamp if timestamp >= 1e11 else timestamp * 1000.0
+
+
+def close_in_current_live_1m_bar(frame: Any, closed_at: Any) -> Optional[bool]:
+    """Return whether the latest close happened in the current live 1m candle."""
+    if closed_at is None:
+        return False
+    data = _valid_live_frame(frame, 60_000.0)
+    if data is None:
+        return None
+    _closed, live = data
+    live_start_ms = _timestamp_ms(live.get("timestamp"))
+    close_time_ms = _timestamp_ms(closed_at)
+    if live_start_ms is None or close_time_ms is None:
+        return None
+    if int(live_start_ms // 60_000) == int(close_time_ms // 60_000):
+        return True
+    if close_time_ms >= live_start_ms:
+        return None
+    return False
+
+
+def evaluate_mtf_exit_confirmation(
+    frame_1m: Any,
+    position: Mapping[str, Any],
+    metadata: dict[str, Any],
+    reason: str | None,
+    evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist ordinary MTF exits until the trigger bar closes against the position."""
+    side = str(position.get("side") or "").upper()
+    opened_at_ms = _timestamp_ms(position.get("open_timestamp"))
+    pending_key = "mtf_pending_closed_bar_exit"
+    pending = metadata.get(pending_key)
+    changed = False
+    normalized_reason = str(reason or "").upper()
+    immediate = _is_mtf_emergency_exit(normalized_reason)
+    if immediate and reason:
+        changed = metadata.pop(pending_key, None) is not None
+        return {
+            "allowed": True,
+            "waiting": False,
+            "changed": changed,
+            "reason": reason,
+            "evidence": dict(evidence or {}),
+        }
+    if reason and not _is_mtf_cycle_exit(reason):
+        return {
+            "allowed": False,
+            "waiting": False,
+            "changed": False,
+            "reason": "BLOCKED_MTF_EXIT_REASON_NOT_AUTHORIZED",
+        }
+
+    if side not in ("LONG", "SHORT") or opened_at_ms is None:
+        return {
+            "allowed": False,
+            "waiting": True,
+            "changed": False,
+            "reason": "BLOCKED_MTF_EXIT_POSITION_IDENTITY_INVALID",
+        }
+
+    if isinstance(pending, Mapping):
+        pending_open_ms = _timestamp_ms(pending.get("position_open_timestamp"))
+        pending_bar_ms = _timestamp_ms(pending.get("bar_id"))
+        if (
+            str(pending.get("side") or "").upper() != side
+            or pending_open_ms is None
+            or not math.isclose(pending_open_ms, opened_at_ms, rel_tol=0, abs_tol=1)
+            or pending_bar_ms is None
+            or not _is_mtf_cycle_exit(pending.get("reason"))
+        ):
+            metadata.pop(pending_key, None)
+            pending = None
+            changed = True
+
+    if isinstance(pending, Mapping) and pending.get("confirmed") is True:
+        return {
+            "allowed": True,
+            "waiting": False,
+            "changed": False,
+            "reason": str(pending["reason"]),
+            "evidence": dict(pending.get("evidence") or {}),
+        }
+
+    data = _valid_live_frame(frame_1m, 60_000.0)
+    if data is None:
+        return {
+            "allowed": False,
+            "waiting": True,
+            "changed": False,
+            "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_DATA_INVALID",
+        }
+    closed, live = data
+    live_bar_ms = _timestamp_ms(live.get("timestamp"))
+    if live_bar_ms is None or live_bar_ms + 60_000 <= opened_at_ms:
+        return {
+            "allowed": False,
+            "waiting": True,
+            "changed": False,
+            "reason": "BLOCKED_MTF_EXIT_BAR_ID_INVALID",
+        }
+
+    if isinstance(pending, Mapping):
+        pending_bar_ms = _timestamp_ms(pending.get("bar_id"))
+        if pending_bar_ms is None or live_bar_ms < pending_bar_ms:
+            return {
+                "allowed": False,
+                "waiting": True,
+                "changed": False,
+                "reason": "BLOCKED_MTF_EXIT_BAR_SEQUENCE_INVALID",
+            }
+        if live_bar_ms > pending_bar_ms:
+            matching_bar = None
+            for _, candle in closed.iterrows():
+                candle_ms = _timestamp_ms(candle.get("timestamp"))
+                if candle_ms is not None and math.isclose(
+                    candle_ms, pending_bar_ms, rel_tol=0, abs_tol=1,
+                ):
+                    matching_bar = candle
+                    break
+            if matching_bar is None:
+                return {
+                    "allowed": False,
+                    "waiting": True,
+                    "changed": False,
+                    "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_BAR_MISSING",
+                }
+            opening = _number(matching_bar, "open")
+            close = _number(matching_bar, "close")
+            if (
+                opening is None or close is None or opening <= 0 or close <= 0
+                or pending_bar_ms + 60_000 <= opened_at_ms
+            ):
+                return {
+                    "allowed": False,
+                    "waiting": True,
+                    "changed": False,
+                    "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_OHLC_INVALID",
+                }
+            adverse_close = close < opening if side == "LONG" else close > opening
+            if adverse_close:
+                confirmed = dict(pending)
+                confirmed["confirmed"] = True
+                confirmed["evidence"] = {
+                    **dict(confirmed.get("evidence") or {}),
+                    "confirmation_bar_id": pending_bar_ms,
+                    "confirmation_open": opening,
+                    "confirmation_close": close,
+                }
+                metadata[pending_key] = confirmed
+                return {
+                    "allowed": True,
+                    "waiting": False,
+                    "changed": True,
+                    "reason": str(confirmed["reason"]),
+                    "evidence": dict(confirmed["evidence"]),
+                }
+            metadata.pop(pending_key, None)
+            pending = None
+            changed = True
+        else:
+            return {
+                "allowed": False,
+                "waiting": True,
+                "changed": False,
+                "reason": "WAIT_MTF_EXIT_CLOSED_BAR_COLOR",
+            }
+    if not reason:
+        return {
+            "allowed": False,
+            "waiting": False,
+            "changed": changed,
+            "reason": None,
+        }
+
+    metadata[pending_key] = {
+        "reason": reason,
+        "side": side,
+        "position_open_timestamp": position.get("open_timestamp"),
+        "bar_id": live.get("timestamp"),
+        "evidence": dict(evidence or {}),
+        "confirmed": False,
+    }
+    return {
+        "allowed": False,
+        "waiting": True,
+        "changed": True,
+        "reason": "WAIT_MTF_EXIT_CLOSED_BAR_COLOR",
+    }
 
 
 def evaluate_htf_kc_state(frame_15m: Any) -> dict[str, Any]:
@@ -151,6 +370,21 @@ def evaluate_mtf_entry(
             "reason": "BLOCKED_LTF_KC_LIVE_DATA_INVALID",
         }
     closed, live = data
+    closed_open = _number(closed.iloc[-1], "open")
+    closed_close = _number(closed.iloc[-1], "close")
+    expected_closed_color = "LONG" if htf["state"] == "UPTREND" else "SHORT"
+    if (
+        closed_open is None or closed_close is None
+        or closed_open <= 0 or closed_close <= 0
+        or (expected_closed_color == "LONG" and closed_close <= closed_open)
+        or (expected_closed_color == "SHORT" and closed_close >= closed_open)
+    ):
+        return {
+            **htf,
+            "allowed": False,
+            "reason": "BLOCKED_MTF_LTF_CLOSED_BAR_COLOR",
+            "closed_bar_id": _number(closed.iloc[-1], "timestamp"),
+        }
     if len(closed) < 15:
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_MA_HISTORY_INVALID"}
     try:
@@ -329,7 +563,7 @@ def evaluate_mtf_entry(
         if not breakout_allowed and (not location_allowed or not ma_slope_aligned):
             continue
 
-        if not breakout_allowed and not candle_aligned:
+        if not candle_aligned:
             if pending_matches_next_bar:
                 continue
             if live_bar_id is None:
@@ -406,26 +640,21 @@ def is_mtf_managed_position(
 def update_mtf_position_protection(
     position: dict[str, Any], metadata: dict[str, Any], price: float,
 ) -> dict[str, Any] | None:
-    """Update the 2 ATR hard stop and 1 ATR ratchet for an MTF-managed position."""
+    """Track MTF position peaks; cycle-end exits and account emergencies own closing."""
     if not is_mtf_managed_position(position, metadata):
         return None
     try:
         quote = float(price)
         entry = float(position.get("entry_price") or 0.0)
-        atr = float(
-            position.get("mtf_ltf_atr") or metadata.get("mtf_ltf_atr")
-            or position.get("atr") or metadata.get("atr") or 0.0
-        )
         side = str(position.get("side") or "").upper()
     except (TypeError, ValueError, OverflowError):
         return {"reason": "BLOCKED_MTF_KC_PROTECTION_DATA_INVALID"}
     if (
-        not all(math.isfinite(value) and value > 0 for value in (quote, entry, atr))
+        not all(math.isfinite(value) and value > 0 for value in (quote, entry))
         or side not in ("LONG", "SHORT")
     ):
         return {"reason": "BLOCKED_MTF_KC_PROTECTION_DATA_INVALID"}
 
-    sign = 1.0 if side == "LONG" else -1.0
     favorable_price = max(entry, quote) if side == "LONG" else min(entry, quote)
     peak = position.get("mtf_peak_favorable_price", metadata.get("mtf_peak_favorable_price"))
     try:
@@ -436,49 +665,16 @@ def update_mtf_position_protection(
     position["mtf_peak_favorable_price"] = peak_value
     metadata["mtf_peak_favorable_price"] = peak_value
 
-    hard_stop = entry - INITIAL_STOP_ATR * atr if side == "LONG" else entry + INITIAL_STOP_ATR * atr
-    favorable_move = sign * (peak_value - entry)
-    ratchet_stop = None
-    if favorable_move >= RATCHET_ARM_ATR * atr:
-        ratchet_stop = (
-            peak_value - RATCHET_GIVEBACK_ATR * atr
-            if side == "LONG"
-            else peak_value + RATCHET_GIVEBACK_ATR * atr
-        )
-    band = metadata.get("mtf_kc_lower_15m") if side == "LONG" else metadata.get("mtf_kc_upper_15m")
-    try:
-        band_value = float(band) if band is not None else None
-    except (TypeError, ValueError, OverflowError):
-        band_value = None
-    if band_value is not None and (not math.isfinite(band_value) or band_value <= 0):
-        band_value = None
-
-    stop_candidates = [hard_stop]
-    if ratchet_stop is not None:
-        stop_candidates.append(ratchet_stop)
-    if band_value is not None:
-        stop_candidates.append(band_value)
-    effective_stop = max(stop_candidates) if side == "LONG" else min(stop_candidates)
-    position["mtf_kc_stop_price"] = effective_stop
-    metadata["mtf_kc_stop_price"] = effective_stop
-    if side == "LONG" and quote <= hard_stop or side == "SHORT" and quote >= hard_stop:
-        return {"reason": "MTF_KC_STATE_MACHINE_HARD_STOP", "stop": hard_stop}
-    if band_value is not None and (
-        side == "LONG" and quote <= band_value
-        or side == "SHORT" and quote >= band_value
-    ):
-        return {"reason": "MTF_KC_STATE_MACHINE_HTF_BAND_STOP", "stop": band_value}
-    if ratchet_stop is not None and (
-        side == "LONG" and quote <= ratchet_stop
-        or side == "SHORT" and quote >= ratchet_stop
-    ):
-        return {"reason": "MTF_KC_STATE_MACHINE_RATCHET_STOP", "stop": ratchet_stop}
+    position.pop("mtf_kc_stop_price", None)
+    metadata.pop("mtf_kc_stop_price", None)
     return None
 
 
 def authorize_mtf_exit(
     account: Any, symbol: str, reason: str, price: float, evidence: Mapping[str, Any],
 ) -> bool:
+    if not mtf_exit_reason_allowed(reason):
+        return False
     meta = getattr(account, "position_meta", {}).get(symbol)
     if not isinstance(meta, dict):
         return False
@@ -517,6 +713,9 @@ def mtf_exit_is_authorized(
     ticket = metadata.get("mtf_kc_exit_authority")
     if (
         not isinstance(ticket, Mapping)
+        or (
+            not mtf_exit_reason_allowed(ticket.get("reason"))
+        )
         or ticket.get("reason") != reason
         or (
             side is not None

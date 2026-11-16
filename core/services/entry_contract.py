@@ -3192,6 +3192,38 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
             or min(opening, close, atr) <= 0 or high < low
         ):
             veto("BLOCKED_FINAL_WICK_DATA_INVALID", bar_id=bar_id)
+        if (
+            isinstance(entry_context, dict)
+            and entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE"
+        ):
+            from core.services.mtf_kc_state_machine import close_in_current_live_1m_bar
+
+            same_bar_close = close_in_current_live_1m_bar(
+                frame, getattr(account, "last_closed_at", {}).get(symbol),
+            )
+            if same_bar_close is None:
+                veto("BLOCKED_MTF_CLOSE_BAR_ID_INVALID", bar_id=bar_id)
+            if same_bar_close:
+                veto("BLOCKED_MTF_REENTRY_AFTER_CLOSE_SAME_1M_BAR", bar_id=bar_id)
+            completed = closed.iloc[-1]
+            completed_open = float(completed["open"])
+            completed_close = float(completed["close"])
+            try:
+                live_quote = float(entry_context["entry_gate_quote"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                veto("BLOCKED_MTF_LIVE_QUOTE_INVALID", bar_id=bar_id)
+            if (
+                not all(math.isfinite(value) and value > 0 for value in (
+                    completed_open, completed_close, live_quote,
+                ))
+                or (side == "LONG" and (
+                    completed_close <= completed_open or live_quote <= opening
+                ))
+                or (side == "SHORT" and (
+                    completed_close >= completed_open or live_quote >= opening
+                ))
+            ):
+                veto("BLOCKED_MTF_CLOSED_OR_LIVE_BAR_COLOR", bar_id=bar_id)
         body = abs(close - opening)
         wick = (
             high - max(opening, close)

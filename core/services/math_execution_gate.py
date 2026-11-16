@@ -1485,8 +1485,18 @@ def validate_exit_at_execution(
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
     from core.services.mtf_kc_state_machine import (
         MTF_KC_EXIT_REASON_PREFIX,
+        is_mtf_managed_position,
         mtf_exit_is_authorized,
+        mtf_exit_reason_allowed,
     )
+    if (
+        is_mtf_managed_position(position, metadata)
+        and not mtf_exit_reason_allowed(close_reason)
+    ):
+        return False, "BLOCKED_MTF_MIDCYCLE_EXIT", {
+            "exit_type": "BLOCKED",
+            "reason": "MTF positions may close only at cycle end or on an account emergency",
+        }
     if str(close_reason or "").upper().startswith(MTF_KC_EXIT_REASON_PREFIX):
         if not mtf_exit_is_authorized(
             metadata,
