@@ -854,6 +854,7 @@ def revalidate_entry_method(
             context.get("frame_15m"),
             quote=quote,
             side=side,
+            pending_candidate=context.get("mtf_pending_candidate"),
         )
         if not evaluation.get("allowed"):
             return False, str(evaluation.get("reason") or "BLOCKED_MTF_KC_ENTRY")

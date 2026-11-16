@@ -1188,6 +1188,7 @@ class PaperAccount:
                 frame_15m,
                 quote=latest_quote,
                 side=side,
+                pending_candidate=entry_context.get("mtf_pending_candidate"),
             )
             if not final_evaluation.get("allowed"):
                 self.log(
@@ -1213,7 +1214,18 @@ class PaperAccount:
         if _guard_frame is None:
             _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
 
-        if _guard_frame is not None and isinstance(_guard_frame, pd.DataFrame) and len(_guard_frame) > 0:
+        mtf_breakout_entry = (
+            entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE"
+            and isinstance(entry_context.get("mtf_final_evaluation"), dict)
+            and entry_context["mtf_final_evaluation"].get("reason")
+            == "MTF_KC_BREAKOUT_ENTRY"
+        )
+        if (
+            not mtf_breakout_entry
+            and _guard_frame is not None
+            and isinstance(_guard_frame, pd.DataFrame)
+            and len(_guard_frame) > 0
+        ):
             try:
                 _latest_bar = _guard_frame.iloc[-1]
                 _current_open = float(_latest_bar.get("open", 0.0))

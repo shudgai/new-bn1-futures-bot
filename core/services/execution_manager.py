@@ -795,7 +795,6 @@ class ExecutionManager:
             MTF_KC_EXIT_REASON_PREFIX,
             MTF_KC_STATE_MACHINE,
             authorize_mtf_exit,
-            evaluate_flat_midline_exit,
             evaluate_htf_kc_state,
             evaluate_mtf_entry,
             update_mtf_position_protection,
@@ -903,10 +902,8 @@ class ExecutionManager:
                     "success": False,
                 }
             if not exit_reason and htf["state"] == "FLAT":
-                flat_exit = evaluate_flat_midline_exit(frame_1m, side)
-                if flat_exit.get("allowed"):
-                    exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_MIDLINE_EXIT"
-                    exit_evidence = flat_exit
+                exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_CYCLE_END_EXIT"
+                exit_evidence = htf
             elif not exit_reason and reverse_after_close:
                 exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}{htf['state']}_REVERSAL_EXIT"
                 exit_evidence = htf
@@ -973,8 +970,23 @@ class ExecutionManager:
             else "SHORT" if htf["state"] == "DOWNTREND"
             else None
         )
+        account_entry_state = getattr(account, "entry_filter_last", None)
+        if not isinstance(account_entry_state, dict):
+            account_entry_state = {}
+            account.entry_filter_last = account_entry_state
+        pending_candidates = account_entry_state.get(
+            "mtf_kc_pending_candidates", {},
+        )
+        if not isinstance(pending_candidates, dict):
+            pending_candidates = {}
+        account_entry_state["mtf_kc_pending_candidates"] = pending_candidates
+        pending_candidate = pending_candidates.get(symbol)
         entry = evaluate_mtf_entry(
-            frame_1m, frame_15m, quote=quote, side=preferred_side,
+            frame_1m,
+            frame_15m,
+            quote=quote,
+            side=preferred_side,
+            pending_candidate=pending_candidate,
         )
         decision = "OPEN" if entry.get("allowed") else str(entry.get("reason"))
         logger.info(
@@ -985,6 +997,84 @@ class ExecutionManager:
             quote, entry.get("kc_middle_1m", "N/A"), decision,
         )
         if not entry.get("allowed"):
+            deferred_candidate = entry.get("deferred_candidate")
+            if deferred_candidate is not None:
+                if current_bar_id is None:
+                    return {
+                        "status": "VETO",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_DEFERRED_ENTRY_BAR_ID_INVALID",
+                        "success": False,
+                    }
+                previous_candidate = pending_candidates.get(symbol)
+                pending_candidates[symbol] = dict(deferred_candidate)
+                save_state = getattr(account, "save_state", None)
+                if not callable(save_state):
+                    if previous_candidate is None:
+                        pending_candidates.pop(symbol, None)
+                    else:
+                        pending_candidates[symbol] = previous_candidate
+                    logger.error(
+                        "MTF_DEFERRED_ENTRY_STORE_UNAVAILABLE symbol=%s bar=%s",
+                        symbol, current_bar_id,
+                    )
+                    return {
+                        "status": "VETO",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_DEFERRED_ENTRY_STORE_UNAVAILABLE",
+                        "success": False,
+                    }
+                try:
+                    try:
+                        save_state(strict=True)
+                    except TypeError:
+                        save_state()
+                except Exception as exc:
+                    if previous_candidate is None:
+                        pending_candidates.pop(symbol, None)
+                    else:
+                        pending_candidates[symbol] = previous_candidate
+                    logger.error(
+                        "MTF_DEFERRED_ENTRY_PERSIST_FAILED symbol=%s bar=%s error=%s",
+                        symbol, current_bar_id, exc,
+                    )
+                    return {
+                        "status": "VETO",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_DEFERRED_ENTRY_PERSIST_FAILED",
+                        "success": False,
+                    }
+            elif pending_candidate is not None and (
+                htf["state"] == "FLAT" or current_bar_id is not None
+            ):
+                try:
+                    source_bar_id = int(float(pending_candidate["source_bar_id"]))
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    source_bar_id = (
+                        current_bar_id - 120_000
+                        if current_bar_id is not None
+                        else 0
+                    )
+                if (
+                    htf["state"] == "FLAT"
+                    or current_bar_id is not None
+                    and current_bar_id > source_bar_id + 60_000
+                ):
+                    previous_candidate = pending_candidates.pop(symbol, None)
+                    save_state = getattr(account, "save_state", None)
+                    if callable(save_state):
+                        try:
+                            try:
+                                save_state(strict=True)
+                            except TypeError:
+                                save_state()
+                        except Exception as exc:
+                            if previous_candidate is not None:
+                                pending_candidates[symbol] = previous_candidate
+                            logger.error(
+                                "MTF_DEFERRED_ENTRY_EXPIRY_PERSIST_FAILED symbol=%s bar=%s error=%s",
+                                symbol, current_bar_id, exc,
+                            )
             return {
                 "status": "HOLD",
                 "symbol": symbol,
@@ -999,10 +1089,6 @@ class ExecutionManager:
                 "reason": "BLOCKED_MTF_ENTRY_BAR_ID_INVALID",
                 "success": False,
             }
-        account_entry_state = getattr(account, "entry_filter_last", None)
-        if not isinstance(account_entry_state, dict):
-            account_entry_state = {}
-            account.entry_filter_last = account_entry_state
         persisted_bars = account_entry_state.get(
             "strict_ma3_ma15_last_trade_bar", {},
         )
@@ -1117,6 +1203,7 @@ class ExecutionManager:
             "mtf_kc_upper_15m": htf["kc_upper"],
             "mtf_kc_state": htf["state"],
             "mtf_normalized_slope": htf["normalized_slope"],
+            "mtf_pending_candidate": entry.get("deferred_candidate"),
             "source": "UNIFIED_PIPELINE|MTF_KC_STATE_MACHINE",
         }
         opened = await cls.open_position(
@@ -1144,6 +1231,19 @@ class ExecutionManager:
                     "MTF_ENTRY_BAR_CLAIM_RELEASE_FAILED symbol=%s error=%s",
                     symbol, exc,
                 )
+        else:
+            if symbol in pending_candidates:
+                pending_candidates.pop(symbol, None)
+                try:
+                    try:
+                        save_state(strict=True)
+                    except TypeError:
+                        save_state()
+                except Exception as exc:
+                    logger.error(
+                        "MTF_DEFERRED_ENTRY_CLEAR_AFTER_OPEN_FAILED symbol=%s bar=%s error=%s",
+                        symbol, bar_id, exc,
+                    )
         return {
             "status": "ENTRY_EXECUTED" if opened else "VETO",
             "symbol": symbol,

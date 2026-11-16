@@ -1072,6 +1072,7 @@ async def validate_account_entry(account, symbol, side, context):
                 context.get("frame_15m"),
                 quote=method_quote,
                 side=side,
+                pending_candidate=context.get("mtf_pending_candidate"),
             )
             if not final_evaluation.get("allowed"):
                 raise ValueError(

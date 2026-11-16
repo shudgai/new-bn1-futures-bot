@@ -1,3 +1,5 @@
+import asyncio
+
 import pandas as pd
 
 from core.services import mtf_kc_state_machine as mtf
@@ -143,28 +145,249 @@ def test_entry_at_exactly_maximum_band_ratio_is_rejected(monkeypatch):
     assert result["reason"] == "BLOCKED_MTF_KC_ENTRY_CONDITIONS"
 
 
-def test_flat_state_allows_only_near_midline_early_break(monkeypatch):
+def test_flat_cycle_blocks_midline_and_outer_band_entries(monkeypatch):
     frame, _closed, _live = _entry_frames(previous_close=100.0, open_price=100.5)
     _stub_entry_math(
         monkeypatch, frame, htf_state="FLAT", mas=(101.0, 100.0, 100.5),
     )
 
-    result = mtf.evaluate_mtf_entry(frame, pd.DataFrame(), quote=101.0, side="LONG")
+    for quote in (101.0, 111.0):
+        result = mtf.evaluate_mtf_entry(
+            frame, pd.DataFrame(), quote=quote, side="LONG",
+        )
+        assert not result["allowed"]
+        assert result["reason"] == "BLOCKED_MTF_KC_CYCLE_NOT_DIRECTIONAL"
 
-    assert result["allowed"]
-    assert result["reason"] == "MTF_KC_EARLY_BREAKOUT"
 
-
-def test_flat_breakout_allows_early_long_after_midline_break(monkeypatch):
-    frame, _closed, _live = _entry_frames(previous_close=100.21, open_price=100.5)
-    _stub_entry_math(
-        monkeypatch, frame, htf_state="FLAT", mas=(101.0, 100.0, 100.5),
+def test_breakout_bar_allows_short_even_without_red_candle(monkeypatch):
+    frame, _closed, _live = _entry_frames(previous_close=100.0, open_price=101.0)
+    monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
+        "valid": True,
+        "state": "DOWNTREND",
+        "normalized_slope": -0.04,
+        "kc_middle": 100.0,
+        "kc_upper": 101.0,
+        "kc_lower": 99.0,
+        "atr": 5.0,
+        "bar_timestamp": 900_000,
+    })
+    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (_closed, pd.Series({
+        "open": 101.0,
+        "high": 101.5,
+        "low": 98.5,
+        "close": 98.7,
+        "timestamp": 960_000,
+        "is_closed": False,
+    })))
+    monkeypatch.setattr(
+        "core.services.ma5_entry_slope.quote_adjusted_entry_mas",
+        lambda _frame, _quote: (101.2, 103.0, 102.4),
+    )
+    monkeypatch.setattr(
+        "core.services.technical_indicators.compute_keltner_channels",
+        lambda _frame, **_kwargs: pd.DataFrame(
+            [{"kc_middle": 100.0, "kc_upper": 101.0, "kc_lower": 99.0}]
+        ),
     )
 
-    result = mtf.evaluate_mtf_entry(frame, pd.DataFrame(), quote=101.0, side="LONG")
+    result = mtf.evaluate_mtf_entry(frame, pd.DataFrame(), quote=98.7, side="SHORT")
 
     assert result["allowed"]
-    assert result["reason"] == "MTF_KC_EARLY_BREAKOUT"
+    assert result["reason"] == "MTF_KC_BREAKOUT_ENTRY"
+
+
+def test_wrong_color_arms_one_bar_candidate_and_next_green_bar_confirms(monkeypatch):
+    frame, _closed, _live = _entry_frames(open_price=101.0)
+    _stub_entry_math(
+        monkeypatch, frame, htf_state="UPTREND", mas=(101.0, 100.0, 100.5),
+    )
+
+    waiting = mtf.evaluate_mtf_entry(
+        frame, pd.DataFrame(), quote=100.5, side="LONG",
+    )
+
+    assert not waiting["allowed"]
+    assert waiting["reason"] == "WAIT_MTF_KC_NEXT_BAR_COLOR"
+    candidate = waiting["deferred_candidate"]
+
+    next_frame, _closed, _live = _entry_frames(open_price=100.3)
+    next_frame.loc[next_frame.index[-1], "timestamp"] = 1_020_000
+    _stub_entry_math(
+        monkeypatch, next_frame, htf_state="UPTREND", mas=(101.0, 100.0, 100.5),
+    )
+
+    confirmed = mtf.evaluate_mtf_entry(
+        next_frame,
+        pd.DataFrame(),
+        quote=100.8,
+        side="LONG",
+        pending_candidate=candidate,
+    )
+
+    assert confirmed["allowed"]
+    assert confirmed["reason"] == "MTF_KC_DEFERRED_ENTRY"
+
+
+def test_deferred_candidate_does_not_survive_more_than_one_bar(monkeypatch):
+    frame, _closed, _live = _entry_frames(previous_close=101.0, open_price=100.3)
+    frame.loc[frame.index[-1], "timestamp"] = 1_080_000
+    _stub_entry_math(
+        monkeypatch, frame, htf_state="DOWNTREND", mas=(101.0, 100.0, 100.5),
+    )
+    candidate = {
+        "side": "LONG",
+        "source_bar_id": 960_000,
+        "state": "UPTREND",
+        "reason": "MTF_KC_TREND_ENTRY",
+    }
+
+    result = mtf.evaluate_mtf_entry(
+        frame,
+        pd.DataFrame(),
+        quote=100.8,
+        side="LONG",
+        pending_candidate=candidate,
+    )
+
+    assert not result["allowed"]
+    assert result["reason"] == "BLOCKED_MTF_KC_ENTRY_CONDITIONS"
+
+
+def test_flat_cycle_closes_managed_position_immediately(monkeypatch):
+    from core.services.execution_manager import ExecutionManager
+
+    account = type("Account", (), {
+        "positions": {},
+        "position_meta": {"龙虾/USDT": {"mtf_kc_state_machine": True}},
+        "save_state": lambda self, strict=False: None,
+    })()
+    position = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "amount": 1.0,
+        "open_timestamp": 0.0,
+        "mtf_kc_state_machine": True,
+    }
+    account.positions["龙虾/USDT"] = position
+    close_calls = []
+    monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
+        "valid": True,
+        "state": "FLAT",
+        "normalized_slope": 0.0,
+        "kc_middle": 100.0,
+        "kc_upper": 110.0,
+        "kc_lower": 90.0,
+        "atr": 5.0,
+        "bar_timestamp": 900_000,
+    })
+    monkeypatch.setattr(
+        mtf, "update_mtf_position_protection", lambda *_args: None,
+    )
+    monkeypatch.setattr(mtf, "authorize_mtf_exit", lambda *_args: True)
+
+    async def close_position(_cls, _account, symbol, quote, reason, meta=None):
+        close_calls.append((symbol, quote, reason))
+        return True
+
+    monkeypatch.setattr(
+        ExecutionManager, "close_position", classmethod(close_position),
+    )
+    result = asyncio.run(ExecutionManager._process_mtf_kc_state_machine(
+        symbol="龙虾/USDT",
+        account=account,
+        engine_or_account=account,
+        frame_1m=pd.DataFrame([{"timestamp": 960_000}]),
+        frame_15m=pd.DataFrame(),
+        quote=101.0,
+        position=position,
+    ))
+
+    assert result["status"] == "EXIT_EXECUTED"
+    assert close_calls == [(
+        "龙虾/USDT",
+        101.0,
+        "MTF_KC_STATE_MACHINE_FLAT_CYCLE_END_EXIT",
+    )]
+
+
+def test_deferred_candidate_cannot_chase_past_entry_band_limit(monkeypatch):
+    frame, _closed, _live = _entry_frames(open_price=106.8)
+    frame.loc[frame.index[-1], "timestamp"] = 1_020_000
+    _stub_entry_math(
+        monkeypatch, frame, htf_state="UPTREND", mas=(108.0, 107.0, 107.5),
+    )
+    candidate = {
+        "side": "LONG",
+        "source_bar_id": 960_000,
+        "state": "UPTREND",
+        "reason": "MTF_KC_TREND_ENTRY",
+    }
+
+    result = mtf.evaluate_mtf_entry(
+        frame,
+        pd.DataFrame(),
+        quote=107.0,
+        side="LONG",
+        pending_candidate=candidate,
+    )
+
+    assert not result["allowed"]
+    assert result["reason"] == "BLOCKED_MTF_KC_ENTRY_CONDITIONS"
+
+
+def test_execution_manager_persists_next_bar_candidate(monkeypatch):
+    from core.services.execution_manager import ExecutionManager
+
+    class Account:
+        def __init__(self):
+            self.positions = {}
+            self.position_meta = {}
+            self.entry_filter_last = {}
+            self.saves = 0
+
+        def save_state(self, strict=False):
+            self.saves += 1
+
+    candidate = {
+        "side": "LONG",
+        "source_bar_id": 960_000,
+        "state": "UPTREND",
+        "reason": "MTF_KC_TREND_ENTRY",
+    }
+    monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
+        "valid": True,
+        "state": "UPTREND",
+        "normalized_slope": 0.03,
+        "kc_middle": 100.0,
+        "kc_upper": 110.0,
+        "kc_lower": 90.0,
+        "atr": 5.0,
+        "bar_timestamp": 900_000,
+    })
+    monkeypatch.setattr(mtf, "evaluate_mtf_entry", lambda *_args, **_kwargs: {
+        "valid": True,
+        "state": "UPTREND",
+        "normalized_slope": 0.03,
+        "allowed": False,
+        "reason": "WAIT_MTF_KC_NEXT_BAR_COLOR",
+        "deferred_candidate": candidate,
+    })
+    account = Account()
+    frame = pd.DataFrame([{"timestamp": 960_000}])
+
+    result = asyncio.run(ExecutionManager._process_mtf_kc_state_machine(
+        symbol="龙虾/USDT",
+        account=account,
+        engine_or_account=account,
+        frame_1m=frame,
+        frame_15m=pd.DataFrame(),
+        quote=100.0,
+        position=None,
+    ))
+
+    assert result["reason"] == "WAIT_MTF_KC_NEXT_BAR_COLOR"
+    assert account.entry_filter_last["mtf_kc_pending_candidates"]["龙虾/USDT"] == candidate
+    assert account.saves == 1
 
 
 def test_ratchet_stop_closes_after_one_atr_giveback():

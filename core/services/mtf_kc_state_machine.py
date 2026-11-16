@@ -13,8 +13,6 @@ import pandas as pd
 
 SLOPE_THRESHOLD = 0.02
 MAX_ENTRY_BAND_RATIO = 0.65
-PREVIOUS_MIDLINE_TOLERANCE_ATR = 0.10
-FLAT_EXIT_BUFFER_ATR = 0.30
 INITIAL_STOP_ATR = 2.0
 RATCHET_ARM_ATR = 1.5
 RATCHET_GIVEBACK_ATR = 1.0
@@ -131,13 +129,20 @@ def evaluate_mtf_entry(
     *,
     quote: float,
     side: str | None = None,
+    pending_candidate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate the directional or FLAT early-breakout entry without side effects."""
+    """Evaluate an entry inside a directional HTF KC cycle without side effects."""
     from core.services.ma5_entry_slope import quote_adjusted_entry_mas
 
     htf = evaluate_htf_kc_state(frame_15m)
     if not htf.get("valid"):
         return {**htf, "allowed": False, "reason": htf["reason"]}
+    if htf["state"] == "FLAT":
+        return {
+            **htf,
+            "allowed": False,
+            "reason": "BLOCKED_MTF_KC_CYCLE_NOT_DIRECTIONAL",
+        }
     data = _valid_live_frame(frame_1m, 60_000.0)
     if data is None or getattr(frame_1m, "attrs", {}).get("entry_finality_verified") is not True:
         return {
@@ -163,9 +168,6 @@ def evaluate_mtf_entry(
     live_high = _number(live, "high")
     live_low = _number(live, "low")
     live_close = _number(live, "close")
-    atr = _number(closed.iloc[-1], "atr")
-    previous_close = _number(closed.iloc[-1], "close")
-    previous_middle = _number(closed.iloc[-1], "kc_middle")
     previous_atr = _number(closed.iloc[-1], "atr")
     live_ohlc = {
         "open": open_price,
@@ -191,14 +193,14 @@ def evaluate_mtf_entry(
     lower = _number(kc.iloc[-1], "kc_lower")
     values = (
         open_price, live_high, live_low, live_close, middle, upper, lower,
-        atr, previous_close, previous_middle, previous_atr,
+        previous_atr,
     )
     if (
         any(value is None for value in values)
         or live_high < max(open_price, live_close)
         or live_low > min(open_price, live_close)
         or open_price <= 0 or middle <= 0 or lower <= 0 or upper <= lower
-        or not lower < middle < upper or atr <= 0 or previous_atr <= 0
+        or not lower < middle < upper or previous_atr <= 0
     ):
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_KC_INDICATORS_INVALID"}
 
@@ -214,47 +216,143 @@ def evaluate_mtf_entry(
 
     normalized_side = str(side or "").upper()
     sides = (normalized_side,) if normalized_side in ("LONG", "SHORT") else ("LONG", "SHORT")
+    live_bar_id = _number(live, "timestamp")
+    deferred_wait: dict[str, Any] | None = None
     for candidate_side in sides:
         is_long = candidate_side == "LONG"
         expected_state = "UPTREND" if is_long else "DOWNTREND"
+        if htf["state"] != expected_state:
+            continue
         distance = quote_value - middle if is_long else middle - quote_value
         ratio = distance / half_width
-        if distance <= 0 or ratio >= MAX_ENTRY_BAND_RATIO:
-            continue
+
         if is_long:
             ma_aligned = ma5_current > ma15_current and ma5_current > ma5_previous
             candle_aligned = quote_value > open_price
+            breakout_edge_offset = quote_value - upper if quote_value > upper else 0.0
+            breakout_allowed = (
+                quote_value > upper
+                and 0.0 < breakout_edge_offset <= 0.35 * half_width
+                and ma_aligned
+            )
         else:
             ma_aligned = ma5_current < ma15_current and ma5_current < ma5_previous
             candle_aligned = quote_value < open_price
-        if not ma_aligned or not candle_aligned:
+            breakout_edge_offset = lower - quote_value if quote_value < lower else 0.0
+            breakout_allowed = (
+                quote_value < lower
+                and 0.0 < breakout_edge_offset <= 0.35 * half_width
+                and ma_aligned
+            )
+
+        location_allowed = distance > 0 and ratio < MAX_ENTRY_BAND_RATIO
+
+        pending_matches_next_bar = False
+        pending_source_state = ""
+        if (
+            isinstance(pending_candidate, Mapping)
+            and str(pending_candidate.get("side") or "").upper() == candidate_side
+            and live_bar_id is not None
+        ):
+            try:
+                pending_source_bar = float(pending_candidate.get("source_bar_id"))
+                pending_source_state = str(pending_candidate.get("state") or "").upper()
+                pending_matches_next_bar = (
+                    math.isfinite(pending_source_bar)
+                    and math.isclose(
+                        live_bar_id - pending_source_bar,
+                        60_000.0,
+                        rel_tol=0,
+                        abs_tol=1,
+                    )
+                )
+            except (TypeError, ValueError, OverflowError):
+                pending_matches_next_bar = False
+
+        if pending_matches_next_bar and not breakout_allowed:
+            state_still_valid = (
+                htf["state"] == expected_state
+                and pending_source_state == expected_state
+            )
+            if (
+                state_still_valid
+                and location_allowed
+                and ma_aligned
+            ):
+                if candle_aligned:
+                    return {
+                        **htf,
+                        "allowed": True,
+                        "reason": "MTF_KC_DEFERRED_ENTRY",
+                        "side": candidate_side,
+                        "price": quote_value,
+                        "open": open_price,
+                        "ma5": ma5_current,
+                        "previous_ma5": ma5_previous,
+                        "ma15": ma15_current,
+                        "kc_middle_1m": middle,
+                        "kc_upper_1m": upper,
+                        "kc_lower_1m": lower,
+                        "half_width_1m": half_width,
+                        "entry_band_ratio": ratio,
+                        "ltf_atr": previous_atr,
+                        "bandwidth_pct": bandwidth_pct,
+                        "deferred_candidate": dict(pending_candidate),
+                    }
+                deferred_wait = {
+                    **htf,
+                    "allowed": False,
+                    "reason": "WAIT_MTF_KC_DEFERRED_NEXT_BAR_COLOR",
+                    "side": candidate_side,
+                    "price": quote_value,
+                    "open": open_price,
+                    "ma5": ma5_current,
+                    "previous_ma5": ma5_previous,
+                    "ma15": ma15_current,
+                    "kc_middle_1m": middle,
+                    "entry_band_ratio": ratio,
+                    "deferred_candidate": dict(pending_candidate),
+                }
+
+        # A fresh outside-band breakout is evaluated immediately without
+        # requiring candle color, while retaining the extension cap.
+        if not breakout_allowed and (not location_allowed or not ma_aligned):
             continue
 
-        early_breakout = False
-        if htf["state"] == "FLAT":
-            # FLAT 期間若 1m 已經完成同向破中軌 + MA5/MA15 轉強，
-            # 立即允許進場，避免等待大週期完全轉趨勢才開單，
-            # 導致進場延後到波段尾端。
-            midline_tolerance = 0.25 * previous_atr
-            if is_long:
-                price_broke_midline = quote_value > middle and previous_close <= previous_middle + midline_tolerance
-                ma_breakout = ma5_current > ma15_current and ma5_current > ma5_previous
-                candle_bullish = quote_value > open_price
-                early_breakout = price_broke_midline and ma_breakout and candle_bullish
-            else:
-                price_broke_midline = quote_value < middle and previous_close >= previous_middle - midline_tolerance
-                ma_breakout = ma5_current < ma15_current and ma5_current < ma5_previous
-                candle_bearish = quote_value < open_price
-                early_breakout = price_broke_midline and ma_breakout and candle_bearish
-            if not early_breakout:
+        if not breakout_allowed and not candle_aligned:
+            if pending_matches_next_bar:
                 continue
-        elif htf["state"] != expected_state:
+            if live_bar_id is None:
+                continue
+            deferred_wait = {
+                **htf,
+                "allowed": False,
+                "reason": "WAIT_MTF_KC_NEXT_BAR_COLOR",
+                "side": candidate_side,
+                "price": quote_value,
+                "open": open_price,
+                "ma5": ma5_current,
+                "previous_ma5": ma5_previous,
+                "ma15": ma15_current,
+                "kc_middle_1m": middle,
+                "entry_band_ratio": ratio,
+                "deferred_candidate": {
+                    "side": candidate_side,
+                    "source_bar_id": live_bar_id,
+                    "state": htf["state"],
+                    "reason": "MTF_KC_TREND_ENTRY",
+                },
+            }
             continue
 
         return {
             **htf,
             "allowed": True,
-            "reason": "MTF_KC_EARLY_BREAKOUT" if early_breakout else "MTF_KC_TREND_ENTRY",
+            "reason": (
+                "MTF_KC_BREAKOUT_ENTRY"
+                if breakout_allowed
+                else "MTF_KC_TREND_ENTRY"
+            ),
             "side": candidate_side,
             "price": quote_value,
             "open": open_price,
@@ -268,48 +366,16 @@ def evaluate_mtf_entry(
             "entry_band_ratio": ratio,
             "ltf_atr": previous_atr,
             "bandwidth_pct": bandwidth_pct,
+            "breakout_edge_offset": breakout_edge_offset,
         }
+
+    if deferred_wait is not None:
+        return deferred_wait
 
     return {
         **htf,
         "allowed": False,
         "reason": "BLOCKED_MTF_KC_ENTRY_CONDITIONS",
-    }
-
-
-def evaluate_flat_midline_exit(frame_1m: Any, side: str) -> dict[str, Any]:
-    """Use only the latest explicitly completed 1m candle for FLAT exits."""
-    from core.services.candle_data import closed_entry_candles
-
-    if not isinstance(frame_1m, pd.DataFrame):
-        return {"allowed": False, "reason": "BLOCKED_FLAT_EXIT_DATA_INVALID"}
-    closed = closed_entry_candles(frame_1m)
-    if closed.empty:
-        return {"allowed": False, "reason": "BLOCKED_FLAT_EXIT_CLOSED_BAR_UNAVAILABLE"}
-    bar = closed.iloc[-1]
-    close = _number(bar, "close")
-    middle = _number(bar, "kc_middle")
-    atr = _number(bar, "atr")
-    if close is None or middle is None or atr is None or middle <= 0 or atr <= 0:
-        return {"allowed": False, "reason": "BLOCKED_FLAT_EXIT_INDICATORS_INVALID"}
-    normalized_side = str(side or "").upper()
-    threshold = (
-        middle - FLAT_EXIT_BUFFER_ATR * atr
-        if normalized_side == "LONG"
-        else middle + FLAT_EXIT_BUFFER_ATR * atr
-    )
-    allowed = (
-        close < threshold if normalized_side == "LONG"
-        else close > threshold if normalized_side == "SHORT"
-        else False
-    )
-    return {
-        "allowed": allowed,
-        "reason": "MTF_KC_FLAT_MIDLINE_EXIT" if allowed else "HOLD_FLAT_MIDLINE_BUFFER",
-        "close": close,
-        "middle": middle,
-        "atr": atr,
-        "threshold": threshold,
     }
 
 
