@@ -173,6 +173,150 @@ def test_htf_exit_direction_uses_closed_midline_during_live_pullback(monkeypatch
     assert state["closed_midline_direction"] == "UPTREND"
 
 
+def _ltf_midline_reversal_fixture(side):
+    base_timestamp = 1_700_000_000_000
+    if side == "LONG":
+        middles = [100.0, 99.0]
+        opens = [100.2, 99.7]
+        closes = [99.5, 98.9]
+    else:
+        middles = [100.0, 101.0]
+        opens = [99.8, 100.3]
+        closes = [100.5, 101.1]
+    closed = pd.DataFrame([
+        {
+            "timestamp": timestamp,
+            "open": opening,
+            "high": max(opening, close) + 0.1,
+            "low": min(opening, close) - 0.1,
+            "close": close,
+            "kc_middle": middle,
+            "is_closed": True,
+        }
+        for timestamp, opening, close, middle in zip(
+            (base_timestamp + 60_000, base_timestamp + 120_000),
+            opens, closes, middles,
+        )
+    ])
+    live = pd.Series({
+        "timestamp": base_timestamp + 180_000,
+        "open": closes[-1],
+        "high": closes[-1] + 0.1,
+        "low": closes[-1] - 0.1,
+        "close": closes[-1],
+        "is_closed": False,
+    })
+    return closed, live
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_mtf_ltf_midline_reversal_requires_two_closed_post_entry_bars(
+    monkeypatch, side,
+):
+    closed, live = _ltf_midline_reversal_fixture(side)
+    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (closed, live))
+    position = {
+        "side": side,
+        "open_timestamp": 1_700_000_000_000,
+    }
+
+    result = mtf.evaluate_mtf_ltf_midline_reversal(
+        pd.DataFrame(), position,
+    )
+
+    assert result is not None
+    assert result["reason"] == mtf.MTF_LTF_MIDLINE_REVERSAL_EXIT
+    assert result["evidence"]["closed_bar_ids"] == [
+        1_700_000_060_000, 1_700_000_120_000,
+    ]
+    assert mtf.mtf_exit_reason_allowed(result["reason"])
+
+
+@pytest.mark.parametrize(
+    ("side", "middle_values", "close_values", "open_timestamp"),
+    [
+        ("LONG", [100.0, 101.0], [99.5, 98.9], 1_700_000_000_000),
+        ("LONG", [100.0, 99.0], [99.5, 99.1], 1_700_000_000_000),
+        ("LONG", [100.0, 99.0], [99.5, 98.9], 1_700_000_090_000),
+        ("SHORT", [100.0, 99.0], [100.5, 101.1], 1_700_000_000_000),
+    ],
+)
+def test_mtf_ltf_midline_reversal_rejects_unconfirmed_structure(
+    monkeypatch, side, middle_values, close_values, open_timestamp,
+):
+    closed, live = _ltf_midline_reversal_fixture(side)
+    closed["kc_middle"] = middle_values
+    closed["close"] = close_values
+    closed["open"] = [
+        min(middle_values[0], close_values[0]) - 0.2,
+        min(middle_values[1], close_values[1]) - 0.2,
+    ] if side == "SHORT" else [
+        max(middle_values[0], close_values[0]) + 0.2,
+        max(middle_values[1], close_values[1]) + 0.2,
+    ]
+    closed["high"] = closed[["open", "close"]].max(axis=1) + 0.1
+    closed["low"] = closed[["open", "close"]].min(axis=1) - 0.1
+    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (closed, live))
+
+    result = mtf.evaluate_mtf_ltf_midline_reversal(
+        pd.DataFrame(),
+        {"side": side, "open_timestamp": open_timestamp},
+    )
+
+    assert result is None
+
+
+def test_mtf_ltf_reversal_closes_long_even_while_htf_midline_rises(monkeypatch):
+    from core.services.execution_manager import ExecutionManager
+
+    symbol = "1000PEPE/USDT"
+    closed_bars, live_bar = _ltf_midline_reversal_fixture("LONG")
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame", lambda *_args: (closed_bars, live_bar),
+    )
+    monkeypatch.setattr(
+        "core.services.exits.abnormal_candle_exit.live_adverse_waterfall_evidence",
+        lambda *_args: None,
+    )
+    position = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "amount": 1.0,
+        "open_timestamp": 1_700_000_000_000,
+        "entry_method_authority": mtf.MTF_KC_STATE_MACHINE,
+    }
+    metadata = {"entry_method_authority": mtf.MTF_KC_STATE_MACHINE}
+    account = type("Account", (), {
+        "positions": {symbol: position},
+        "position_meta": {symbol: metadata},
+        "save_state": lambda self, strict=False: None,
+    })()
+    close_calls = []
+
+    async def close_position(_cls, _account, symbol, quote, reason, meta=None):
+        close_calls.append((symbol, quote, reason))
+        return True
+
+    monkeypatch.setattr(
+        ExecutionManager, "close_position", classmethod(close_position),
+    )
+    result = asyncio.run(ExecutionManager._process_mtf_kc_state_machine(
+        symbol=symbol,
+        account=account,
+        engine_or_account=account,
+        frame_1m=pd.DataFrame([{"timestamp": 1_700_000_180_000}]),
+        frame_15m=pd.DataFrame(),
+        quote=99.0,
+        position=position,
+    ))
+
+    assert result["status"] == "EXIT_EXECUTED"
+    assert result["reason"] == mtf.MTF_LTF_MIDLINE_REVERSAL_EXIT
+    assert close_calls == [(
+        symbol, 99.0, mtf.MTF_LTF_MIDLINE_REVERSAL_EXIT,
+    )]
+
+
 def test_trend_entry_allows_long_inside_band_limit(monkeypatch):
     frame, _closed, _live = _entry_frames(open_price=101.0)
     _stub_entry_math(

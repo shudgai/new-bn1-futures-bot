@@ -15,10 +15,14 @@ SLOPE_THRESHOLD = 0.005
 MAX_ENTRY_BAND_RATIO = 1.0
 MTF_KC_STATE_MACHINE = "MTF_KC_STATE_MACHINE"
 MTF_KC_EXIT_REASON_PREFIX = "MTF_KC_STATE_MACHINE_"
+MTF_LTF_MIDLINE_REVERSAL_EXIT = (
+    "MTF_KC_STATE_MACHINE_LTF_MIDLINE_REVERSAL_EXIT"
+)
 MTF_CYCLE_EXIT_REASONS = frozenset({
     "MTF_KC_STATE_MACHINE_FLAT_CYCLE_END_EXIT",
     "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT",
     "MTF_KC_STATE_MACHINE_DOWNTREND_REVERSAL_EXIT",
+    MTF_LTF_MIDLINE_REVERSAL_EXIT,
 })
 
 
@@ -129,6 +133,83 @@ def close_in_current_live_1m_bar(frame: Any, closed_at: Any) -> Optional[bool]:
     if close_time_ms >= live_start_ms:
         return None
     return False
+
+
+def evaluate_mtf_ltf_midline_reversal(
+    frame_1m: Any,
+    position: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Confirm a 1m KC reversal using two post-entry closed candles."""
+    data = _valid_live_frame(frame_1m, 60_000.0)
+    if data is None:
+        return None
+    closed, _live = data
+    if len(closed) < 2:
+        return None
+
+    side = str(position.get("side") or "").upper()
+    opened_at_ms = _timestamp_ms(position.get("open_timestamp"))
+    if side not in ("LONG", "SHORT") or opened_at_ms is None:
+        return None
+
+    first, latest = closed.iloc[-2], closed.iloc[-1]
+    first_bar_ms = _timestamp_ms(first.get("timestamp"))
+    latest_bar_ms = _timestamp_ms(latest.get("timestamp"))
+    first_middle = _number(first, "kc_middle")
+    latest_middle = _number(latest, "kc_middle")
+    first_close = _number(first, "close")
+    latest_close = _number(latest, "close")
+    candles_valid = True
+    for candle in (first, latest):
+        opening = _number(candle, "open")
+        high = _number(candle, "high")
+        low = _number(candle, "low")
+        close = _number(candle, "close")
+        if (
+            opening is None or high is None or low is None or close is None
+            or min(opening, high, low, close) <= 0
+            or high < max(opening, close)
+            or low > min(opening, close)
+        ):
+            candles_valid = False
+            break
+    if (
+        first_bar_ms is None or latest_bar_ms is None
+        or latest_bar_ms - first_bar_ms != 60_000
+        or first_bar_ms < opened_at_ms or latest_bar_ms < opened_at_ms
+        or first_middle is None or latest_middle is None
+        or first_close is None or latest_close is None
+        or min(first_middle, latest_middle, first_close, latest_close) <= 0
+        or not candles_valid
+    ):
+        return None
+
+    if side == "LONG":
+        reversed_structure = (
+            latest_middle < first_middle
+            and first_close < first_middle
+            and latest_close < latest_middle
+        )
+    else:
+        reversed_structure = (
+            latest_middle > first_middle
+            and first_close > first_middle
+            and latest_close > latest_middle
+        )
+    if not reversed_structure:
+        return None
+
+    return {
+        "reason": MTF_LTF_MIDLINE_REVERSAL_EXIT,
+        "evidence": {
+            "timeframe": "1m",
+            "closed_bar_ids": [first_bar_ms, latest_bar_ms],
+            "kc_middle": [first_middle, latest_middle],
+            "close": [first_close, latest_close],
+            "midline_direction": "DOWNTREND" if side == "LONG" else "UPTREND",
+            "position_side": side,
+        },
+    }
 
 
 def evaluate_mtf_exit_confirmation(

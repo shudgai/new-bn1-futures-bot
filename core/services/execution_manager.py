@@ -799,6 +799,7 @@ class ExecutionManager:
             evaluate_htf_kc_state,
             evaluate_mtf_exit_confirmation,
             evaluate_mtf_entry,
+            evaluate_mtf_ltf_midline_reversal,
             is_mtf_managed_position,
             mtf_exit_reason_allowed,
             update_mtf_position_protection,
@@ -843,6 +844,34 @@ class ExecutionManager:
                     "status": "EXIT_EXECUTED" if closed else "HOLD",
                     "symbol": symbol,
                     "reason": waterfall_reason,
+                    "success": bool(closed),
+                }
+            ltf_reversal = evaluate_mtf_ltf_midline_reversal(
+                frame_1m, position,
+            )
+            if ltf_reversal is not None:
+                ltf_reason = str(ltf_reversal["reason"])
+                ltf_evidence = ltf_reversal["evidence"]
+                if not authorize_mtf_exit(
+                    account, symbol, ltf_reason, quote, ltf_evidence,
+                ):
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_EXIT_AUTHORITY_PERSISTENCE",
+                        "success": False,
+                    }
+                closed = await cls.close_position(
+                    account,
+                    symbol,
+                    quote,
+                    ltf_reason,
+                    meta={"raw_df": frame_1m, "is_bar_closed": False},
+                )
+                return {
+                    "status": "EXIT_EXECUTED" if closed else "HOLD",
+                    "symbol": symbol,
+                    "reason": ltf_reason,
                     "success": bool(closed),
                 }
         htf = (
