@@ -1074,12 +1074,22 @@ async def validate_account_entry(account, symbol, side, context):
                 or fresh_frame.attrs.get("timeframe_ms") != 60_000
             ):
                 raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_FRESH_FRAME_UNVERIFIED")
-            from core.services.mtf_kc_state_machine import close_in_current_live_1m_bar
+            from core.services.mtf_kc_state_machine import (
+                close_in_current_live_1m_bar,
+                mtf_cycle_reverse_reentry_ticket_valid,
+            )
 
             same_bar_close = close_in_current_live_1m_bar(fresh_frame, actual_close)
             if same_bar_close is None:
                 raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_CLOSE_BAR_ID_INVALID")
-            if same_bar_close:
+            same_bar_reverse = (
+                context.get("entry_method_allow_same_bar_after_close") is True
+                and context.get("mtf_cycle_reverse_after_close") is True
+                and mtf_cycle_reverse_reentry_ticket_valid(
+                    account, symbol, side, fresh_frame,
+                )
+            )
+            if same_bar_close and not same_bar_reverse:
                 raise ValueError(
                     "[FORBIDDEN_ENTRY] MTF_KC_REENTRY_AFTER_CLOSE_SAME_1M_BAR"
                 )

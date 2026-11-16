@@ -15,14 +15,9 @@ SLOPE_THRESHOLD = 0.005
 MAX_ENTRY_BAND_RATIO = 1.0
 MTF_KC_STATE_MACHINE = "MTF_KC_STATE_MACHINE"
 MTF_KC_EXIT_REASON_PREFIX = "MTF_KC_STATE_MACHINE_"
-MTF_LTF_MIDLINE_REVERSAL_EXIT = (
-    "MTF_KC_STATE_MACHINE_LTF_MIDLINE_REVERSAL_EXIT"
-)
 MTF_CYCLE_EXIT_REASONS = frozenset({
-    "MTF_KC_STATE_MACHINE_FLAT_CYCLE_END_EXIT",
     "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT",
     "MTF_KC_STATE_MACHINE_DOWNTREND_REVERSAL_EXIT",
-    MTF_LTF_MIDLINE_REVERSAL_EXIT,
 })
 
 
@@ -135,81 +130,69 @@ def close_in_current_live_1m_bar(frame: Any, closed_at: Any) -> Optional[bool]:
     return False
 
 
-def evaluate_mtf_ltf_midline_reversal(
-    frame_1m: Any,
-    position: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    """Confirm a 1m KC reversal using two post-entry closed candles."""
-    data = _valid_live_frame(frame_1m, 60_000.0)
-    if data is None:
-        return None
-    closed, _live = data
-    if len(closed) < 2:
-        return None
+def mtf_cycle_reverse_reentry_ticket_valid(
+    account: Any, symbol: str, side: str, frame: Any,
+) -> bool:
+    """Validate the one-shot same-bar re-entry claim created by an MTF cycle flip."""
+    side = str(side or "").upper()
+    if side not in ("LONG", "SHORT"):
+        return False
+    entry_state = getattr(account, "entry_filter_last", None)
+    tickets = (
+        entry_state.get("mtf_cycle_reverse_pending")
+        if isinstance(entry_state, dict) else None
+    )
+    ticket = tickets.get(symbol) if isinstance(tickets, dict) else None
+    if not isinstance(ticket, Mapping):
+        return False
 
-    side = str(position.get("side") or "").upper()
-    opened_at_ms = _timestamp_ms(position.get("open_timestamp"))
-    if side not in ("LONG", "SHORT") or opened_at_ms is None:
-        return None
+    positions = getattr(account, "positions", None)
+    current_position = positions.get(symbol) if isinstance(positions, dict) else None
+    if isinstance(current_position, Mapping):
+        amount = current_position.get("amount", current_position.get("qty"))
+        if amount is None:
+            return False
+        try:
+            if abs(float(amount)) > 0:
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
 
-    first, latest = closed.iloc[-2], closed.iloc[-1]
-    first_bar_ms = _timestamp_ms(first.get("timestamp"))
-    latest_bar_ms = _timestamp_ms(latest.get("timestamp"))
-    first_middle = _number(first, "kc_middle")
-    latest_middle = _number(latest, "kc_middle")
-    first_close = _number(first, "close")
-    latest_close = _number(latest, "close")
-    candles_valid = True
-    for candle in (first, latest):
-        opening = _number(candle, "open")
-        high = _number(candle, "high")
-        low = _number(candle, "low")
-        close = _number(candle, "close")
-        if (
-            opening is None or high is None or low is None or close is None
-            or min(opening, high, low, close) <= 0
-            or high < max(opening, close)
-            or low > min(opening, close)
-        ):
-            candles_valid = False
-            break
+    source_side = str(
+        getattr(account, "last_closed_side", {}).get(symbol) or "",
+    ).upper()
+    actual_close = getattr(account, "last_closed_at", {}).get(symbol)
+    expected_target = "SHORT" if source_side == "LONG" else "LONG"
+    expected_reason = (
+        "MTF_KC_STATE_MACHINE_DOWNTREND_REVERSAL_EXIT"
+        if source_side == "LONG"
+        else "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT"
+    )
+    try:
+        actual_close_value = float(actual_close)
+        ticket_close_value = float(ticket.get("close_timestamp"))
+        ticket_bar_ms = _timestamp_ms(ticket.get("bar_id"))
+        current_bar_ms = _timestamp_ms(frame.iloc[-1].get("timestamp"))
+    except (AttributeError, IndexError, TypeError, ValueError, OverflowError):
+        return False
     if (
-        first_bar_ms is None or latest_bar_ms is None
-        or latest_bar_ms - first_bar_ms != 60_000
-        or first_bar_ms < opened_at_ms or latest_bar_ms < opened_at_ms
-        or first_middle is None or latest_middle is None
-        or first_close is None or latest_close is None
-        or min(first_middle, latest_middle, first_close, latest_close) <= 0
-        or not candles_valid
+        source_side not in ("LONG", "SHORT")
+        or side != expected_target
+        or str(ticket.get("source_side") or "").upper() != source_side
+        or str(ticket.get("target_side") or "").upper() != side
+        or ticket.get("reason") != expected_reason
+        or not math.isfinite(actual_close_value)
+        or not math.isfinite(ticket_close_value)
+        or not math.isclose(
+            actual_close_value, ticket_close_value, rel_tol=0, abs_tol=0.001,
+        )
+        or ticket_bar_ms is None
+        or current_bar_ms is None
+        or int(ticket_bar_ms // 60_000) != int(current_bar_ms // 60_000)
+        or close_in_current_live_1m_bar(frame, actual_close) is not True
     ):
-        return None
-
-    if side == "LONG":
-        reversed_structure = (
-            latest_middle < first_middle
-            and first_close < first_middle
-            and latest_close < latest_middle
-        )
-    else:
-        reversed_structure = (
-            latest_middle > first_middle
-            and first_close > first_middle
-            and latest_close > latest_middle
-        )
-    if not reversed_structure:
-        return None
-
-    return {
-        "reason": MTF_LTF_MIDLINE_REVERSAL_EXIT,
-        "evidence": {
-            "timeframe": "1m",
-            "closed_bar_ids": [first_bar_ms, latest_bar_ms],
-            "kc_middle": [first_middle, latest_middle],
-            "close": [first_close, latest_close],
-            "midline_direction": "DOWNTREND" if side == "LONG" else "UPTREND",
-            "position_side": side,
-        },
-    }
+        return False
+    return True
 
 
 def evaluate_mtf_exit_confirmation(
@@ -493,6 +476,24 @@ def evaluate_mtf_entry(
         }
     if len(closed) < 15:
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_MA_HISTORY_INVALID"}
+    from core.services.market_consolidation_filter import evaluate_market_blacklist
+
+    consolidation_blocked, consolidation_reason, consolidation_evidence = (
+        evaluate_market_blacklist(
+            closed,
+            side=expected_closed_color,
+            cooldown_bars=0,
+            independent_kc_direction=True,
+            strict_consolidation=True,
+        )
+    )
+    if consolidation_blocked:
+        return {
+            **htf,
+            "allowed": False,
+            "reason": f"BLOCKED_MTF_KC_CONSOLIDATION:{consolidation_reason}",
+            "consolidation_evidence": consolidation_evidence,
+        }
     try:
         quote_value = float(quote)
     except (TypeError, ValueError, OverflowError):

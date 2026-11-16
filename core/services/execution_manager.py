@@ -799,9 +799,9 @@ class ExecutionManager:
             evaluate_htf_kc_state,
             evaluate_mtf_exit_confirmation,
             evaluate_mtf_entry,
-            evaluate_mtf_ltf_midline_reversal,
             is_mtf_managed_position,
             mtf_exit_reason_allowed,
+            mtf_cycle_reverse_reentry_ticket_valid,
             update_mtf_position_protection,
         )
 
@@ -844,34 +844,6 @@ class ExecutionManager:
                     "status": "EXIT_EXECUTED" if closed else "HOLD",
                     "symbol": symbol,
                     "reason": waterfall_reason,
-                    "success": bool(closed),
-                }
-            ltf_reversal = evaluate_mtf_ltf_midline_reversal(
-                frame_1m, position,
-            )
-            if ltf_reversal is not None:
-                ltf_reason = str(ltf_reversal["reason"])
-                ltf_evidence = ltf_reversal["evidence"]
-                if not authorize_mtf_exit(
-                    account, symbol, ltf_reason, quote, ltf_evidence,
-                ):
-                    return {
-                        "status": "HOLD",
-                        "symbol": symbol,
-                        "reason": "BLOCKED_MTF_EXIT_AUTHORITY_PERSISTENCE",
-                        "success": False,
-                    }
-                closed = await cls.close_position(
-                    account,
-                    symbol,
-                    quote,
-                    ltf_reason,
-                    meta={"raw_df": frame_1m, "is_bar_closed": False},
-                )
-                return {
-                    "status": "EXIT_EXECUTED" if closed else "HOLD",
-                    "symbol": symbol,
-                    "reason": ltf_reason,
                     "success": bool(closed),
                 }
         htf = (
@@ -998,14 +970,10 @@ class ExecutionManager:
 
         side = str(position.get("side") or "").upper() if position else ""
         current_bar_id = None
-        current_bar_start = None
+        allow_immediate_mtf_reverse = False
         if isinstance(frame_1m, pd.DataFrame) and not frame_1m.empty:
             try:
                 current_bar_id = int(float(frame_1m.iloc[-1]["timestamp"]))
-                current_bar_timestamp = float(current_bar_id)
-                if current_bar_timestamp >= 1e11:
-                    current_bar_timestamp /= 1000.0
-                current_bar_start = int(current_bar_timestamp // 60)
             except (KeyError, TypeError, ValueError, OverflowError):
                 current_bar_id = None
         if managed_position:
@@ -1029,43 +997,22 @@ class ExecutionManager:
                 }
             if not exit_reason:
                 closed_direction = htf.get("closed_midline_direction")
-                if closed_direction in ("UPTREND", "DOWNTREND"):
-                    position_trend = (
-                        side == "LONG" and closed_direction == "UPTREND"
-                        or side == "SHORT" and closed_direction == "DOWNTREND"
-                    )
-                    if position_trend:
-                        pending_exit = metadata.pop(
-                            "mtf_pending_closed_bar_exit", None,
-                        )
-                        if (
-                            pending_exit is not None
-                            and not persist_exit_confirmation()
-                        ):
-                            metadata["mtf_pending_closed_bar_exit"] = pending_exit
-                            return {
-                                "status": "HOLD",
-                                "symbol": symbol,
-                                "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_PERSISTENCE",
-                                "success": False,
-                            }
-                        return {
-                            "status": "HOLD",
-                            "symbol": symbol,
-                            "reason": "MTF_KC_CYCLE_CONTINUES",
-                            "success": False,
-                        }
+                reversed_direction = "DOWNTREND" if side == "LONG" else "UPTREND"
+                if (
+                    htf["state"] == reversed_direction
+                    and closed_direction == reversed_direction
+                ):
                     exit_reason = (
                         f"{MTF_KC_EXIT_REASON_PREFIX}"
-                        f"{closed_direction}_REVERSAL_EXIT"
+                        f"{reversed_direction}_REVERSAL_EXIT"
                     )
-                    exit_evidence = htf
-                elif closed_direction == "FLAT":
-                    exit_reason = (
-                        f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_CYCLE_END_EXIT"
-                    )
-                    exit_evidence = htf
-                elif "closed_midline_direction" in htf:
+                    exit_evidence = {
+                        **htf,
+                        "macro_state": htf["state"],
+                        "closed_midline_direction": closed_direction,
+                    }
+                    reverse_after_close = True
+                else:
                     pending_exit = metadata.pop(
                         "mtf_pending_closed_bar_exit", None,
                     )
@@ -1080,32 +1027,19 @@ class ExecutionManager:
                             "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_PERSISTENCE",
                             "success": False,
                         }
+                    if (
+                        htf["state"] == ("UPTREND" if side == "LONG" else "DOWNTREND")
+                        and closed_direction == ("UPTREND" if side == "LONG" else "DOWNTREND")
+                    ):
+                        hold_reason = "MTF_KC_CYCLE_CONTINUES"
+                    else:
+                        hold_reason = "MTF_KC_REVERSAL_NOT_CONFIRMED"
                     return {
                         "status": "HOLD",
                         "symbol": symbol,
-                        "reason": "BLOCKED_MTF_CLOSED_MIDLINE_DIRECTION_INVALID",
+                        "reason": hold_reason,
                         "success": False,
                     }
-                else:
-                    reverse_after_close = (
-                        side == "LONG" and htf["state"] == "DOWNTREND"
-                        or side == "SHORT" and htf["state"] == "UPTREND"
-                    )
-                    if htf["state"] == "FLAT":
-                        exit_reason = (
-                            f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_CYCLE_END_EXIT"
-                        )
-                        exit_evidence = htf
-                    elif reverse_after_close:
-                        exit_reason = (
-                            f"{MTF_KC_EXIT_REASON_PREFIX}"
-                            f"{htf['state']}_REVERSAL_EXIT"
-                        )
-                        exit_evidence = htf
-                reverse_after_close = reverse_after_close or (
-                    bool(exit_reason)
-                    and str(exit_reason).endswith("_REVERSAL_EXIT")
-                )
 
             exit_decision = evaluate_mtf_exit_confirmation(
                 frame_1m,
@@ -1163,27 +1097,74 @@ class ExecutionManager:
                     "reason": exit_reason,
                     "success": False,
                 }
-            position_opened_in_current_bar = False
-            if position and current_bar_start is not None:
-                try:
-                    opened_at = float(position.get("open_timestamp"))
-                    if opened_at >= 1e11:
-                        opened_at /= 1000.0
-                    position_opened_in_current_bar = (
-                        math.isfinite(opened_at)
-                        and int(opened_at // 60) == current_bar_start
-                    )
-                except (TypeError, ValueError, OverflowError):
-                    position_opened_in_current_bar = False
             logger.info(
                 "[大週期狀態: %s] | [標準化斜率: %.4f] | [平倉: %s] | [決策: CLOSE]",
                 htf["state"], htf["normalized_slope"], exit_reason,
             )
-            if not reverse_after_close or position_opened_in_current_bar:
+            if not reverse_after_close:
                 return {
                     "status": "EXIT_EXECUTED",
                     "symbol": symbol,
                     "reason": exit_reason,
+                    "success": True,
+                }
+            entry_state = getattr(account, "entry_filter_last", None)
+            if not isinstance(entry_state, dict):
+                entry_state = {}
+                account.entry_filter_last = entry_state
+            reverse_tickets = entry_state.setdefault(
+                "mtf_cycle_reverse_pending", {},
+            )
+            if not isinstance(reverse_tickets, dict):
+                return {
+                    "status": "EXIT_EXECUTED",
+                    "symbol": symbol,
+                    "reason": "BLOCKED_MTF_REVERSE_TICKET_STATE_INVALID",
+                    "success": True,
+                }
+            previous_reverse_ticket = reverse_tickets.get(symbol)
+            close_timestamp = getattr(account, "last_closed_at", {}).get(symbol)
+            reverse_tickets[symbol] = {
+                "source_side": side,
+                "target_side": "SHORT" if side == "LONG" else "LONG",
+                "reason": exit_reason,
+                "close_timestamp": close_timestamp,
+                "bar_id": current_bar_id,
+            }
+            save_state = getattr(account, "save_state", None)
+            try:
+                if not callable(save_state):
+                    raise RuntimeError("account state persistence unavailable")
+                try:
+                    save_state(strict=True)
+                except TypeError:
+                    save_state()
+            except Exception as exc:
+                logger.error(
+                    "MTF_REVERSE_TICKET_PERSIST_FAILED symbol=%s error=%s",
+                    symbol, exc,
+                )
+                if previous_reverse_ticket is None:
+                    reverse_tickets.pop(symbol, None)
+                else:
+                    reverse_tickets[symbol] = previous_reverse_ticket
+                return {
+                    "status": "EXIT_EXECUTED",
+                    "symbol": symbol,
+                    "reason": "BLOCKED_MTF_REVERSE_TICKET_PERSISTENCE",
+                    "success": True,
+                }
+            allow_immediate_mtf_reverse = mtf_cycle_reverse_reentry_ticket_valid(
+                account,
+                symbol,
+                "SHORT" if side == "LONG" else "LONG",
+                frame_1m,
+            )
+            if not allow_immediate_mtf_reverse:
+                return {
+                    "status": "EXIT_EXECUTED",
+                    "symbol": symbol,
+                    "reason": "BLOCKED_MTF_REVERSE_TICKET_INVALID",
                     "success": True,
                 }
 
@@ -1213,7 +1194,7 @@ class ExecutionManager:
                 "reason": "BLOCKED_MTF_REENTRY_CLOSE_BAR_ID_INVALID",
                 "success": False,
             }
-        if same_bar_close:
+        if same_bar_close and not allow_immediate_mtf_reverse:
             return {
                 "status": "HOLD",
                 "symbol": symbol,
@@ -1336,7 +1317,10 @@ class ExecutionManager:
         last_used = persisted_bars.get(symbol) or cls._last_trade_bar_time.get(symbol)
         if last_used is not None:
             try:
-                if int(float(last_used)) == current_bar_id:
+                if (
+                    int(float(last_used)) == current_bar_id
+                    and not allow_immediate_mtf_reverse
+                ):
                     return {
                         "status": "HOLD",
                         "symbol": symbol,
@@ -1409,6 +1393,8 @@ class ExecutionManager:
         )
         entry_meta = {
             "entry_method_authority": MTF_KC_STATE_MACHINE,
+            "entry_method_allow_same_bar_after_close": allow_immediate_mtf_reverse,
+            "mtf_cycle_reverse_after_close": allow_immediate_mtf_reverse,
             "entry_method_signal": {
                 "method": MTF_KC_STATE_MACHINE,
                 "side": entry["side"],
@@ -1482,6 +1468,22 @@ class ExecutionManager:
                     logger.error(
                         "MTF_DEFERRED_ENTRY_CLEAR_AFTER_OPEN_FAILED symbol=%s bar=%s error=%s",
                         symbol, bar_id, exc,
+                    )
+            if allow_immediate_mtf_reverse:
+                reverse_tickets = account_entry_state.get(
+                    "mtf_cycle_reverse_pending", {},
+                )
+                if isinstance(reverse_tickets, dict):
+                    reverse_tickets.pop(symbol, None)
+                try:
+                    try:
+                        save_state(strict=True)
+                    except TypeError:
+                        save_state()
+                except Exception as exc:
+                    logger.error(
+                        "MTF_REVERSE_TICKET_CLEAR_AFTER_OPEN_FAILED symbol=%s error=%s",
+                        symbol, exc,
                     )
         return {
             "status": "ENTRY_EXECUTED" if opened else "VETO",
@@ -6984,6 +6986,12 @@ class ExecutionManager:
                 "candidate_signal_type": (meta or {}).get("candidate_signal_type"),
                 "entry_signal_code": entry_signal_code,
                 "entry_method_authority": entry_method_authority,
+                "entry_method_allow_same_bar_after_close": bool(
+                    (meta or {}).get("entry_method_allow_same_bar_after_close")
+                ),
+                "mtf_cycle_reverse_after_close": bool(
+                    (meta or {}).get("mtf_cycle_reverse_after_close")
+                ),
                 "entry_method_signal": (meta or {}).get("entry_method_signal"),
                 "entry_method_bar_id": (meta or {}).get("entry_method_bar_id"),
                 "entry_method_event_id": (meta or {}).get("entry_method_event_id"),

@@ -3196,14 +3196,24 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
             isinstance(entry_context, dict)
             and entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE"
         ):
-            from core.services.mtf_kc_state_machine import close_in_current_live_1m_bar
+            from core.services.mtf_kc_state_machine import (
+                close_in_current_live_1m_bar,
+                mtf_cycle_reverse_reentry_ticket_valid,
+            )
 
             same_bar_close = close_in_current_live_1m_bar(
                 frame, getattr(account, "last_closed_at", {}).get(symbol),
             )
             if same_bar_close is None:
                 veto("BLOCKED_MTF_CLOSE_BAR_ID_INVALID", bar_id=bar_id)
-            if same_bar_close:
+            same_bar_reverse = (
+                entry_context.get("entry_method_allow_same_bar_after_close") is True
+                and entry_context.get("mtf_cycle_reverse_after_close") is True
+                and mtf_cycle_reverse_reentry_ticket_valid(
+                    account, symbol, side, frame,
+                )
+            )
+            if same_bar_close and not same_bar_reverse:
                 veto("BLOCKED_MTF_REENTRY_AFTER_CLOSE_SAME_1M_BAR", bar_id=bar_id)
             completed = closed.iloc[-1]
             completed_open = float(completed["open"])
