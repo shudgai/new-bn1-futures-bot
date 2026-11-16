@@ -220,6 +220,7 @@ class PaperAccount:
         self.latest_prices: Dict[str, float] = {}
         self.trades: List[dict] = []
         self.logs: List[dict] = []
+        self.open_reject_reasons: Dict[str, str] = {}
         self.takeover_shadow_events: List[dict] = []
         self.closing_lock: set = set()
         self.last_closed_at: Dict[str, float] = {}
@@ -438,6 +439,7 @@ class PaperAccount:
         self.latest_prices = {}
         self.trades = []
         self.logs = []
+        self.open_reject_reasons = {}
         self.closing_lock = set()
         self.last_closed_at = {}
         self.channel_profit_reentries = {}
@@ -551,16 +553,26 @@ class PaperAccount:
         apply_slippage: bool = True,
     ) -> bool:
         from core.config import ENTRY_SUBMISSION_ENABLED
+        if not isinstance(getattr(self, "open_reject_reasons", None), dict):
+            self.open_reject_reasons = {}
+        self.open_reject_reasons.pop(symbol, None)
         if not ENTRY_SUBMISSION_ENABLED:
+            reason_code = "BLOCKED_ENTRY_SUBMISSION_DISABLED"
+            self.open_reject_reasons[symbol] = reason_code
             self.log(
-                f"ENTRY_GATE {symbol} BLOCKED_ENTRY_SUBMISSION_DISABLED",
+                f"ENTRY_GATE {symbol} {reason_code}",
                 "WARNING",
             )
             return False
         if symbol in self.closing_lock:
+            reason_code = "BLOCKED_ENTRY_CLOSE_IN_PROGRESS"
+            self.open_reject_reasons[symbol] = reason_code
+            self.log(f"ENTRY_GATE {symbol} {reason_code}", "WARNING")
             return False
         if symbol in self.pending_limit_orders:
-            self.log(f"🛑 {symbol} 已有待成交掛單，拒絕重複市價開倉", "WARNING")
+            reason_code = "BLOCKED_ENTRY_PENDING_LIMIT_ORDER"
+            self.open_reject_reasons[symbol] = reason_code
+            self.log(f"ENTRY_GATE {symbol} {reason_code}", "WARNING")
             return False
 
         import time
@@ -1030,6 +1042,7 @@ class PaperAccount:
             KC_MIDLINE_MOMENTUM,
             KC_SINGLE_BAR_BREAKOUT,
             KC_TWO_BAR_BREAKOUT,
+            MTF_KC_STATE_MACHINE,
         )
         from core.symbol_aliases import is_meme_breakout_symbol
         strategy_meme_entry = is_meme_breakout_symbol(symbol) and (
@@ -1043,9 +1056,13 @@ class PaperAccount:
         ):
             from core.services.entry_firewall import validate_account_entry
             entry_decision = await validate_account_entry(self, symbol, side, entry_context)
-            if entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}:
+            if (
+                entry_context.get("entry_authority") in {"WAIT", "KC2BAR"}
+                or entry_context.get("entry_method_authority") == MTF_KC_STATE_MACHINE
+            ):
                 price = float(entry_decision["price"])
-                atr = float(entry_decision["entry_atr"])
+                if entry_decision.get("entry_atr") is not None:
+                    atr = float(entry_decision["entry_atr"])
         from core.services.entry_contract import enforce_final_order_wick_gate
         await enforce_final_order_wick_gate(self, symbol, side, entry_context=entry_context)
         structural_stop = entry_decision.get('initial_sl')
@@ -1131,7 +1148,66 @@ class PaperAccount:
 
         # ──【下單前最終物理防呆鎖 (Pre-Order Guard)】──
         # 在送出開倉下單邏輯前的最後一刻，重新比對最新報價與當前 K 棒開盤價
-        _guard_frame = entry_context.get("frame")
+        if entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE":
+            quote_provider = getattr(self, "wait_quote_provider", None)
+            if not callable(quote_provider):
+                self.log(
+                    f"🛑 MTF_KC_PREORDER_BLOCK {symbol}: 缺少即時報價來源",
+                    "CRITICAL",
+                )
+                return False
+            try:
+                quote_snapshot = quote_provider(symbol)
+                latest_quote = float(quote_snapshot["price"])
+                observed_at = float(quote_snapshot["observed_at"])
+                from core.config import WATCHDOG_MAX_TIMEOUT_SECONDS
+                quote_fresh = (
+                    math.isfinite(latest_quote)
+                    and latest_quote > 0
+                    and math.isfinite(observed_at)
+                    and 0 <= time.monotonic() - observed_at
+                    <= WATCHDOG_MAX_TIMEOUT_SECONDS
+                )
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                self.log(
+                    f"🛑 MTF_KC_PREORDER_BLOCK {symbol}: 即時報價無效 ({exc})",
+                    "CRITICAL",
+                )
+                return False
+            if not quote_fresh:
+                self.log(
+                    f"🛑 MTF_KC_PREORDER_BLOCK {symbol}: 即時報價過期",
+                    "CRITICAL",
+                )
+                return False
+            final_frame = entry_context.get("entry_gate_frame")
+            frame_15m = entry_context.get("frame_15m")
+            from core.services.mtf_kc_state_machine import evaluate_mtf_entry
+            final_evaluation = evaluate_mtf_entry(
+                final_frame,
+                frame_15m,
+                quote=latest_quote,
+                side=side,
+            )
+            if not final_evaluation.get("allowed"):
+                self.log(
+                    f"🛑 MTF_KC_PREORDER_BLOCK {symbol}: "
+                    f"{final_evaluation.get('reason')}",
+                    "CRITICAL",
+                )
+                return False
+            price = latest_quote
+            atr = float(final_evaluation["ltf_atr"])
+            entry_context["entry_gate_quote"] = latest_quote
+            entry_context["mtf_final_evaluation"] = final_evaluation
+
+        _guard_frame = (
+            entry_context.get("entry_gate_frame")
+            if entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE"
+            else entry_context.get("frame")
+        )
+        if _guard_frame is None:
+            _guard_frame = entry_context.get("frame")
         if _guard_frame is None:
             _guard_frame = entry_context.get("entry_gate_frame")
         if _guard_frame is None:

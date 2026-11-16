@@ -18,7 +18,10 @@ from core.symbol_aliases import (  # noqa: F401
     CHOP_FILTER_SYMBOLS,
     is_chop_filter_symbol,
 )
-from core.services.candle_data import closed_entry_candles
+from core.services.candle_data import (
+    closed_entry_candles,
+    missed_breakout_trend_problem,
+)
 from core.gates.swing_origin_entry_gate import (
     LONG_SWING_ORIGIN_CODE,
     SHORT_SWING_ORIGIN_CODE,
@@ -1429,6 +1432,11 @@ def evaluate_continuation_entry(frame, quote, code=None, symbol: str = '', accou
         if gate_reason:
             if diagnostics is not None:
                 diagnostics['reason'] = gate_reason
+            return None
+        trend_problem = missed_breakout_trend_problem(frame, side)
+        if trend_problem:
+            if diagnostics is not None:
+                diagnostics['reason'] = trend_problem
             return None
         qualification = getattr(account, 'breakout_qualification', {}).get(symbol)
         qualification_id = (

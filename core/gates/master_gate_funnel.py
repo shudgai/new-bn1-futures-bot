@@ -167,6 +167,13 @@ def _slope_reaches_threshold(value: float, threshold: float) -> bool:
     return value >= threshold or math.isclose(value, threshold, rel_tol=1e-9, abs_tol=0)
 
 
+def is_kc_middle_flat(current: float, previous: float, atr: float) -> bool:
+    if not all(math.isfinite(value) for value in (current, previous, atr)) or atr <= 0:
+        return False
+    slope_floor = MEME_MIN_KC_MIDDLE_SLOPE_ATR * atr
+    return not _slope_reaches_threshold(abs(current - previous), slope_floor)
+
+
 # Owner 2026-11-03: MEME 1m KC widths are structurally < 1% of price, so the squeeze veto is
 # relative: current width <= 25% of the widest of the last 20 closed bars (AGENTS.md rule).
 MEME_SQUEEZE_RELATIVE_RATIO = 0.25
@@ -281,6 +288,9 @@ def evaluate_meme_entry_frame(
     last_closed_at=None,
     macro_trend=None,
     allow_kc_location_override=False,
+    allow_bearish_pullback_override=False,
+    allow_confirmed_breakout_override=False,
+    allow_confirmed_pivot_override=False,
 ):
     """Common qualification only; independent entry/order authority is still required."""
     from core.symbol_aliases import is_meme_breakout_symbol
@@ -304,6 +314,32 @@ def evaluate_meme_entry_frame(
                     "BLOCKED_TREND_LOCATION_AUTHORITY_INVALID",
                     {},
                 )
+        if allow_bearish_pullback_override:
+            width = snapshot.kc_upper - snapshot.kc_lower
+            location = (
+                (snapshot.close_price - snapshot.kc_lower) / width
+                if width > 0 else math.nan
+            )
+            quote_location = (
+                (snapshot.quote - snapshot.kc_lower) / width
+                if width > 0 else math.nan
+            )
+            if (
+                side != "SHORT"
+                or str(snapshot.macro_trend).upper() != "BEARISH"
+                or snapshot.kc_middle >= snapshot.kc_middle_prev
+                or snapshot.close_price >= snapshot.open_price
+                or snapshot.ma5_curr >= snapshot.ma5_prev
+                or snapshot.ma5_curr >= snapshot.ma15_curr
+                or not 0.65 <= location <= 1.0
+                or not 0.65 <= quote_location <= 1.0
+            ):
+                return GateDecision(
+                    False,
+                    "HOLD",
+                    "BLOCKED_BEARISH_PULLBACK_OVERRIDE_INVALID",
+                    {},
+                )
         cooldown = False
         if last_closed_at is not None:
             closed_at = float(last_closed_at)
@@ -319,6 +355,9 @@ def evaluate_meme_entry_frame(
             side,
             cooldown,
             allow_kc_location_override=allow_kc_location_override,
+            allow_bearish_pullback_override=allow_bearish_pullback_override,
+            allow_confirmed_breakout_override=allow_confirmed_breakout_override,
+            allow_confirmed_pivot_override=allow_confirmed_pivot_override,
         )
     except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IndexError) as exc:
         logger.error("MEME_GATE_DATA_BLOCK symbol=%s error=%s", symbol, exc)
@@ -611,12 +650,16 @@ class MasterGateFunnel:
             (m.close_price - m.kc_lower) / kc_width if kc_width > 0 else math.nan
         )
         _, short_min = pivot_kc_position_bounds(m.symbol)
+        flat_macro_aligned = (
+            is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+            and str(m.macro_trend).upper() == "BEARISH"
+        )
         return (
             m.is_closed
             and body > 0
             and math.isfinite(kc_position)
             and kc_position >= short_min
-            and m.kc_middle < m.kc_middle_prev
+            and (m.kc_middle < m.kc_middle_prev or flat_macro_aligned)
             and m.close_price < m.kc_middle
             and m.close_price < m.ma15_curr
             and m.ma5_curr < m.ma5_prev
@@ -633,6 +676,10 @@ class MasterGateFunnel:
             (m.close_price - m.kc_lower) / kc_width if kc_width > 0 else math.nan
         )
         long_max, _ = pivot_kc_position_bounds(m.symbol)
+        flat_macro_aligned = (
+            is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+            and str(m.macro_trend).upper() == "BULLISH"
+        )
         in_bottom_zone = (
             math.isfinite(kc_position)
             and (
@@ -640,7 +687,7 @@ class MasterGateFunnel:
                 or (
                     m.open_price <= m.kc_middle
                     and m.close_price < m.kc_upper
-                    and m.kc_middle > m.kc_middle_prev
+                    and (m.kc_middle > m.kc_middle_prev or flat_macro_aligned)
                     and m.ma15_curr > m.ma15_prev
                     and body >= 0.80 * m.atr
                 )
@@ -650,7 +697,7 @@ class MasterGateFunnel:
             m.is_closed
             and body > 0
             and in_bottom_zone
-            and m.kc_middle > m.kc_middle_prev
+            and (m.kc_middle > m.kc_middle_prev or flat_macro_aligned)
             and m.close_price > m.kc_middle
             and m.close_price > m.ma15_curr
             and m.ma5_curr > m.ma5_prev
@@ -937,7 +984,12 @@ class MasterGateFunnel:
 
     @staticmethod
     def swing_trend_block(
-        m: MarketSnapshot, side: str, priority: Optional[str] = None,
+        m: MarketSnapshot,
+        side: str,
+        priority: Optional[str] = None,
+        *,
+        allow_confirmed_breakout_override: bool = False,
+        allow_confirmed_pivot_override: bool = False,
     ) -> Optional[str]:
         """Reject flat KC direction and MA5 clustering around its middle for every entry.
 
@@ -968,16 +1020,44 @@ class MasterGateFunnel:
             "SWING_PIVOT_SHORT", "SWING_PIVOT_LONG", "TRIGGER_MODE_A_VALLEY_REVERSAL_LONG",
             "TRIGGER_MODE_A_PEAK_REVERSAL_SHORT",
         }
-        if sign * (m.kc_middle - m.kc_middle_prev) <= 0:
+        kc_flat = is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+        macro_direction = str(m.macro_trend).upper()
+        priority_flat_pivot_authorized = (
+            pivot_turn
+            and kc_flat
+            and macro_direction == ("BULLISH" if side == "LONG" else "BEARISH")
+        )
+        flat_breakout_authorized = (
+            allow_confirmed_breakout_override
+            and kc_flat
+            and macro_direction == ("BULLISH" if side == "LONG" else "BEARISH")
+        )
+        flat_pivot_authorized = (
+            allow_confirmed_pivot_override
+            and kc_flat
+            and macro_direction == ("BULLISH" if side == "LONG" else "BEARISH")
+        )
+        flat_structure_authorized = (
+            priority_flat_pivot_authorized
+            or flat_breakout_authorized
+            or flat_pivot_authorized
+        )
+        if kc_flat and pivot_turn and not flat_structure_authorized:
+            return f"BLOCKED_{side}_KC_MIDDLE_TOO_FLAT"
+        if (
+            sign * (m.kc_middle - m.kc_middle_prev) <= 0
+            and not flat_pivot_authorized
+            and not flat_breakout_authorized
+        ):
             return f"BLOCKED_{side}_KC_DIRECTION"
-        if not pivot_turn and not breakout_priority:
+        if not pivot_turn and not breakout_priority and not flat_structure_authorized:
             slope_limit = MEME_MIN_KC_MIDDLE_SLOPE_ATR * m.atr
             kc_slope = sign * (m.kc_middle - m.kc_middle_prev)
             if abs(kc_slope) < slope_limit and not math.isclose(
                 abs(kc_slope), slope_limit, rel_tol=1e-9, abs_tol=0,
             ):
                 return f"BLOCKED_{side}_KC_MIDDLE_TOO_FLAT"
-        if not pivot_turn and not breakout_priority:
+        if not pivot_turn and not breakout_priority and not flat_structure_authorized:
             ma5_middle_distance = abs(m.ma5_curr - m.kc_middle)
             distance_limit = MEME_MIN_MA5_MIDDLE_DISTANCE_ATR * m.atr
             if ma5_middle_distance < distance_limit and not math.isclose(
@@ -1002,6 +1082,9 @@ class MasterGateFunnel:
         is_in_cooldown: bool = False,
         *,
         allow_kc_location_override: bool = False,
+        allow_bearish_pullback_override: bool = False,
+        allow_confirmed_breakout_override: bool = False,
+        allow_confirmed_pivot_override: bool = False,
     ) -> GateDecision:
         details = {"symbol": m.symbol, "quote": m.quote, "macro": m.macro_trend}
         def block(reason):
@@ -1011,6 +1094,21 @@ class MasterGateFunnel:
             return GateDecision(False, "HOLD", reason, details)
         if side not in ("LONG", "SHORT"):
             return block("VETO_INVALID_ENTRY_SIDE")
+        macro_direction = str(m.macro_trend).upper()
+        flat_breakout_authorized = (
+            allow_confirmed_breakout_override
+            and is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+            and macro_direction == ("BULLISH" if side == "LONG" else "BEARISH")
+        )
+        confirmed_pivot_authorized = (
+            allow_confirmed_pivot_override
+            and macro_direction == ("BULLISH" if side == "LONG" else "BEARISH")
+        )
+        flat_pivot_authorized = (
+            confirmed_pivot_authorized
+            and is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+        )
+        flat_structure_authorized = flat_breakout_authorized or flat_pivot_authorized
         try:
             priority = cls.priority_channel(m, side)
         except (TypeError, ValueError):
@@ -1062,7 +1160,9 @@ class MasterGateFunnel:
             if not is_continuation_pass:
                 return block("BLOCKED_BY_POST_EXIT_COOLDOWN")
         blocked, reason = cls.evaluate_market_blacklist(m)
-        if blocked:
+        if blocked and not (
+            flat_structure_authorized and reason == "VETO_FLAT_KC_MIDLINE_CHOP"
+        ):
             return block(reason)
         sign = 1 if side == "LONG" else -1
         pivot_reversal = priority in {
@@ -1085,7 +1185,11 @@ class MasterGateFunnel:
                 )
             )
         )
-        valid_outer_breakout = big_body_breakout or cls.is_outer_rail_continuation(m, side)
+        valid_outer_breakout = (
+            big_body_breakout
+            or cls.is_outer_rail_continuation(m, side)
+            or flat_breakout_authorized
+        )
         # 通道獲利空間足夠（Room Ready，拒絕貼軌內側追單，如 09:13 龍蝦買在 kc_upper 下方僅剩 5.7% 空間）：
         # 做多：若未突破 KC 上軌 (close <= kc_upper) 且非從中軌以下起漲之底部反轉/穿中軌 (open > kc_middle)，
         #       價格到 KC 上軌剩餘空間必須至少 20% 通道寬度 (kc_position <= 0.80)，貼著上軌內側無利可圖嚴禁追多！
@@ -1149,6 +1253,29 @@ class MasterGateFunnel:
         macro = str(m.macro_trend).upper()
         if macro not in ("BULLISH", "BEARISH", "RANGE", "NEUTRAL"):
             return block("VETO_MACRO_TREND_UNKNOWN")
+        bearish_pullback_override = False
+        if allow_bearish_pullback_override:
+            width = m.kc_upper - m.kc_lower
+            close_location = (
+                (m.close_price - m.kc_lower) / width
+                if math.isfinite(width) and width > 0 else math.nan
+            )
+            quote_location = (
+                (m.quote - m.kc_lower) / width
+                if math.isfinite(width) and width > 0 else math.nan
+            )
+            bearish_pullback_override = (
+                side == "SHORT"
+                and macro == "BEARISH"
+                and m.kc_middle < m.kc_middle_prev
+                and m.close_price < m.open_price
+                and m.ma5_curr < m.ma5_prev
+                and m.ma5_curr < m.ma15_curr
+                and 0.65 <= close_location <= 1.0
+                and 0.65 <= quote_location <= 1.0
+            )
+            if not bearish_pullback_override:
+                return block("BLOCKED_BEARISH_PULLBACK_OVERRIDE_INVALID")
         if pivot_reversal:
             location_veto = (
                 None
@@ -1179,10 +1306,20 @@ class MasterGateFunnel:
             return block(f"BLOCKED_{side}_MACRO_TREND_CONFLICT")
         squeeze_breakout_long = side == "LONG" and cls.is_squeeze_breakout_long(m)
         # A fresh top/bottom turn bypasses only the lagging KC slope filter.
-        trend_block = cls.swing_trend_block(m, side, priority)
+        trend_block = cls.swing_trend_block(
+            m,
+            side,
+            priority,
+            allow_confirmed_breakout_override=flat_breakout_authorized,
+            allow_confirmed_pivot_override=flat_pivot_authorized,
+        )
         if trend_block:
             return block(trend_block)
-        required_levels = (m.kc_middle, m.ma15_curr)
+        required_levels = (
+            ()
+            if bearish_pullback_override or confirmed_pivot_authorized
+            else (m.kc_middle, m.ma15_curr)
+        )
         if any(sign * (price - level) <= 0
                for price in (m.quote, m.close_price) for level in required_levels):
             return block(f"BLOCKED_{side}_PRICE_MIDDLE_MA15")
@@ -1296,12 +1433,22 @@ class MasterGateFunnel:
     # ─────────────────────────────────────────────────────────────
     @classmethod
     def evaluate_open_long(cls, m: MarketSnapshot, is_in_cooldown: bool = False) -> GateDecision:
+        flat_bottom_pivot_authorized = (
+            is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+            and cls.is_bottom_pivot_long(m)
+        )
         # 🚨 第一道最高權限硬鎖：必須交由 MasterOpenGatekeeper 執行一票否決驗證
         top_decision = MasterOpenGatekeeper.validate_open_signal(m, "LONG", is_in_cooldown=is_in_cooldown)
         if not top_decision.can_execute:
             return top_decision
 
-        filtered = cls.evaluate_entry_filters(m, "LONG", is_in_cooldown)
+        filtered = cls.evaluate_entry_filters(
+            m,
+            "LONG",
+            is_in_cooldown,
+            allow_kc_location_override=flat_bottom_pivot_authorized,
+            allow_confirmed_pivot_override=flat_bottom_pivot_authorized,
+        )
         if not filtered.can_execute:
             return filtered
         details = filtered.details
@@ -1342,12 +1489,22 @@ class MasterGateFunnel:
     # ─────────────────────────────────────────────────────────────
     @classmethod
     def evaluate_open_short(cls, m: MarketSnapshot, is_in_cooldown: bool = False) -> GateDecision:
+        flat_top_pivot_authorized = (
+            is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+            and cls.is_top_pivot_short(m)
+        )
         # 🚨 第一道最高權限硬鎖：必須交由 MasterOpenGatekeeper 執行一票否決驗證
         top_decision = MasterOpenGatekeeper.validate_open_signal(m, "SHORT", is_in_cooldown=is_in_cooldown)
         if not top_decision.can_execute:
             return top_decision
 
-        filtered = cls.evaluate_entry_filters(m, "SHORT", is_in_cooldown)
+        filtered = cls.evaluate_entry_filters(
+            m,
+            "SHORT",
+            is_in_cooldown,
+            allow_kc_location_override=flat_top_pivot_authorized,
+            allow_confirmed_pivot_override=flat_top_pivot_authorized,
+        )
         if not filtered.can_execute:
             return filtered
         details = filtered.details
@@ -1863,7 +2020,11 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             # 4. 【KC 中軌向上 100% 絕對禁止開空（最高鐵律）】：
             #    只要 KC 中軌向上 (kc_middle >= kc_middle_prev) 或 棕色 MA15 斜率向上 (ma15_curr > ma15_prev)，
             #    【100% 傳回 False 阻斷開空】！絕不允許在中軌向上升浪中逆勢伸手接刀！
-            if m.kc_middle >= m.kc_middle_prev:
+            flat_top_pivot_authorized = (
+                is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+                and cls.is_top_pivot_short(m)
+            )
+            if m.kc_middle >= m.kc_middle_prev and not flat_top_pivot_authorized:
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_ON_BULLISH_TREND", details)
             if m.ma15_curr > m.ma15_prev:
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_BY_MA15_UPWARD_SLOPE", details)
@@ -2006,7 +2167,11 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                 return GateDecision(False, "HOLD", "BLOCKED_LONG_CLOSE_NOT_ABOVE_MA5", details)
 
             # 4. 順勢與結構過濾：中軌向上、非空頭標頭、底底高 (HL)
-            if m.kc_middle <= m.kc_middle_prev:
+            flat_bottom_pivot_authorized = (
+                is_kc_middle_flat(m.kc_middle, m.kc_middle_prev, m.atr)
+                and cls.is_bottom_pivot_long(m)
+            )
+            if m.kc_middle <= m.kc_middle_prev and not flat_bottom_pivot_authorized:
                 return GateDecision(False, "HOLD", "BLOCKED_LONG_ON_BEARISH_TREND", details)
             if str(m.macro_trend).upper() == "BEARISH":
                 return GateDecision(False, "HOLD", "BLOCKED_LONG_MACRO_TREND_CONFLICT", details)
@@ -2045,7 +2210,13 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             ):
                 return GateDecision(False, "HOLD", "BLOCKED_LONG_OVERBOUGHT_CEILING_FOMO", details)
 
-            filtered = cls.evaluate_entry_filters(m, "LONG", is_in_cooldown)
+            filtered = cls.evaluate_entry_filters(
+                m,
+                "LONG",
+                is_in_cooldown,
+                allow_kc_location_override=flat_bottom_pivot_authorized,
+                allow_confirmed_pivot_override=flat_bottom_pivot_authorized,
+            )
             if not filtered.can_execute:
                 return filtered
 

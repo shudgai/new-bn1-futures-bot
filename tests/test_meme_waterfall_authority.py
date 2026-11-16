@@ -143,18 +143,38 @@ def test_invalid_or_non_waterfall_cannot_claim_emergency(symbol, side, fault, mo
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("macro", ["BULLISH", "BEARISH", "NEUTRAL"])
-def test_outer_rail_without_waterfall_or_pivot_holds_regardless_of_macro(
+def test_outer_rail_breach_uses_macro_aligned_close_confirmation(
     symbol, side, macro, monkeypatch,
 ):
     pos, frame, quote = scenario(side, symbol, monkeypatch, body=1)
     # A narrow band breach is not a 1.5-ATR waterfall.
     frame["kc_upper"], frame["kc_lower"] = 100.5, 99.5
+    now = math.floor(time.time() / 60) * 60
+    trend = 1 if macro == "BULLISH" else -1 if macro == "BEARISH" else 0
+    closes = [100.0 + trend * index * 0.1 for index in range(120)]
+    macro_frame = pd.DataFrame({
+        "timestamp": [(now - (120 - index) * 60) * 1000 for index in range(120)],
+        "open": [close - trend * 0.02 for close in closes],
+        "high": [close + 0.05 for close in closes],
+        "low": [close - 0.05 for close in closes],
+        "close": closes,
+        "volume": [1.0] * len(closes),
+        "is_closed": [True] * len(closes),
+    })
+    macro_frame.attrs.update(
+        timeframe_ms=60_000,
+        snapshot_ms=(now + 30) * 1000,
+    )
+    frame.attrs["macro_frame"] = macro_frame
     md = dict(symbol=symbol, raw_df=frame, current_price=quote,
               kc_middle=100, kc_upper=100.5, kc_lower=99.5, atr=2, macro_trend=macro)
     assert not ExitGate.evaluate(pos, md)[0]
-    assert not UltimateExitGatekeeper.can_execute_exit(
-        symbol, pos, {}, "OPPOSITE_KC_BAND_BREACH", quote, frame=frame,
+    aligned = (side == "LONG" and macro == "BULLISH") or (
+        side == "SHORT" and macro == "BEARISH"
     )
+    assert UltimateExitGatekeeper.can_execute_exit(
+        symbol, pos, {}, "OPPOSITE_KC_BAND_BREACH", quote, frame=frame,
+    ) is (not aligned)
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)

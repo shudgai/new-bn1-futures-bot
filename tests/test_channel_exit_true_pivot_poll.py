@@ -98,6 +98,7 @@ class _Account:
         metadata = self.position_meta[symbol]
         if not automated_position_exit_allowed(
             symbol, position, metadata, reason, price, is_manual=is_manual,
+            frame=self.channel_exit_frame_provider(symbol),
         ):
             return False
         self.close_attempts.append((symbol, price, reason))
@@ -105,7 +106,7 @@ class _Account:
 
 
 @pytest.mark.parametrize("symbol", ["LOBSTER/USDT", "CAP/USDT"])
-def test_channel_short_true_valley_closes_and_retries_without_current_frame(
+def test_channel_short_true_valley_holds_without_macro_reversal_confirmation(
     monkeypatch, symbol,
 ):
     live_bar_ms = 1_800_000_000_000
@@ -122,26 +123,10 @@ def test_channel_short_true_valley_closes_and_retries_without_current_frame(
         close_results=[False, False, True],
     )
 
-    first = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
+    closed = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
 
-    assert first is True
-    assert len(account.close_attempts) == 1
-    assert account.close_attempts[0][2].endswith(
-        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
-    )
-    assert position["kc_true_extreme_exit_state"]["pending"]["reason"] == (
-        "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
-    )
-
-    account.channel_exit_frame_provider = lambda _symbol: None
-    unavailable = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
-    assert unavailable is True
-    assert len(account.close_attempts) == 2
-
-    account.channel_exit_frame_provider = lambda _symbol: frame
-    retried = asyncio.run(enforce_atr_protection(account, symbol, 10.6))
-    assert retried is True
-    assert len(account.close_attempts) == 3
+    assert closed is False
+    assert account.close_attempts == []
 
 
 def test_unconfirmed_valley_does_not_authorize_a_kc_middle_exit(monkeypatch):
@@ -169,7 +154,9 @@ def test_unconfirmed_valley_does_not_authorize_a_kc_middle_exit(monkeypatch):
     assert account.close_attempts == []
 
 
-def test_channel_short_closes_on_actual_kc_midline_touch(monkeypatch):
+def test_channel_short_holds_on_kc_midline_touch_without_macro_confirmation(
+    monkeypatch,
+):
     live_bar_ms = 1_800_000_000_000
     position = _short_position(live_bar_ms)
     frame = _valley_frame(live_bar_ms)
@@ -186,6 +173,47 @@ def test_channel_short_closes_on_actual_kc_midline_touch(monkeypatch):
 
     closed = asyncio.run(enforce_atr_protection(account, "CAP/USDT", 11.0))
 
+    assert closed is False
+    assert account.close_attempts == []
+
+
+def test_atr_exit_authority_receives_current_market_frame(monkeypatch):
+    from core.services.exits import peak_trailing_exit
+
+    live_bar_ms = 1_800_000_000_000
+    position = _short_position(live_bar_ms)
+    frame = _valley_frame(live_bar_ms)
+    account = _Account("CAP/USDT", position, frame, close_results=[True])
+    received_frames = []
+
+    def allow_with_frame(*_args, frame=None, **_kwargs):
+        received_frames.append(frame)
+        return frame is not None
+
+    monkeypatch.setattr(
+        peak_trailing_exit,
+        "evaluate_peak_trailing",
+        lambda *_args, **_kwargs: {
+            "type": "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
+            "trigger": "THREE_POINT_PIVOT",
+        },
+    )
+    monkeypatch.setattr(
+        "core.services.exits.authorized_position_exit.automated_position_exit_allowed",
+        allow_with_frame,
+    )
+    monkeypatch.setattr(
+        "test_channel_exit_true_pivot_poll.automated_position_exit_allowed",
+        allow_with_frame,
+    )
+    monkeypatch.setattr(
+        "core.services.exits.entry_atr_protection.check_trend_lock_exit_permission",
+        lambda *_args, **_kwargs: True,
+    )
+
+    closed = asyncio.run(enforce_atr_protection(account, "CAP/USDT", 10.6))
+
+    assert len(received_frames) == 2
+    assert all(received is frame for received in received_frames)
     assert closed is True
     assert len(account.close_attempts) == 1
-    assert account.close_attempts[0][2].endswith("EXIT_BY_KC_MIDLINE_RETRACE")

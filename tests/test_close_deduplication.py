@@ -123,6 +123,48 @@ async def test_inflight_refresh_from_before_close_is_discarded(side, tmp_path, m
 
 
 @pytest.mark.anyio
+async def test_open_rejection_during_close_records_reason(monkeypatch):
+    monkeypatch.setattr("core.config.ENTRY_SUBMISSION_ENABLED", True)
+    account = pm.PaperAccount()
+    account.closing_lock.add("DOGE/USDT")
+
+    opened = await account.open_position(
+        symbol="DOGE/USDT",
+        side="SHORT",
+        price=100.0,
+        amount_usdt=25.0,
+        sl=105.0,
+        tp=0.0,
+        reason="test",
+    )
+
+    assert not opened
+    assert account.open_reject_reasons["DOGE/USDT"] == "BLOCKED_ENTRY_CLOSE_IN_PROGRESS"
+    assert any("BLOCKED_ENTRY_CLOSE_IN_PROGRESS" in row["text"] for row in account.logs)
+
+
+@pytest.mark.anyio
+async def test_open_rejection_with_pending_order_records_reason(monkeypatch):
+    monkeypatch.setattr("core.config.ENTRY_SUBMISSION_ENABLED", True)
+    account = pm.PaperAccount()
+    account.pending_limit_orders["DOGE/USDT"] = {"order_id": "pending"}
+
+    opened = await account.open_position(
+        symbol="DOGE/USDT",
+        side="SHORT",
+        price=100.0,
+        amount_usdt=25.0,
+        sl=105.0,
+        tp=0.0,
+        reason="test",
+    )
+
+    assert not opened
+    assert account.open_reject_reasons["DOGE/USDT"] == "BLOCKED_ENTRY_PENDING_LIMIT_ORDER"
+    assert any("BLOCKED_ENTRY_PENDING_LIMIT_ORDER" in row["text"] for row in account.logs)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 async def test_strategy_failure_cooldown_keeps_manual_override(side, tmp_path, monkeypatch):
     from test_profit_pivot_exit import pivot_frame

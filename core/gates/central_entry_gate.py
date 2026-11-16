@@ -167,8 +167,17 @@ class CentralEntryGate:
             and entry_method_context.get("entry_method_authority") == "MEME_GATE_ENTRY"
         )
         outer_pivot_authorized = False
+        two_bar_breakout_authorized = False
+        bearish_pullback_authorized = False
+        mtf_state_machine_authorized = False
         if has_entry_method_context:
-            from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, revalidate_entry_method
+            from core.services.entry_methods import (
+                KC_BEARISH_PULLBACK_RESUMPTION,
+                MTF_KC_STATE_MACHINE,
+                KC_OUTER_PIVOT_REVERSAL,
+                KC_TWO_BAR_BREAKOUT,
+                revalidate_entry_method,
+            )
             method_authorized, method_reason = revalidate_entry_method(
                 klines_or_snapshot, symbol=symbol, side=side,
                 quote=price, context=entry_method_context,
@@ -180,10 +189,22 @@ class CentralEntryGate:
             outer_pivot_authorized = (
                 entry_method_context.get("entry_method_authority") == KC_OUTER_PIVOT_REVERSAL
             )
-            from core.services.candle_data import closed_entry_candles
-            closed_frame = closed_entry_candles(klines_or_snapshot)
-            closed_frame.attrs.update(klines_or_snapshot.attrs)
-            klines_or_snapshot = closed_frame
+            two_bar_breakout_authorized = (
+                entry_method_context.get("entry_method_authority") == KC_TWO_BAR_BREAKOUT
+            )
+            bearish_pullback_authorized = (
+                entry_method_context.get("entry_method_authority")
+                == KC_BEARISH_PULLBACK_RESUMPTION
+            )
+            mtf_state_machine_authorized = (
+                entry_method_context.get("entry_method_authority")
+                == MTF_KC_STATE_MACHINE
+            )
+            if not mtf_state_machine_authorized:
+                from core.services.candle_data import closed_entry_candles
+                closed_frame = closed_entry_candles(klines_or_snapshot)
+                closed_frame.attrs.update(klines_or_snapshot.attrs)
+                klines_or_snapshot = closed_frame
         swing_pivot_signal = not has_entry_method_context and (
             "SWING_PIVOT" in source_upper or bool(
             isinstance(klines_or_snapshot, dict)
@@ -256,6 +277,7 @@ class CentralEntryGate:
         meme_symbol = is_meme_breakout_symbol(symbol)
         meme_policy = (
             not peak_valley_verified
+            and not mtf_state_machine_authorized
             and meme_symbol
             and source_upper != "WAIT_1M"
             and (source_upper != "MANUAL" or has_entry_method_context)
@@ -266,7 +288,15 @@ class CentralEntryGate:
             from core.gates.master_gate_funnel import (
                 MasterGateFunnel, evaluate_meme_entry_frame, market_snapshot_from_frame,
             )
-            meme_gate = evaluate_meme_entry_frame(klines_or_snapshot, symbol, side, curr_price)
+            meme_gate = evaluate_meme_entry_frame(
+                klines_or_snapshot,
+                symbol,
+                side,
+                curr_price,
+                allow_bearish_pullback_override=bearish_pullback_authorized,
+                allow_confirmed_breakout_override=two_bar_breakout_authorized,
+                allow_confirmed_pivot_override=outer_pivot_authorized,
+            )
             if not meme_gate.can_execute:
                 return GateCheckResult(
                     passed=False, reason=meme_gate.reason, signal_id=sig_id,
@@ -326,6 +356,7 @@ class CentralEntryGate:
         direction_override = bool(
             (isinstance(klines_or_snapshot, dict) and klines_or_snapshot.get("direction_override"))
             or (isinstance(klines_or_snapshot, pd.DataFrame) and klines_or_snapshot.attrs.get("direction_override"))
+            or mtf_state_machine_authorized
             or is_swing_pivot
             or peak_valley_verified
             or ("AGILE" in src_upper)
@@ -340,7 +371,7 @@ class CentralEntryGate:
             "PIVOT_LONG_CROSS_MID", "PIVOT_SHORT_CROSS_MID",
             "NONE_GOLDEN_CROSS", "NONE_DEAD_CROSS", "PIVOT_LONG", "PIVOT_SHORT",
             "SWING_PIVOT", "THREE_BAR_CONTINUATION", "TREND_PULLBACK",
-            "UNIFIED_PIPELINE",
+            "UNIFIED_PIPELINE", "MTF_KC_STATE_MACHINE",
         )
         route_is_intrabar_eligible = any(
             route in src_upper for route in allowed_intrabar_routes
@@ -378,6 +409,22 @@ class CentralEntryGate:
         kc_mid_val = float(parsed["kc_middle"])
         kc_mid_slope_val = float(parsed.get("kc_middle_slope", 0.0))
         kc_mid_prev_val = float(parsed.get("kc_middle_prev", kc_mid_val - kc_mid_slope_val))
+        flat_two_bar_breakout_authorized = False
+        flat_outer_pivot_authorized = False
+        if outer_pivot_authorized:
+            from core.gates.master_gate_funnel import is_kc_middle_flat
+            flat_outer_pivot_authorized = is_kc_middle_flat(
+                kc_mid_val,
+                kc_mid_prev_val,
+                float(atr),
+            )
+        if two_bar_breakout_authorized:
+            from core.gates.master_gate_funnel import is_kc_middle_flat
+            flat_two_bar_breakout_authorized = is_kc_middle_flat(
+                kc_mid_val,
+                kc_mid_prev_val,
+                float(atr),
+            )
         ma15_c = float(parsed.get("ma15_curr", parsed.get("ma15", kc_mid_val)))
         c_close = float(parsed.get("close", curr_price))
         c_open = float(parsed.get("open", curr_price))
@@ -417,6 +464,55 @@ class CentralEntryGate:
                 },
                 checks=checks,
             )
+        if mtf_state_machine_authorized:
+            row = klines_or_snapshot.iloc[-1]
+            try:
+                candle_open = float(row["open"])
+                candle_high = max(float(row["high"]), curr_price)
+                candle_low = min(float(row["low"]), curr_price)
+                candle_body = abs(curr_price - candle_open)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return GateCheckResult(
+                    passed=False,
+                    reason="VETO_MTF_KC_LIVE_CANDLE_INVALID",
+                    signal_id=sig_id,
+                    checks=checks,
+                )
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (candle_open, candle_high, candle_low, candle_body)
+            ):
+                return GateCheckResult(
+                    passed=False,
+                    reason="VETO_MTF_KC_LIVE_CANDLE_INVALID",
+                    signal_id=sig_id,
+                    checks=checks,
+                )
+            if side == "LONG":
+                upper_wick = candle_high - max(candle_open, curr_price)
+                exhausted = upper_wick > candle_body and curr_price < candle_high
+            else:
+                lower_wick = min(candle_open, curr_price) - candle_low
+                exhausted = lower_wick > candle_body and curr_price > candle_low
+            if exhausted:
+                return GateCheckResult(
+                    passed=False,
+                    reason=f"VETO_{side}_CANDLE_EXHAUSTION",
+                    signal_id=sig_id,
+                    checks=checks,
+                )
+            checks["mtf_kc_state_machine"] = {
+                "status": "PASS",
+                "entry_method": "MTF_KC_STATE_MACHINE",
+                "location_limit": "MAX_ENTRY_BAND_RATIO=0.65",
+            }
+            return GateCheckResult(
+                passed=True,
+                reason="MTF_KC_STATE_MACHINE_ENTRY_CONFIRMED",
+                signal_id=sig_id,
+                details={"ma15_bias_atr": ma15_bias_atr, "side": side},
+                checks=checks,
+            )
 
         # 🚨 2026-11-07 順勢鐵律：KC 中軌往下走空頭嚴禁開多單、KC 中軌往上走多頭嚴禁開空單！
         # 對龍蝦 (龙虾/USDT)、1000PEPE/USDT 等妖幣必須中軌明確同向 (> 0 開多 / < 0 開空)，但已驗證之雙向峰谷轉向 (peak_valley_verified) 解除此單向鎖定。
@@ -431,35 +527,63 @@ class CentralEntryGate:
             }
         elif meme_symbol:
             if side == "LONG" and (kc_mid_slope_val <= 0.0 or kc_mid_val <= kc_mid_prev_val):
-                checks["kc_middle_direction"] = {
-                    "status": "FAIL",
-                    "kc_middle": kc_mid_val,
-                    "kc_middle_prev": kc_mid_prev_val,
-                    "kc_middle_slope": kc_mid_slope_val,
-                    "side": side,
-                }
-                return GateCheckResult(
-                    passed=False,
-                    reason="BLOCKED_LONG_ON_BEARISH_TREND",
-                    signal_id=sig_id,
-                    details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
-                    checks=checks,
-                )
+                if flat_two_bar_breakout_authorized or flat_outer_pivot_authorized:
+                    checks["kc_middle_direction"] = {
+                        "status": "PASS",
+                        "reason": (
+                            "VERIFIED_FLAT_KC_TWO_BAR_BREAKOUT"
+                            if flat_two_bar_breakout_authorized
+                            else "VERIFIED_FLAT_KC_OUTER_PIVOT"
+                        ),
+                        "kc_middle": kc_mid_val,
+                        "kc_middle_prev": kc_mid_prev_val,
+                        "kc_middle_slope": kc_mid_slope_val,
+                        "side": side,
+                    }
+                else:
+                    checks["kc_middle_direction"] = {
+                        "status": "FAIL",
+                        "kc_middle": kc_mid_val,
+                        "kc_middle_prev": kc_mid_prev_val,
+                        "kc_middle_slope": kc_mid_slope_val,
+                        "side": side,
+                    }
+                    return GateCheckResult(
+                        passed=False,
+                        reason="BLOCKED_LONG_ON_BEARISH_TREND",
+                        signal_id=sig_id,
+                        details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
+                        checks=checks,
+                    )
             if side == "SHORT" and (kc_mid_slope_val >= 0.0 or kc_mid_val >= kc_mid_prev_val):
-                checks["kc_middle_direction"] = {
-                    "status": "FAIL",
-                    "kc_middle": kc_mid_val,
-                    "kc_middle_prev": kc_mid_prev_val,
-                    "kc_middle_slope": kc_mid_slope_val,
-                    "side": side,
-                }
-                return GateCheckResult(
-                    passed=False,
-                    reason="BLOCKED_SHORT_ON_BULLISH_TREND",
-                    signal_id=sig_id,
-                    details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
-                    checks=checks,
-                )
+                if flat_two_bar_breakout_authorized or flat_outer_pivot_authorized:
+                    checks["kc_middle_direction"] = {
+                        "status": "PASS",
+                        "reason": (
+                            "VERIFIED_FLAT_KC_TWO_BAR_BREAKOUT"
+                            if flat_two_bar_breakout_authorized
+                            else "VERIFIED_FLAT_KC_OUTER_PIVOT"
+                        ),
+                        "kc_middle": kc_mid_val,
+                        "kc_middle_prev": kc_mid_prev_val,
+                        "kc_middle_slope": kc_mid_slope_val,
+                        "side": side,
+                    }
+                else:
+                    checks["kc_middle_direction"] = {
+                        "status": "FAIL",
+                        "kc_middle": kc_mid_val,
+                        "kc_middle_prev": kc_mid_prev_val,
+                        "kc_middle_slope": kc_mid_slope_val,
+                        "side": side,
+                    }
+                    return GateCheckResult(
+                        passed=False,
+                        reason="BLOCKED_SHORT_ON_BULLISH_TREND",
+                        signal_id=sig_id,
+                        details={"kc_middle": kc_mid_val, "kc_middle_prev": kc_mid_prev_val, "kc_mid_slope": kc_mid_slope_val, "side": side},
+                        checks=checks,
+                    )
         else:
             if side == "LONG" and (kc_mid_slope_val < 0.0 or kc_mid_val < kc_mid_prev_val):
                 return GateCheckResult(
@@ -484,7 +608,13 @@ class CentralEntryGate:
             ma5_curr=ma5_c,
             ma5_prev=ma5_p,
             kc_middle=kc_mid_val,
-            kc_middle_prev=kc_mid_prev_val if meme_symbol else None,
+            kc_middle_prev=(
+                kc_mid_prev_val
+                if meme_symbol and not (
+                    flat_two_bar_breakout_authorized or flat_outer_pivot_authorized
+                )
+                else None
+            ),
             is_swing_pivot=is_swing_pivot,
             direction_override=direction_override,
             ma15_curr=ma15_c,
@@ -517,11 +647,38 @@ class CentralEntryGate:
             "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
             "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
         }
+        flat_structure_kc_lock_veto = (
+            (flat_two_bar_breakout_authorized or flat_outer_pivot_authorized)
+            and dir_reason in {
+                "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+                "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
+            }
+        )
+        if flat_structure_kc_lock_veto:
+            is_candle_violating = False
         if meme_authorized and not is_candle_violating:
             checks["direction_master_lock"].update(status="PASS", reason="VERIFIED_MEME_GATE_DIRECTION")
+        bearish_pullback_midline_exempt = (
+            bearish_pullback_authorized
+            and side == "SHORT"
+            and dir_reason == "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID"
+        )
+        if bearish_pullback_midline_exempt and not is_candle_violating:
+            checks["direction_master_lock"].update(
+                status="PASS",
+                reason="VERIFIED_BEARISH_PULLBACK_RESUMPTION_POSITION",
+            )
         if outer_pivot_authorized and not is_candle_violating:
             checks["direction_master_lock"].update(
                 status="PASS", reason="VERIFIED_KC_OUTER_PIVOT_DIRECTION_AUTHORITY",
+            )
+        if flat_two_bar_breakout_authorized and flat_structure_kc_lock_veto:
+            checks["direction_master_lock"].update(
+                status="PASS", reason="VERIFIED_FLAT_KC_TWO_BAR_BREAKOUT",
+            )
+        if flat_outer_pivot_authorized and flat_structure_kc_lock_veto:
+            checks["direction_master_lock"].update(
+                status="PASS", reason="VERIFIED_FLAT_KC_OUTER_PIVOT",
             )
         pv_lag_only_exempt = pv_flip_verified or (peak_valley_verified and dir_reason in {
             "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID",
@@ -539,6 +696,8 @@ class CentralEntryGate:
             not dir_ok
             and (not outer_pivot_authorized or is_candle_violating)
             and (not meme_authorized or is_candle_violating)
+            and not flat_structure_kc_lock_veto
+            and not bearish_pullback_midline_exempt
             and not pv_lag_only_exempt
         ):
             veto_reason = dir_reason
@@ -601,15 +760,24 @@ class CentralEntryGate:
                     last_closed_trade=last_trade,
                     current_bar_index=bar_index,
                     macro_trend=macro_trend,
-                    is_breakout=("BREAKOUT" in source_upper) or ("CONTINUATION" in source_upper),
+                    is_breakout=(
+                        ("BREAKOUT" in source_upper)
+                        or ("CONTINUATION" in source_upper)
+                        or two_bar_breakout_authorized
+                    ),
                     independent_kc_direction=(
-                        outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified
+                        outer_pivot_authorized or meme_lagging_kc_override
+                        or peak_valley_verified or flat_two_bar_breakout_authorized
+                        or flat_outer_pivot_authorized
                     ),
                     meme_policy=meme_policy,
                     meme_low_trend_override=meme_symbol,
                     expansion=meme_expansion,
                     meme_structural_entry=meme_structural_entry,
                     strict_consolidation=True,
+                    confirmed_flat_kc_structure=(
+                        flat_two_bar_breakout_authorized or flat_outer_pivot_authorized
+                    ),
                 )
                 strict_regime_reasons = {
                     "VETO_KC_MIDLINE_FLAT",
@@ -651,15 +819,26 @@ class CentralEntryGate:
                 # 即使有 direction_override，若身處極度走平中軌或均線糾纏震盪區且未破外軌，絕不可放行！
                 from core.services.candle_data import closed_entry_candles
                 blacklist_frame = closed_entry_candles(entry_frame)
-                is_breakout_candidate = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
+                is_breakout_candidate = (
+                    ("BREAKOUT" in src_upper)
+                    or ("CONTINUATION" in src_upper)
+                    or two_bar_breakout_authorized
+                )
                 raw_bl = evaluate_market_blacklist(
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
-                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified,
+                    independent_kc_direction=(
+                        outer_pivot_authorized or meme_lagging_kc_override
+                        or peak_valley_verified or flat_two_bar_breakout_authorized
+                        or flat_outer_pivot_authorized
+                    ),
                     meme_policy=meme_policy, expansion=meme_expansion,
                     meme_low_trend_override=meme_symbol,
                     meme_structural_entry=meme_structural_entry,
+                    confirmed_flat_kc_structure=(
+                        flat_two_bar_breakout_authorized or flat_outer_pivot_authorized
+                    ),
                 )
                 raw_blocked, raw_reason, raw_evidence = raw_bl
                 if raw_blocked and raw_reason in (
@@ -684,15 +863,26 @@ class CentralEntryGate:
                 # but consolidation classification must use closed evidence.
                 from core.services.candle_data import closed_entry_candles
                 blacklist_frame = closed_entry_candles(entry_frame)
-                is_breakout_candidate = ("BREAKOUT" in src_upper) or ("CONTINUATION" in src_upper)
+                is_breakout_candidate = (
+                    ("BREAKOUT" in src_upper)
+                    or ("CONTINUATION" in src_upper)
+                    or two_bar_breakout_authorized
+                )
                 blacklist = evaluate_market_blacklist(
                     blacklist_frame, -1, side=side, last_closed_trade=last_trade,
                     current_bar_index=bar_index, macro_trend=macro_trend,
                     is_breakout=is_breakout_candidate,
-                    independent_kc_direction=outer_pivot_authorized or meme_lagging_kc_override or peak_valley_verified,
+                    independent_kc_direction=(
+                        outer_pivot_authorized or meme_lagging_kc_override
+                        or peak_valley_verified or flat_two_bar_breakout_authorized
+                        or flat_outer_pivot_authorized
+                    ),
                     meme_policy=meme_policy, expansion=meme_expansion,
                     meme_low_trend_override=meme_symbol,
                     meme_structural_entry=meme_structural_entry,
+                    confirmed_flat_kc_structure=(
+                        flat_two_bar_breakout_authorized or flat_outer_pivot_authorized
+                    ),
                 )
         blocked, block_reason, block_evidence = blacklist
         if (
@@ -1080,6 +1270,7 @@ class CentralEntryGate:
             is_breakout_expansion_unlocked
             or is_cross_mid_ambush_unlocked
             or peak_valley_verified
+            or mtf_state_machine_authorized
         )
 
         checks["kc_squeeze_gate"] = {
@@ -1113,7 +1304,11 @@ class CentralEntryGate:
             )
 
         # 保留既有帶寬過窄與極度收斂防護
-        bw_pass = (kc_width_ratio >= cls.MIN_KC_BANDWIDTH_PCT) or (kc_width >= 2.0 * atr)
+        bw_pass = (
+            mtf_state_machine_authorized
+            or kc_width_ratio >= cls.MIN_KC_BANDWIDTH_PCT
+            or kc_width >= 2.0 * atr
+        )
         checks["bandwidth"] = {
             "status": "PASS" if bw_pass else "FAIL",
             "bandwidth": kc_width_ratio,

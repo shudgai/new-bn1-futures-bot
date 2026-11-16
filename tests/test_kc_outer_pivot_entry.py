@@ -67,6 +67,7 @@ def test_independent_reversal_passes_final_math_and_central_boundary(side, symbo
     quote = float(frame.iloc[-1]["close"])
     if flat_kc:
         frame.loc[frame.index[-2], "kc_middle"] = frame.iloc[-1]["kc_middle"]
+        frame.attrs["macro_trend_htf"] = frame.attrs["macro_trend"]
     if live_bar:
         row = frame.iloc[-1].to_dict()
         row.update(
@@ -74,12 +75,6 @@ def test_independent_reversal_passes_final_math_and_central_boundary(side, symbo
             open=quote, high=quote + 0.01, low=quote - 0.01, close=quote,
         )
         frame.loc[len(frame)] = row
-    if flat_kc:
-        # A non-expansion outer pivot cannot bypass the shared KC-flat gate.
-        assert evaluate_entry_method(
-            frame, quote=quote, symbol=symbol, expected_method=KC_OUTER_PIVOT_REVERSAL,
-        ) is None
-        return
     payload = context(frame, side, symbol)
     assert revalidate_entry_method(frame, symbol=symbol, side=side, quote=quote, context=payload)[0]
     frame.attrs["entry_method_context"] = payload

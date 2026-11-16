@@ -325,7 +325,7 @@ async def enforce_atr_protection(account, symbol, price):
         )
 
         if not automated_position_exit_allowed(
-            symbol, position, meta, reason, price, is_manual=True,
+            symbol, position, meta, reason, price, is_manual=True, frame=frame,
         ):
             if clear_channel_strategy_exit_pending(position, meta):
                 meta.update({

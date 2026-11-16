@@ -133,6 +133,27 @@ def confirmed_kc_midline_slope(frame: Optional[pd.DataFrame]) -> Optional[float]
     return float(values[1, 1] - values[0, 1])
 
 
+def missed_breakout_trend_problem(frame: Optional[pd.DataFrame], side: str) -> Optional[str]:
+    """Require strict closed-KC and explicit higher-timeframe alignment for continuation."""
+    normalized_side = str(side).upper()
+    expected_macro = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(normalized_side)
+    if expected_macro is None:
+        return "BLOCKED_CONTINUATION_SIDE_INVALID"
+    slope = confirmed_kc_midline_slope(frame)
+    if slope is None:
+        return "BLOCKED_CONTINUATION_KC_MIDLINE_INVALID"
+    if (normalized_side == "LONG" and slope <= 0) or (
+        normalized_side == "SHORT" and slope >= 0
+    ):
+        return "BLOCKED_CONTINUATION_KC_MIDLINE_DIRECTION"
+    macro = str(
+        getattr(frame, "attrs", {}).get("macro_trend_htf") or ""
+    ).upper()
+    if macro != expected_macro:
+        return "BLOCKED_CONTINUATION_MACRO_TREND_MISMATCH"
+    return None
+
+
 def log_entry_gate(engine, symbol, side, stage, reason, bar_id=None, **details):
     """Bounded last-decision cache: expose silent gates without per-tick spam."""
     cache = getattr(engine, "_entry_gate_diagnostics", None)

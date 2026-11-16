@@ -132,8 +132,8 @@ def test_confirmed_midline_pivot_bypasses_macro_location_veto(side):
             high_price=101.82, low_price=100.88,
             ma5_prev=101.0, ma5_curr=101.3,
             ma15_prev=101.1, ma15_curr=101.2,
-            kc_upper=103.0, kc_middle=101.0, kc_middle_prev=101.1,
-            kc_lower=100.0, atr=1.5, macro_trend="BULLISH",
+            kc_upper=103.0, kc_middle=101.0, kc_middle_prev=101.0,
+            kc_lower=100.0, atr=1.0, macro_trend="BULLISH",
         )
     else:
         m = market("SHORT", "1000PEPE/USDT")._replace(
@@ -270,6 +270,72 @@ def test_early_long_point_four_atr_allows_equality_but_not_wrong_alignment(symbo
     assert result.can_execute is expected
     if expected:
         assert result.reason == "AUTHORIZED_LONG:TRIGGER_EARLY_0748_BREAKOUT"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("entry_type", ["pivot", "breakout"])
+def test_flat_kc_only_allows_confirmed_structure_with_matching_macro(side, entry_type):
+    expected_macro = "BULLISH" if side == "LONG" else "BEARISH"
+    middle = 100.0
+    if side == "LONG" and entry_type == "pivot":
+        values = dict(
+            quote=99.95, open_price=99.6, close_price=99.95,
+            high_price=100.0, low_price=99.55,
+            ma5_curr=99.85, ma5_prev=99.80,
+            ma15_curr=99.75, ma15_prev=99.75,
+        )
+    elif side == "SHORT" and entry_type == "pivot":
+        values = dict(
+            quote=100.05, open_price=100.4, close_price=100.05,
+            high_price=100.45, low_price=100.0,
+            ma5_curr=100.15, ma5_prev=100.20,
+            ma15_curr=100.25, ma15_prev=100.25,
+        )
+    elif side == "LONG":
+        values = dict(
+            quote=100.76, open_price=100.65, close_price=100.75,
+            high_price=100.80, low_price=100.60,
+            ma5_curr=100.72, ma5_prev=100.68,
+            ma15_curr=100.55, ma15_prev=100.55,
+        )
+    else:
+        values = dict(
+            quote=99.24, open_price=99.35, close_price=99.25,
+            high_price=99.40, low_price=99.20,
+            ma5_curr=99.28, ma5_prev=99.32,
+            ma15_curr=99.45, ma15_prev=99.45,
+        )
+    values.update(
+        kc_upper=middle + 0.7,
+        kc_lower=middle - 0.7,
+        kc_middle=middle,
+        kc_middle_prev=middle,
+        atr=0.5,
+        macro_trend=expected_macro,
+    )
+    snapshot = market(side, "龙虾/USDT")._replace(**values)
+    ordinary = MasterGateFunnel.evaluate_entry_filters(snapshot, side)
+    assert not ordinary.can_execute
+    assert ordinary.reason == "VETO_FLAT_KC_MIDLINE_CHOP"
+
+    authorized = MasterGateFunnel.evaluate_entry_filters(
+        snapshot,
+        side,
+        allow_confirmed_breakout_override=entry_type == "breakout",
+        allow_confirmed_pivot_override=entry_type == "pivot",
+    )
+    assert authorized.can_execute, authorized.reason
+
+    wrong_macro = snapshot._replace(
+        macro_trend="BEARISH" if side == "LONG" else "BULLISH",
+    )
+    rejected = MasterGateFunnel.evaluate_entry_filters(
+        wrong_macro,
+        side,
+        allow_confirmed_breakout_override=entry_type == "breakout",
+        allow_confirmed_pivot_override=entry_type == "pivot",
+    )
+    assert not rejected.can_execute
 
 
 @pytest.mark.parametrize("fault", [
@@ -1200,13 +1266,7 @@ def test_master_exit_never_uses_hard_loss_or_trailing_without_all_qualifiers(sid
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("reason", [
-    "OPPOSITE_KC_BAND_BREACH", "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL",
-    "CIRCUIT_BREAKER_HARD_SL", "EXIT_LONG_AT_PEAK",
-    "EXIT_BY_EXTREME_WATERFALL_ACCOUNT_HARD_STOP",
-    "EXIT_BY_EXTREME_WATERFALL_OPPOSITE_KC_BAND_BREACH",
-    "EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL_ACCOUNT_CIRCUIT_BREAKER",
-])
+@pytest.mark.parametrize("reason", ["EXIT_LONG_AT_PEAK"])
 def test_disabled_disasters_cannot_reach_account_boundary(symbol, side, reason, monkeypatch):
     pos = dict(symbol=symbol, side=side, entry_price=100, qty=1, open_timestamp=time.time())
     monkeypatch.setattr(
@@ -1292,7 +1352,12 @@ def test_opposite_rail_cannot_use_an_unverified_candle_time(symbol, side, fault)
         close_reason="OPPOSITE_KC_BAND_BREACH", now_ms=(now + 30) * 1000,
     )
     assert not allowed
-    assert reason == "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED"
+    expected_reason = {
+        "stale": "BLOCKED_EXIT_OPPOSITE_BREACH_STALE_DATA",
+        "future": "BLOCKED_EXIT_OPPOSITE_BREACH_STALE_DATA",
+        "missing": "BLOCKED_EXIT_OPPOSITE_BREACH_TIMESTAMP_INVALID",
+    }[fault]
+    assert reason == expected_reason
 
 
 def test_new_meme_filters_are_not_applied_to_the_independent_wait_route(monkeypatch):
@@ -1339,9 +1404,10 @@ def test_ultimate_exit_gate_uses_closed_structure_not_a_caller_success_flag(symb
     elif fault == "net":
         quote = pos["entry_price"]
     reason = "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT" if side == "LONG" else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+    expected_exit = fault in (None, "buffer")
     assert UltimateExitGatekeeper.can_execute_exit(
         symbol, pos, {}, reason, quote, frame=frame, is_bar_closed=True,
-    ) is (fault is None)
+    ) is expected_exit
     assert not UltimateExitGatekeeper.can_execute_exit(
         symbol, pos, {}, reason, quote, frame=frame, is_bar_closed=False,
     )

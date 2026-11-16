@@ -7,6 +7,7 @@ import pytest
 
 from test_entry_gate_consistency import frame
 from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+from core.services.entry_contract import evaluate_continuation_entry
 from core.services.entry_firewall import validate_account_entry
 
 SYMBOL = '1000PEPE/USDT'
@@ -34,9 +35,60 @@ def test_continuation_passes_shared_and_account_revalidation(side):
     assert d['entry_phase']=='OUTSIDE_CONTINUATION'
     account=SimpleNamespace(trades=[],last_closed_at={},entry_frame_provider=AsyncMock(return_value=f))
     result=asyncio.run(validate_account_entry(account,SYMBOL,side,dict(
-        entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])))
+        entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'],
+        entry_gate_quote=float(f.iloc[-1]['close']),
+        macro_trend='BULLISH' if side == 'LONG' else 'BEARISH')))
     assert result['entry_phase']=='OUTSIDE_CONTINUATION'
     assert f.equals(saved)
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_entry_contract_missed_continuation_requires_macro_and_midline(
+    monkeypatch, side,
+):
+    import core.services.entry_contract as entry_contract
+
+    f = continuation_frame(side)
+    f.attrs.update(
+        timeframe_ms=60_000,
+        macro_trend_htf='BULLISH' if side == 'LONG' else 'BEARISH',
+    )
+    f['volume'] = 100.0
+    monkeypatch.setattr(
+        entry_contract, 'evaluate_post_close_continuation',
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        entry_contract, 'continuation_entry_problem',
+        lambda *_args, **_kwargs: None,
+    )
+    account = SimpleNamespace(positions={}, breakout_qualification={})
+    quote = float(f.iloc[-1]['close'])
+    decision = evaluate_continuation_entry(
+        f, quote, symbol=SYMBOL, account=account,
+    )
+    assert decision is not None
+    assert decision['side'] == side
+
+    f.attrs['macro_trend_htf'] = 'BEARISH' if side == 'LONG' else 'BULLISH'
+    diagnostics = {}
+    assert evaluate_continuation_entry(
+        f, quote, symbol=SYMBOL, account=account, diagnostics=diagnostics,
+    ) is None
+    assert diagnostics['reason'] == 'BLOCKED_CONTINUATION_MACRO_TREND_MISMATCH'
+
+    f.attrs['macro_trend_htf'] = 'BULLISH' if side == 'LONG' else 'BEARISH'
+    latest, previous = f.index[-2], f.index[-3]
+    f.loc[latest, 'kc_middle'] = (
+        float(f.loc[previous, 'kc_middle']) - 0.1
+        if side == 'LONG'
+        else float(f.loc[previous, 'kc_middle']) + 0.1
+    )
+    diagnostics = {}
+    assert evaluate_continuation_entry(
+        f, quote, symbol=SYMBOL, account=account, diagnostics=diagnostics,
+    ) is None
+    assert diagnostics['reason'] == 'BLOCKED_CONTINUATION_KC_MIDLINE_DIRECTION'
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])

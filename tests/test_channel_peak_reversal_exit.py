@@ -75,7 +75,7 @@ def test_channel_peak_reversal_pullback_does_not_close(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_net_roe_ratchet_remains_an_authorized_profit_lock(side):
+def test_net_roe_ratchet_waits_for_confirmed_true_pivot(side):
     from core.gates.holding_protection_gate import HoldingProtectionExitGate
 
     held = position(side)
@@ -105,11 +105,12 @@ def test_net_roe_ratchet_remains_an_authorized_profit_lock(side):
                  kc_middle=97.8, is_closed=True),
         ]
 
-    allowed, _, _ = HoldingProtectionExitGate.validate_exit(
+    allowed, reason, _ = HoldingProtectionExitGate.validate_exit(
         held, pd.DataFrame(rows), quote,
         "NET_ROE_THREE_TIER_GIVEBACK_TIER_5",
     )
-    assert allowed is True
+    assert allowed is False
+    assert reason == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -298,6 +299,7 @@ def test_impulse_reversal_blocks_entry_for_rest_of_same_candle(side):
         "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
         "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
         "BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT",
+        "BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR",
     )
     assert not account.breakout_qualification
 
@@ -325,4 +327,5 @@ def test_next_candle_requires_observed_pullback_then_resume(side):
         "WAIT_THREE_BAR_BREAKOUT_CONFIRMATION",
         "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
         "BLOCKED_ENTRY_NOT_OUTER_RAIL_BREAKOUT",
+        "BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR",
     )

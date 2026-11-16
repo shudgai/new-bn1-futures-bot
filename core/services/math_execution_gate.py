@@ -122,8 +122,10 @@ def validate_entry_math(
     entry_method_context = frame_attrs.get("entry_method_context")
     entry_method_authorized = False
     outer_pivot_authorized = False
+    two_bar_breakout_authorized = False
     meme_authorized = False
     meme_pivot_authorized = False
+    bearish_pullback_authorized = False
     if isinstance(entry_method_context, Mapping):
         from core.services.entry_methods import revalidate_entry_method
 
@@ -141,8 +143,18 @@ def validate_entry_math(
         )
         if not entry_method_authorized:
             return False, method_reason
-        from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, MEME_GATE_ENTRY
+        from core.services.entry_methods import (
+            KC_BEARISH_PULLBACK_RESUMPTION,
+            KC_OUTER_PIVOT_REVERSAL,
+            KC_TWO_BAR_BREAKOUT,
+            MEME_GATE_ENTRY,
+        )
         meme_authorized = entry_method_context.get("entry_method_authority") == MEME_GATE_ENTRY
+        bearish_pullback_authorized = (
+            entry_method_authorized
+            and entry_method_context.get("entry_method_authority")
+            == KC_BEARISH_PULLBACK_RESUMPTION
+        )
         entry_method_signal = entry_method_context.get("entry_method_signal")
         meme_trigger = (
             entry_method_signal.get("trigger")
@@ -153,6 +165,9 @@ def validate_entry_math(
         }
         outer_pivot_authorized = (
             entry_method_context.get("entry_method_authority") == KC_OUTER_PIVOT_REVERSAL
+        )
+        two_bar_breakout_authorized = (
+            entry_method_context.get("entry_method_authority") == KC_TWO_BAR_BREAKOUT
         )
     allow_override = bool(
         is_swing_pivot
@@ -190,6 +205,13 @@ def validate_entry_math(
 
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, _ = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
+    flat_breakout_kc_lock_veto = (
+        two_bar_breakout_authorized
+        and dir_lock_reason in {
+            "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+            "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
+        }
+    )
     pv_lag_exempt = pv_flip_verified or (peak_valley_verified and dir_lock_reason in {
         "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID",
         "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID",
@@ -198,7 +220,10 @@ def validate_entry_math(
         "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
         "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
     })
-    if not dir_lock_pass and not outer_pivot_authorized and not meme_authorized and not pv_lag_exempt:
+    if (
+        not dir_lock_pass and not outer_pivot_authorized and not meme_authorized
+        and not pv_lag_exempt and not flat_breakout_kc_lock_veto
+    ):
         return False, dir_lock_reason
 
     # The final account gate must enforce MA5 direction for every entry class.
@@ -225,7 +250,10 @@ def validate_entry_math(
     kc_slope = confirmed_kc_midline_slope(direction_frame)
     if kc_slope is None:
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_UNKNOWN"
-    if kc_slope == 0 and not outer_pivot_authorized and not meme_authorized and not pivot_guard_override:
+    if (
+        kc_slope == 0 and not outer_pivot_authorized and not meme_authorized
+        and not pivot_guard_override and not two_bar_breakout_authorized
+    ):
         return False, "BLOCKED_ENTRY_MATH_KC_TREND_FLAT"
     early_long_authorized = bool(
         meme_authorized and side == "LONG"
@@ -235,9 +263,14 @@ def validate_entry_math(
         side == "LONG" and kc_slope < 0
         and not outer_pivot_authorized and not early_long_authorized
         and not meme_pivot_authorized and not is_swing_pivot and not pivot_guard_override
+        and not two_bar_breakout_authorized
     ):
         return False, "BLOCKED_LONG_ON_BEARISH_TREND"
-    if side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized and not meme_pivot_authorized and not is_swing_pivot and not pivot_guard_override:
+    if (
+        side == "SHORT" and kc_slope > 0 and not outer_pivot_authorized
+        and not meme_pivot_authorized and not is_swing_pivot
+        and not pivot_guard_override and not two_bar_breakout_authorized
+    ):
         return False, "BLOCKED_SHORT_ON_BULLISH_TREND"
 
     # ─── 資金費率尖峰一票否決 (Funding Rate Spike Veto) ───
@@ -284,7 +317,9 @@ def validate_entry_math(
         return False, "BLOCKED_LONG_BELOW_MIDLINE"
     if (
         side == "SHORT" and allow_override and not outer_pivot_authorized
-        and not meme_pivot_authorized and not pivot_guard_override and close > latest_middle + retest_buffer
+        and not meme_pivot_authorized and not pivot_guard_override
+        and not bearish_pullback_authorized
+        and close > latest_middle + retest_buffer
     ):
         return False, "BLOCKED_SHORT_ABOVE_MIDLINE"
 
@@ -1092,14 +1127,23 @@ async def validate_entry_at_execution(
             if pv_exec_flip_verified:
                 pv_exec_verified = True
     if not manual_entry and not pv_exec_verified and payload.get("entry_authority") != "WAIT":
-        meme_gate = evaluate_meme_entry_frame(
-            frame, symbol, side, meme_quote,
-            last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
-            macro_trend=payload.get("macro_trend"),
+        from core.services.entry_methods import (
+            KC_BEARISH_PULLBACK_RESUMPTION,
+            revalidate_entry_method,
         )
-        if not meme_gate.can_execute:
-            return False, meme_gate.reason
-
+        bearish_pullback_authorized = False
+        if payload.get("entry_method_authority") == KC_BEARISH_PULLBACK_RESUMPTION:
+            method_allowed, method_reason = revalidate_entry_method(
+                frame,
+                symbol=symbol,
+                side=side,
+                quote=float(meme_quote),
+                context=payload,
+                final_submission=True,
+            )
+            if not method_allowed:
+                return False, method_reason
+            bearish_pullback_authorized = True
     # 方向總開關 (Direction Master Lock) 物理核驗
     signal_type = str(
         payload.get("candidate_signal_type")
@@ -1111,6 +1155,8 @@ async def validate_entry_at_execution(
     entry_method_authority = payload.get("entry_method_authority")
     entry_method_authorized = False
     outer_pivot_authorized = False
+    two_bar_breakout_authorized = False
+    mtf_state_machine_authorized = False
     if entry_method_authority:
         from core.services.entry_methods import revalidate_entry_method
 
@@ -1132,8 +1178,48 @@ async def validate_entry_at_execution(
         )
         if not entry_method_authorized:
             return False, method_reason
-        from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL
+        from core.services.entry_methods import (
+            KC_OUTER_PIVOT_REVERSAL,
+            KC_TWO_BAR_BREAKOUT,
+            MTF_KC_STATE_MACHINE,
+        )
         outer_pivot_authorized = entry_method_authority == KC_OUTER_PIVOT_REVERSAL
+        two_bar_breakout_authorized = entry_method_authority == KC_TWO_BAR_BREAKOUT
+        mtf_state_machine_authorized = entry_method_authority == MTF_KC_STATE_MACHINE
+        if mtf_state_machine_authorized and hasattr(frame, "attrs"):
+            frame.attrs["entry_method_context"] = {
+                key: payload.get(key)
+                for key in (
+                    "entry_method_authority",
+                    "entry_method_signal",
+                    "entry_method_bar_id",
+                    "entry_method_event_id",
+                    "entry_method_last_exit_timestamp",
+                    "frame_15m",
+                )
+            }
+            frame.attrs["entry_method_context"]["symbol"] = symbol
+            frame.attrs["entry_method_quote"] = method_quote
+    if (
+        not manual_entry
+        and not pv_exec_verified
+        and payload.get("entry_authority") != "WAIT"
+        and not mtf_state_machine_authorized
+    ):
+        meme_gate = evaluate_meme_entry_frame(
+            frame, symbol, side, meme_quote,
+            last_closed_at=getattr(account, "last_closed_at", {}).get(symbol),
+            macro_trend=payload.get("macro_trend"),
+            allow_bearish_pullback_override=bearish_pullback_authorized,
+            allow_confirmed_breakout_override=(
+                entry_method_authorized and two_bar_breakout_authorized
+            ),
+            allow_confirmed_pivot_override=(
+                entry_method_authorized and outer_pivot_authorized
+            ),
+        )
+        if not meme_gate.can_execute:
+            return False, meme_gate.reason
     is_meme_contract = any(k in str(symbol).upper() for k in ("LOBSTER", "PEPE", "CAP", "MEME")) or any(k in str(symbol) for k in ("龙虾", "龍蝦"))
     allow_override = bool(
         entry_method_authorized
@@ -1147,6 +1233,13 @@ async def validate_entry_at_execution(
 
     from core.gates.direction_master_lock import check_direction_lock_from_frame
     dir_lock_pass, dir_lock_reason, dir_details = check_direction_lock_from_frame(frame, side, allow_override=allow_override)
+    flat_breakout_kc_lock_veto = (
+        two_bar_breakout_authorized
+        and dir_lock_reason in {
+            "BLOCKED_DIRECTION_LOCK_LONG_KC_SLOPE_NOT_UP",
+            "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
+        }
+    )
     pv_exec_lag_exempt = pv_exec_flip_verified or (pv_exec_verified and dir_lock_reason in {
         "BLOCKED_DIRECTION_LOCK_LONG_BELOW_MID",
         "BLOCKED_DIRECTION_LOCK_SHORT_ABOVE_MID",
@@ -1156,8 +1249,13 @@ async def validate_entry_at_execution(
         "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN",
     })
     from core.services.entry_methods import MEME_GATE_ENTRY
-    if not dir_lock_pass and not outer_pivot_authorized and not pv_exec_lag_exempt and not (
+    if (
+        not dir_lock_pass and not outer_pivot_authorized and not pv_exec_lag_exempt
+        and not flat_breakout_kc_lock_veto
+        and not mtf_state_machine_authorized
+        and not (
         entry_method_authorized and entry_method_authority == MEME_GATE_ENTRY
+        )
     ):
         account_log = getattr(account, "log", None)
         if callable(account_log):
@@ -1284,6 +1382,8 @@ async def validate_entry_at_execution(
     )
     if not central_result.passed:
         return False, f"BLOCKED_FINAL_CENTRAL_ENTRY_GATE:{central_result.reason}"
+    if mtf_state_machine_authorized:
+        return True, "ENTRY_MATH_MTF_KC_STATE_MACHINE_APPROVED"
 
     fast_track = False
     bars = _rows(frame)

@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from core.services.entry_methods import (
+    KC_BEARISH_PULLBACK_RESUMPTION,
     KC_DUAL_TREND_LOCATION,
     KC_MIDLINE_MOMENTUM,
     KC_SINGLE_BAR_BREAKOUT,
@@ -125,6 +126,277 @@ def test_two_bar_breakout_requires_body_break_same_color_kc_short_ma_and_slope(
     assert evaluate_entry_method(
         frame(rows), quote=returned_to_band, symbol="BTC/USDT",
         expected_method=KC_TWO_BAR_BREAKOUT,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "side,rows,quote",
+    [
+        (
+            "LONG",
+            [
+                candle(60_000, opened=100, high=103.2, low=99.8, close=103,
+                       upper=102, lower=98, middle=100, short_ma=101, ma15=100,
+                       atr=2),
+                candle(120_000, opened=103, high=105.2, low=102.5, close=105,
+                       upper=104, lower=98, middle=100, short_ma=104, ma15=103.2,
+                       atr=2),
+            ],
+            105.1,
+        ),
+        (
+            "SHORT",
+            [
+                candle(60_000, opened=100, high=100.2, low=96.8, close=97,
+                       upper=102, lower=98, middle=100, short_ma=99, ma15=100,
+                       atr=2),
+                candle(120_000, opened=97, high=97.3, low=94.8, close=95,
+                       upper=102, lower=98, middle=100, short_ma=96, ma15=96.8,
+                       atr=2),
+            ],
+            94.9,
+        ),
+    ],
+)
+def test_flat_kc_two_bar_breakout_requires_matching_explicit_macro_direction(
+    side, rows, quote,
+):
+    market = frame(rows)
+    expected_macro = "BULLISH" if side == "LONG" else "BEARISH"
+    market.attrs["macro_trend_htf"] = expected_macro
+    signal = evaluate_entry_method(
+        market,
+        quote=quote,
+        symbol="BTC/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    )
+    assert signal is not None
+    assert signal["side"] == side
+
+    for macro in ("NEUTRAL", "BEARISH" if side == "LONG" else "BULLISH"):
+        market.attrs["macro_trend_htf"] = macro
+        assert evaluate_entry_method(
+            market,
+            quote=quote,
+            symbol="BTC/USDT",
+            expected_method=KC_TWO_BAR_BREAKOUT,
+        ) is None
+
+    market.attrs["macro_trend_htf"] = expected_macro
+    market.loc[market.index[-1], "kc_middle"] += 1 if side == "SHORT" else -1
+    assert evaluate_entry_method(
+        market,
+        quote=quote,
+        symbol="BTC/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    ) is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_missed_breakout_continuation_requires_closed_kc_and_htf_alignment(side):
+    rows = []
+    for index in range(2):
+        if side == "LONG":
+            upper = 104.0 + index * 0.2
+            rows.append(candle(
+                60_000 * (index + 1),
+                opened=upper + 0.5,
+                high=upper + 1.1,
+                low=upper + 0.4,
+                close=upper + 1.0,
+                upper=upper,
+                lower=upper - 4.0,
+                middle=upper - 2.0,
+                short_ma=upper + 0.7,
+                ma15=upper + 0.7,
+                atr=1.0,
+            ))
+        else:
+            lower = 96.0 - index * 0.2
+            rows.append(candle(
+                60_000 * (index + 1),
+                opened=lower - 0.5,
+                high=lower - 0.4,
+                low=lower - 1.1,
+                close=lower - 1.0,
+                upper=lower + 4.0,
+                lower=lower,
+                middle=lower + 2.0,
+                short_ma=lower - 0.7,
+                ma15=lower - 0.7,
+                atr=1.0,
+            ))
+
+    market = frame(rows)
+    expected_macro = "BULLISH" if side == "LONG" else "BEARISH"
+    market.attrs["macro_trend_htf"] = expected_macro
+    quote = float(market.iloc[-1]["close"]) + (0.1 if side == "LONG" else -0.1)
+    signal = evaluate_entry_method(
+        market,
+        quote=quote,
+        symbol="BTC/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    )
+    assert signal is not None
+    assert signal["side"] == side
+    assert signal["entry_phase"] == "MISSED_BREAKOUT_CONTINUATION"
+
+    allowed, _ = revalidate_entry_method(
+        market,
+        symbol="BTC/USDT",
+        side=side,
+        quote=quote,
+        context={
+            "entry_method_authority": KC_TWO_BAR_BREAKOUT,
+            "entry_method_signal": signal,
+            "entry_method_bar_id": signal["confirmation_bar_id"],
+            "entry_method_event_id": signal["event_id"],
+        },
+    )
+    assert allowed
+
+    market.attrs.pop("macro_trend_htf")
+    assert evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    ) is None
+    assert not revalidate_entry_method(
+        market,
+        symbol="BTC/USDT",
+        side=side,
+        quote=quote,
+        context={
+            "entry_method_authority": KC_TWO_BAR_BREAKOUT,
+            "entry_method_signal": signal,
+            "entry_method_bar_id": signal["confirmation_bar_id"],
+            "entry_method_event_id": signal["event_id"],
+        },
+    )[0]
+    market.attrs["macro_trend_htf"] = expected_macro
+
+    for macro in ("NEUTRAL", "BEARISH" if side == "LONG" else "BULLISH"):
+        market.attrs["macro_trend_htf"] = macro
+        assert evaluate_entry_method(
+            market, quote=quote, symbol="BTC/USDT",
+            expected_method=KC_TWO_BAR_BREAKOUT,
+        ) is None
+        assert not revalidate_entry_method(
+            market,
+            symbol="BTC/USDT",
+            side=side,
+            quote=quote,
+            context={
+                "entry_method_authority": KC_TWO_BAR_BREAKOUT,
+                "entry_method_signal": signal,
+                "entry_method_bar_id": signal["confirmation_bar_id"],
+                "entry_method_event_id": signal["event_id"],
+            },
+        )[0]
+
+    market.attrs["macro_trend_htf"] = expected_macro
+    market.loc[market.index[-1], "kc_middle"] += -1 if side == "LONG" else 1
+    assert evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    ) is None
+    assert not revalidate_entry_method(
+        market,
+        symbol="BTC/USDT",
+        side=side,
+        quote=quote,
+        context={
+            "entry_method_authority": KC_TWO_BAR_BREAKOUT,
+            "entry_method_signal": signal,
+            "entry_method_bar_id": signal["confirmation_bar_id"],
+            "entry_method_event_id": signal["event_id"],
+        },
+    )[0]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_missed_breakout_continuation_rejects_stale_outside_streak(side):
+    rows = []
+    for index in range(9):
+        if side == "LONG":
+            upper = 104.0 + index * 0.2
+            rows.append(candle(
+                60_000 * (index + 1),
+                opened=upper + 0.5,
+                high=upper + 1.1,
+                low=upper + 0.4,
+                close=upper + 1.0,
+                upper=upper,
+                lower=upper - 4.0,
+                middle=upper - 2.0,
+                short_ma=upper + 0.7,
+                ma15=upper + 0.7,
+                atr=1.0,
+            ))
+        else:
+            lower = 96.0 - index * 0.2
+            rows.append(candle(
+                60_000 * (index + 1),
+                opened=lower - 0.5,
+                high=lower - 0.4,
+                low=lower - 1.1,
+                close=lower - 1.0,
+                upper=lower + 4.0,
+                lower=lower,
+                middle=lower + 2.0,
+                short_ma=lower - 0.7,
+                ma15=lower - 0.7,
+                atr=1.0,
+            ))
+    market = frame(rows)
+    market.attrs["macro_trend_htf"] = "BULLISH" if side == "LONG" else "BEARISH"
+    quote = float(market.iloc[-1]["close"]) + (0.1 if side == "LONG" else -0.1)
+    assert evaluate_entry_method(
+        market, quote=quote, symbol="BTC/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    ) is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_flat_outer_pivot_requires_matching_explicit_macro_direction(side):
+    rows = [
+        candle(60_000, opened=100.0, high=101.0, low=99.8, close=100.7,
+               upper=101.0, lower=99.0, middle=100.0,
+               short_ma=100.5, ma15=100.4, atr=1.0),
+        candle(120_000, opened=99.2, high=99.3, low=98.5, close=98.9,
+               upper=101.0, lower=99.0, middle=100.0,
+               short_ma=99.0, ma15=99.1, atr=1.0),
+        candle(180_000, opened=99.2, high=99.4, low=99.1, close=99.3,
+               upper=101.0, lower=99.0, middle=100.0,
+               short_ma=99.25, ma15=99.2, atr=1.0),
+    ]
+    market = frame(rows)
+    if side == "SHORT":
+        for column in ("open", "close", "kc_middle", "ma5", "ma15"):
+            market[column] = 200 - market[column]
+        high, upper = 200 - market["low"], 200 - market["kc_lower"]
+        market["low"], market["high"] = 200 - market["high"], high
+        market["kc_lower"], market["kc_upper"] = 200 - market["kc_upper"], upper
+    expected_macro = "BULLISH" if side == "LONG" else "BEARISH"
+    market.attrs.update(
+        macro_trend=expected_macro,
+        macro_trend_htf=expected_macro,
+    )
+    quote = float(market.iloc[-1]["close"])
+    signal = evaluate_entry_method(
+        market,
+        quote=quote,
+        symbol="BTC/USDT",
+        expected_method="KC_OUTER_PIVOT_REVERSAL",
+    )
+    assert signal is not None
+    assert signal["side"] == side
+
+    market.attrs["macro_trend_htf"] = "BEARISH" if side == "LONG" else "BULLISH"
+    assert evaluate_entry_method(
+        market,
+        quote=quote,
+        symbol="BTC/USDT",
+        expected_method="KC_OUTER_PIVOT_REVERSAL",
     ) is None
 
 
@@ -345,19 +617,6 @@ def test_kc_midline_momentum_uses_directional_ma5_angle(side, rows, quote):
             101.6,
             "BULLISH",
         ),
-        (
-            "SHORT",
-            [
-                candle(60_000, opened=100.0, high=101.2, low=99.0, close=99.5,
-                       upper=102, lower=98, middle=100.0, short_ma=99.8,
-                       ma15=100.5),
-                candle(120_000, opened=99.5, high=99.8, low=98.2, close=98.7,
-                       upper=102, lower=98, middle=99.8, short_ma=99.2,
-                       ma15=99.5),
-            ],
-            98.6,
-            "BEARISH",
-        ),
     ],
 )
 def test_dual_trend_location_entry_allows_only_aligned_half_channel(
@@ -382,6 +641,26 @@ def test_dual_trend_location_entry_allows_only_aligned_half_channel(
         context=method_context(signal),
     )
     assert allowed, reason
+
+
+def test_dual_trend_location_no_longer_opens_shorts_below_midline():
+    rows = [
+        candle(60_000, opened=100.0, high=101.2, low=99.0, close=99.5,
+               upper=102, lower=98, middle=100.0, short_ma=99.8,
+               ma15=100.5),
+        candle(120_000, opened=99.5, high=99.8, low=98.2, close=98.7,
+               upper=102, lower=98, middle=99.8, short_ma=99.2,
+               ma15=99.5),
+    ]
+    market = frame(rows)
+    market.attrs.update(entry_finality_verified=True, macro_trend_htf="BEARISH")
+
+    assert evaluate_entry_method(
+        market,
+        quote=98.6,
+        symbol="BTC/USDT",
+        expected_method=KC_DUAL_TREND_LOCATION,
+    ) is None
 
 
 def test_dual_trend_location_entry_fails_closed_on_trend_or_location_mismatch():
@@ -478,6 +757,183 @@ def test_dual_trend_location_keeps_non_location_master_gate_veto(monkeypatch):
     )
     assert not allowed
     assert reason == "BLOCKED_ENTRY_METHOD_MASTER_GATE:VETO_NON_LOCATION_FILTER"
+
+
+def bearish_pullback_frame():
+    rows = [
+        candle(60_000, opened=100.0, high=100.2, low=99.2, close=99.5,
+               upper=104.0, lower=96.0, middle=100.0, short_ma=99.9,
+               ma15=100.5),
+        candle(120_000, opened=99.6, high=102.3, low=99.3, close=101.5,
+               upper=104.0, lower=96.0, middle=99.9, short_ma=99.8,
+               ma15=100.5),
+        candle(180_000, opened=101.6, high=101.8, low=101.0, close=101.3,
+               upper=104.0, lower=96.0, middle=99.8, short_ma=99.7,
+               ma15=100.5),
+    ]
+    market = frame(rows)
+    market.attrs["macro_trend_htf"] = "BEARISH"
+    return market
+
+
+def allow_bearish_pullback_gate(monkeypatch):
+    from types import SimpleNamespace
+
+    def evaluate(_frame, _symbol, side, _quote, **kwargs):
+        assert side == "SHORT"
+        assert kwargs["allow_bearish_pullback_override"] is True
+        return SimpleNamespace(can_execute=True, reason="PASS")
+
+    monkeypatch.setattr(
+        "core.gates.master_gate_funnel.evaluate_meme_entry_frame",
+        evaluate,
+    )
+
+
+def test_bearish_pullback_resumption_requires_rebound_and_upper_channel(monkeypatch):
+    allow_bearish_pullback_gate(monkeypatch)
+    market = bearish_pullback_frame()
+    signal = evaluate_entry_method(
+        market,
+        quote=101.2,
+        symbol="龍蝦/USDT",
+        expected_method=KC_BEARISH_PULLBACK_RESUMPTION,
+    )
+    assert signal is not None
+    assert signal["side"] == "SHORT"
+    assert signal["trigger"] == "TRIGGER_KC_BEARISH_PULLBACK_RESUMPTION"
+
+    market.attrs["entry_method_context"] = {
+        "symbol": "龍蝦/USDT",
+        **method_context(signal),
+    }
+    market.attrs["entry_method_quote"] = 101.2
+    from core.services.math_execution_gate import validate_entry_math
+
+    math_allowed, math_reason = validate_entry_math(
+        market,
+        "SHORT",
+        symbol="龍蝦/USDT",
+    )
+    assert math_allowed, math_reason
+
+    allowed, reason = revalidate_entry_method(
+        market,
+        symbol="龍蝦/USDT",
+        side="SHORT",
+        quote=101.2,
+        context=method_context(signal),
+    )
+    assert allowed, reason
+
+
+@pytest.mark.parametrize(
+    "mutate,quote",
+    [
+        (lambda rows: rows[-2].update(close=99.4), 101.2),
+        (lambda rows: rows[-1].update(close=100.9), 101.2),
+        (lambda rows: None, 100.7),
+    ],
+)
+def test_bearish_pullback_resumption_fails_closed_without_setup_or_location(
+    monkeypatch, mutate, quote,
+):
+    allow_bearish_pullback_gate(monkeypatch)
+    market = bearish_pullback_frame()
+    rows = market.to_dict("records")
+    mutate(rows)
+    invalid = frame(rows)
+    invalid.attrs["macro_trend_htf"] = "BEARISH"
+
+    assert evaluate_entry_method(
+        invalid,
+        quote=quote,
+        symbol="龍蝦/USDT",
+        expected_method=KC_BEARISH_PULLBACK_RESUMPTION,
+    ) is None
+
+
+def test_bearish_pullback_master_gate_allows_only_confirmed_upper_zone_exception(
+    monkeypatch,
+):
+    from core.gates.master_gate_funnel import (
+        MarketSnapshot, MasterGateFunnel, evaluate_meme_entry_frame,
+    )
+
+    snapshot = MarketSnapshot(
+        symbol="龍蝦/USDT",
+        quote=101.2,
+        open_price=101.6,
+        close_price=101.3,
+        high_price=101.8,
+        low_price=101.0,
+        ma3_curr=99.7,
+        ma3_prev=99.8,
+        ma5_curr=99.7,
+        ma5_prev=99.8,
+        ma15_curr=100.5,
+        ma15_prev=100.6,
+        kc_upper=104.0,
+        kc_middle=99.8,
+        kc_middle_prev=99.9,
+        kc_lower=96.0,
+        atr=1.0,
+        macro_trend="BEARISH",
+        ma_cross_count_8=0,
+        kc_width_max_20=8.0,
+        kc_middle_prev2=100.0,
+        kc_middle_prev3=100.1,
+        kc_width_prev=8.0,
+    )
+    blocked = MasterGateFunnel.evaluate_entry_filters(snapshot, "SHORT")
+    assert not blocked.can_execute
+    assert blocked.reason == "BLOCKED_SHORT_PRICE_MIDDLE_MA15"
+
+    allowed = MasterGateFunnel.evaluate_entry_filters(
+        snapshot,
+        "SHORT",
+        allow_bearish_pullback_override=True,
+    )
+    assert allowed.can_execute, allowed.reason
+    monkeypatch.setattr(
+        "core.gates.master_gate_funnel.market_snapshot_from_frame",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    wrapped = evaluate_meme_entry_frame(
+        None,
+        snapshot.symbol,
+        "SHORT",
+        snapshot.quote,
+        allow_bearish_pullback_override=True,
+    )
+    assert wrapped.can_execute, wrapped.reason
+
+    market = bearish_pullback_frame()
+    signal = evaluate_entry_method(
+        market,
+        quote=101.2,
+        symbol=snapshot.symbol,
+        expected_method=KC_BEARISH_PULLBACK_RESUMPTION,
+    )
+    assert signal is not None
+    market.attrs["entry_method_context"] = {
+        "symbol": snapshot.symbol,
+        **method_context(signal),
+    }
+    market.attrs["entry_method_quote"] = 101.2
+    from core.gates.central_entry_gate import CentralEntryGate
+
+    monkeypatch.setattr(
+        "core.services.market_consolidation_filter.evaluate_market_blacklist",
+        lambda *_args, **_kwargs: (False, "PASS", {}),
+    )
+    central = CentralEntryGate.verify_and_authorize(
+        symbol=snapshot.symbol,
+        side="SHORT",
+        price=101.2,
+        klines_or_snapshot=market,
+    )
+    assert central.passed, central.reason
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -873,6 +1329,52 @@ def method_context(signal, last_exit_timestamp=None):
     }
 
 
+def test_flat_two_bar_breakout_passes_shared_final_gates():
+    from core.gates.central_entry_gate import CentralEntryGate
+    from core.services.math_execution_gate import validate_entry_at_execution
+
+    market = post_close_market("LONG")
+    market.loc[market.index[-1], "kc_middle"] = market.iloc[-2]["kc_middle"]
+    market.attrs["macro_trend_htf"] = "BULLISH"
+    quote = float(market.iloc[-1]["close"])
+    signal = evaluate_entry_method(
+        market,
+        quote=quote,
+        symbol="CAP/USDT",
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    )
+    assert signal is not None
+    context = method_context(signal)
+    assert revalidate_entry_method(
+        market, symbol="CAP/USDT", side="LONG", quote=quote, context=context,
+    )[0]
+    market.attrs["entry_method_context"] = {"symbol": "CAP/USDT", **context}
+    market.attrs["entry_method_quote"] = quote
+    central = CentralEntryGate.verify_and_authorize(
+        "CAP/USDT",
+        "LONG",
+        quote,
+        market,
+        source="UNIFIED_PIPELINE|ENTRY_METHOD|KC_TWO_BAR_BREAKOUT",
+    )
+    assert central.passed, central.reason
+
+    payload = {
+        **context,
+        "entry_gate_frame": market,
+        "entry_gate_quote": quote,
+        "source": "UNIFIED_PIPELINE|ENTRY_METHOD|KC_TWO_BAR_BREAKOUT",
+    }
+    allowed, reason = asyncio.run(validate_entry_at_execution(
+        SimpleNamespace(entry_filter_last={}),
+        "CAP/USDT",
+        "LONG",
+        payload,
+        execution_price=quote,
+    ))
+    assert allowed, reason
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["龙虾/USDT", "CAP/USDT", "1000PEPE/USDT"])
 def test_post_close_reentry_passes_shared_gates_outside_its_own_rail(side, symbol):
@@ -1067,7 +1569,7 @@ def test_priority_authority_rejection_cannot_fall_back_to_legacy_entry(
         ))
     assert result == rejection
     method.assert_awaited_once()
-    assert method.call_args.kwargs["only_method"] == "MEME_GATE_ENTRY"
+    assert method.call_args.kwargs["only_method"] == KC_TWO_BAR_BREAKOUT
     submit.assert_not_awaited()
     assert "ENTRY_METHOD_ALTERNATIVE_EVALUATION" not in caplog.text
 

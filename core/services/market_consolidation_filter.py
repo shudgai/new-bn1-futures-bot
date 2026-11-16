@@ -51,6 +51,7 @@ def evaluate_market_blacklist(
     expansion: bool = False,
     meme_structural_entry: bool = False,
     strict_consolidation: bool = False,
+    confirmed_flat_kc_structure: bool = False,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return (blocked, reason, evidence), using only explicitly closed bars.
 
@@ -139,17 +140,22 @@ def evaluate_market_blacklist(
             kc_slope_atr >= KC_MIDDLE_FLAT_SLOPE_ATR
             or math.isclose(kc_slope_atr, KC_MIDDLE_FLAT_SLOPE_ATR, rel_tol=1e-9, abs_tol=0)
         )
-        if strict_consolidation and (
+        if strict_consolidation and not confirmed_flat_kc_structure and (
             not kc_slope_is_directional or mid_delta_pct < SLOPE_FLAT_PCT
         ):
             return True, "VETO_KC_MIDLINE_FLAT", {
                 **checks,
                 "strict_consolidation": True,
             }
-        if not is_breakout and not expansion and (
+        if (
+            not is_breakout
+            and not expansion
+            and not confirmed_flat_kc_structure
+            and (
             ma3_delta_pct < SLOPE_FLAT_PCT
             or ma5_delta_pct < SLOPE_FLAT_PCT
             or (not independent_kc_direction and mid_delta_pct < SLOPE_FLAT_PCT)
+            )
         ):
             return True, "VETO_FLAT_MA5_OR_KC_MIDLINE", checks
 

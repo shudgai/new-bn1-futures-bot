@@ -138,7 +138,7 @@ def test_channel_swing_blocks_long_exit_when_closed_body_holds_kc_midline(close)
     )
 
     assert allowed is False
-    assert reason == HoldingProtectionExitGate.REJECT_REASON
+    assert reason == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
 
 
 @pytest.mark.parametrize("reason", [
@@ -209,7 +209,7 @@ def test_choppy_position_allows_only_adverse_closed_body_through_kc_midline(
     )
 
     assert allowed is False
-    assert reason == HoldingProtectionExitGate.REJECT_REASON
+    assert reason == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
 
 
 def test_channel_swing_peak_exit_uses_observed_giveback_ratio():

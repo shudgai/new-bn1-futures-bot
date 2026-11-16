@@ -10,7 +10,10 @@ from typing import Any
 
 import pandas as pd
 
-from core.services.candle_data import closed_entry_candles
+from core.services.candle_data import (
+    closed_entry_candles,
+    missed_breakout_trend_problem,
+)
 from core.symbol_aliases import is_meme_breakout_symbol
 from core.gates.meme_entry_policy import (
     MAX_EXTENSION_ATR, is_exhausted_wick, uses_relaxed_entry_limits,
@@ -34,6 +37,8 @@ MA5_MA15_CROSS = "MA5_MA15_CROSS"
 KC_SINGLE_BAR_BREAKOUT = "KC_SINGLE_BAR_BREAKOUT"
 KC_MIDLINE_MOMENTUM = "KC_MIDLINE_MOMENTUM"
 KC_DUAL_TREND_LOCATION = "KC_DUAL_TREND_LOCATION"
+KC_BEARISH_PULLBACK_RESUMPTION = "KC_BEARISH_PULLBACK_RESUMPTION"
+MTF_KC_STATE_MACHINE = "MTF_KC_STATE_MACHINE"
 # Import compatibility only; persisted literal MA3 authorities are not accepted.
 MA3_MA15_CROSS = MA5_MA15_CROSS
 
@@ -48,6 +53,8 @@ ENTRY_METHODS = frozenset({
     KC_SINGLE_BAR_BREAKOUT,
     KC_MIDLINE_MOMENTUM,
     KC_DUAL_TREND_LOCATION,
+    KC_BEARISH_PULLBACK_RESUMPTION,
+    MTF_KC_STATE_MACHINE,
 })
 
 _METHOD_RULES = {
@@ -65,6 +72,10 @@ _METHOD_RULES = {
     KC_SINGLE_BAR_BREAKOUT: ("BREAKOUT", "KC_OUTER_BREAKOUT"),
     KC_MIDLINE_MOMENTUM: ("CONTINUATION", "KC_MIDLINE_MOMENTUM"),
     KC_DUAL_TREND_LOCATION: ("REVERSAL", KC_DUAL_TREND_LOCATION),
+    KC_BEARISH_PULLBACK_RESUMPTION: (
+        "REVERSAL", "CONFIRMED_BEARISH_PULLBACK_RESUMPTION",
+    ),
+    MTF_KC_STATE_MACHINE: ("TREND", "CONFIRMED_MTF_KC_STATE_ENTRY"),
 }
 
 _REQUIRED_COLUMNS = (
@@ -192,7 +203,9 @@ def _new_signal(
     source_ids = [
         int(float(bars[index]["timestamp"]))
         for index in range(len(bars) - (3 if method in {
-            THREE_BAR_PIVOT_REVERSAL, KC_OUTER_PIVOT_REVERSAL,
+            THREE_BAR_PIVOT_REVERSAL,
+            KC_OUTER_PIVOT_REVERSAL,
+            KC_BEARISH_PULLBACK_RESUMPTION,
         } else 2), len(bars))
     ]
 
@@ -218,6 +231,49 @@ def _new_signal(
         "channel_expanding": method == KC_TWO_BAR_BREAKOUT,
         "entry_atr": float(confirmation["atr"]),
     }
+
+
+def _kc_position(row: Mapping[str, Any], price: float) -> float | None:
+    upper = _number(row, "kc_upper")
+    lower = _number(row, "kc_lower")
+    if upper is None or lower is None or upper <= lower:
+        return None
+    return (price - lower) / (upper - lower)
+
+
+def _bearish_pullback_resumption(
+    frame: pd.DataFrame,
+    bars: list[dict[str, Any]],
+    quote: float,
+) -> bool:
+    if (
+        len(bars) < 3
+        or str(frame.attrs.get("macro_trend_htf") or "").upper() != "BEARISH"
+    ):
+        return False
+    previous, pullback, trigger = bars[-3:]
+    positions = (
+        _kc_position(previous, float(previous["close"])),
+        _kc_position(pullback, float(pullback["high"])),
+        _kc_position(trigger, float(trigger["close"])),
+        _kc_position(trigger, quote),
+    )
+    if any(position is None for position in positions):
+        return False
+    previous_position, pullback_high_position, close_position, quote_position = positions
+    return (
+        previous_position < 0.65
+        and float(pullback["close"]) > float(pullback["open"])
+        and float(pullback["close"]) > float(previous["close"])
+        and 0.65 <= pullback_high_position <= 1.0
+        and float(trigger["close"]) < float(trigger["open"])
+        and float(trigger["close"]) < float(pullback["close"])
+        and 0.65 <= close_position <= 1.0
+        and 0.65 <= quote_position <= 1.0
+        and float(trigger["kc_middle"]) < float(pullback["kc_middle"])
+        and float(trigger["ma5"]) < float(pullback["ma5"])
+        and float(trigger["ma5"]) < float(trigger["ma15"])
+    )
 
 
 def evaluate_entry_method(
@@ -325,6 +381,7 @@ def evaluate_entry_method(
                     candidates.append(signal)
 
     if len(bars) >= 3 and expected_method in (None, KC_OUTER_PIVOT_REVERSAL):
+        from core.gates.master_gate_funnel import is_kc_middle_flat
         from core.services.exits.trend_lock import _closed_snapshot_fresh
 
         left, pivot, current = bars[-3:]
@@ -341,11 +398,25 @@ def evaluate_entry_method(
         )
         if fresh:
             midpoint = (float(pivot["open"]) + float(pivot["close"])) / 2
+            kc_middle_flat = is_kc_middle_flat(
+                float(current["kc_middle"]),
+                float(pivot["kc_middle"]),
+                float(pivot["atr"]),
+            )
+            macro_direction = str(
+                frame.attrs.get("macro_trend_htf")
+                or frame.attrs.get("macro_trend")
+                or ""
+            ).upper()
             for side in ("LONG", "SHORT"):
                 kc_direction_aligned = (
-                    float(current["kc_middle"]) > float(pivot["kc_middle"])
-                    if side == "LONG"
-                    else float(current["kc_middle"]) < float(pivot["kc_middle"])
+                    macro_direction == ("BULLISH" if side == "LONG" else "BEARISH")
+                    if kc_middle_flat
+                    else (
+                        float(current["kc_middle"]) > float(pivot["kc_middle"])
+                        if side == "LONG"
+                        else float(current["kc_middle"]) < float(pivot["kc_middle"])
+                    )
                 )
                 confirmed = (
                     kc_direction_aligned
@@ -370,6 +441,17 @@ def evaluate_entry_method(
 
     if len(bars) >= 2 and expected_method in (None, KC_TWO_BAR_BREAKOUT):
         first, second = bars[-2], bars[-1]
+        from core.gates.master_gate_funnel import is_kc_middle_flat
+        kc_middle_flat = is_kc_middle_flat(
+            float(second["kc_middle"]),
+            float(first["kc_middle"]),
+            float(first["atr"]),
+        )
+        macro_direction = str(
+            frame.attrs.get("macro_trend_htf")
+            or frame.attrs.get("macro_trend")
+            or ""
+        ).upper()
         for side in ("LONG", "SHORT"):
             edge = "kc_upper" if side == "LONG" else "kc_lower"
             first_open = float(first["open"])
@@ -394,9 +476,15 @@ def evaluate_entry_method(
                 float(second["ma5"]) > float(first["ma5"])
                 if side == "LONG" else float(second["ma5"]) < float(first["ma5"])
             )
+            expected_macro = "BULLISH" if side == "LONG" else "BEARISH"
             kc_direction = (
-                float(second["kc_middle"]) > float(first["kc_middle"])
-                if side == "LONG" else float(second["kc_middle"]) < float(first["kc_middle"])
+                macro_direction == expected_macro
+                if kc_middle_flat
+                else (
+                    float(second["kc_middle"]) > float(first["kc_middle"])
+                    if side == "LONG"
+                    else float(second["kc_middle"]) < float(first["kc_middle"])
+                )
             )
             second_beyond_ma5 = (
                 second_close > float(second["ma5"])
@@ -427,6 +515,54 @@ def evaluate_entry_method(
                 candidates.append(_new_signal(
                     KC_TWO_BAR_BREAKOUT, side, bars,
                 ))
+            elif (
+                not first_inside
+                and (
+                    first_open > float(first["kc_upper"])
+                    if side == "LONG"
+                    else first_open < float(first["kc_lower"])
+                )
+                and first_body_break and same_color and second_outside
+                and ma5_direction and second_beyond_ma5 and quote_beyond
+                and last_exit_timestamp is None
+            ):
+                trend_problem = missed_breakout_trend_problem(frame, side)
+                if trend_problem:
+                    logger.info(
+                        "MISSED_BREAKOUT_CONTINUATION_BLOCKED symbol=%s side=%s reason=%s",
+                        symbol, side, trend_problem,
+                    )
+                    continue
+                from core.gates.breakout_continuation_entry_gate import (
+                    BreakoutContinuationEntryGate,
+                    CONTINUATION_OUTSIDE_KC,
+                )
+
+                continuation_candidate = {
+                    "type": CONTINUATION_OUTSIDE_KC,
+                    "action": f"OPEN_{side}",
+                    "price": current_quote,
+                    "kc_upper": float(second["kc_upper"]),
+                    "kc_lower": float(second["kc_lower"]),
+                    "ma5_current": float(second["ma5"]),
+                }
+                late_chase_reason = BreakoutContinuationEntryGate.late_chase_block_reason(
+                    continuation_candidate,
+                    bars,
+                    [float(row["kc_upper"]) for row in bars],
+                    [float(row["kc_lower"]) for row in bars],
+                    tick_price=current_quote,
+                    symbol=symbol,
+                )
+                if late_chase_reason:
+                    logger.info(
+                        "MISSED_BREAKOUT_CONTINUATION_BLOCKED symbol=%s side=%s reason=%s",
+                        symbol, side, late_chase_reason,
+                    )
+                    continue
+                signal = _new_signal(KC_TWO_BAR_BREAKOUT, side, bars)
+                signal["entry_phase"] = "MISSED_BREAKOUT_CONTINUATION"
+                candidates.append(signal)
 
     if len(bars) >= 2 and expected_method in (None, KC_SINGLE_BAR_BREAKOUT):
         previous, current = bars[-2], bars[-1]
@@ -502,7 +638,6 @@ def evaluate_entry_method(
             kc_slope = float(current["kc_middle"]) - float(previous["kc_middle"])
             for side, expected_macro, aligned in (
                 ("LONG", "BULLISH", kc_slope > 0),
-                ("SHORT", "BEARISH", kc_slope < 0),
             ):
                 if (
                     macro_trend == expected_macro
@@ -519,6 +654,19 @@ def evaluate_entry_method(
                         bars,
                         last_exit_timestamp=last_exit_timestamp,
                     ))
+
+    if (
+        expected_method in (None, KC_BEARISH_PULLBACK_RESUMPTION)
+        and is_meme_breakout_symbol(symbol)
+        and _bearish_pullback_resumption(frame, bars, current_quote)
+    ):
+        exit_ms = _timestamp_ms(last_exit_timestamp)
+        if last_exit_timestamp is None or (
+            exit_ms is not None and stamps[-1] > exit_ms
+        ):
+            signal = _new_signal(KC_BEARISH_PULLBACK_RESUMPTION, "SHORT", bars)
+            signal["trigger"] = "TRIGGER_KC_BEARISH_PULLBACK_RESUMPTION"
+            candidates.append(signal)
 
     if (
         last_exit_timestamp is not None
@@ -647,6 +795,15 @@ def evaluate_entry_method(
                 allow_kc_location_override=(
                     signal["method"] == KC_DUAL_TREND_LOCATION
                 ),
+                allow_bearish_pullback_override=(
+                    signal["method"] == KC_BEARISH_PULLBACK_RESUMPTION
+                ),
+                allow_confirmed_breakout_override=(
+                    signal["method"] == KC_TWO_BAR_BREAKOUT
+                ),
+                allow_confirmed_pivot_override=(
+                    signal["method"] == KC_OUTER_PIVOT_REVERSAL
+                ),
             ).can_execute
         ]
     if not candidates:
@@ -656,6 +813,7 @@ def evaluate_entry_method(
         return None
 
     priority = (
+        KC_BEARISH_PULLBACK_RESUMPTION,
         MEME_GATE_ENTRY,
         KC_DUAL_TREND_LOCATION,
         KC_OUTER_PIVOT_REVERSAL,
@@ -688,6 +846,18 @@ def revalidate_entry_method(
     method = str(context.get("entry_method_authority") or "")
     if method not in ENTRY_METHODS:
         return False, "BLOCKED_ENTRY_METHOD_UNSUPPORTED"
+    if method == MTF_KC_STATE_MACHINE:
+        from core.services.mtf_kc_state_machine import evaluate_mtf_entry
+
+        evaluation = evaluate_mtf_entry(
+            frame,
+            context.get("frame_15m"),
+            quote=quote,
+            side=side,
+        )
+        if not evaluation.get("allowed"):
+            return False, str(evaluation.get("reason") or "BLOCKED_MTF_KC_ENTRY")
+        return True, "MTF_KC_STATE_MACHINE_ENTRY_CONFIRMED"
 
     # 🚨 多空方向一致性保護：
     # 當市場方向明確為 KC_UP（中軌向上 / 介面標頭「只評估多單」）：
@@ -713,6 +883,27 @@ def revalidate_entry_method(
         and context.get("is_flip") is True
         and context.get("trigger") == "TRIGGER_DUAL_TREND_REVERSAL"
     )
+    expected = context.get("entry_method_signal")
+    confirmed_flat_structure = False
+    if (
+        method in (KC_TWO_BAR_BREAKOUT, KC_OUTER_PIVOT_REVERSAL)
+        and isinstance(expected, Mapping)
+    ):
+        verified_signal = evaluate_entry_method(
+            frame,
+            quote=quote,
+            symbol=symbol,
+            last_exit_timestamp=last_exit_timestamp,
+            expected_method=method,
+            allow_same_bar_after_close=same_bar_flip,
+        )
+        confirmed_flat_structure = bool(
+            verified_signal is not None
+            and verified_signal["side"] == str(side).upper()
+            and verified_signal["event_id"] == expected.get("event_id")
+            and verified_signal["confirmation_bar_id"] == context.get("entry_method_bar_id")
+            and verified_signal["event_id"] == context.get("entry_method_event_id")
+        )
     if is_meme_breakout_symbol(symbol):
         from core.gates.master_gate_funnel import evaluate_meme_entry_frame
         gate = evaluate_meme_entry_frame(
@@ -721,6 +912,15 @@ def revalidate_entry_method(
             side,
             quote,
             allow_kc_location_override=method == KC_DUAL_TREND_LOCATION,
+            allow_bearish_pullback_override=(
+                method == KC_BEARISH_PULLBACK_RESUMPTION
+            ),
+            allow_confirmed_breakout_override=(
+                confirmed_flat_structure and method == KC_TWO_BAR_BREAKOUT
+            ),
+            allow_confirmed_pivot_override=(
+                confirmed_flat_structure and method == KC_OUTER_PIVOT_REVERSAL
+            ),
         )
         if not gate.can_execute:
             return False, gate.reason
@@ -736,6 +936,7 @@ def revalidate_entry_method(
                     return False, "BLOCKED_ENTRY_METHOD_MA15_EXTENSION_1_ATR"
             except (KeyError, TypeError, ValueError, OverflowError):
                 return False, "BLOCKED_ENTRY_METHOD_MACRO_DATA_INVALID"
+
     signal = evaluate_entry_method(
         frame,
         quote=quote,

@@ -1819,6 +1819,8 @@ class HoldingProtectionExitGate:
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
             'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
         ))
+        if clean_reason in _ENTRY_ONLY_CHOP_REASONS:
+            return _reject(reason=HOLDING_THROUGH_CHOP_REJECT)
         is_profit_lock = _is_profit_lock_reason(clean_reason)
         is_closed_abnormal_exit = clean_reason == 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL'
         verified_profit_lock = (

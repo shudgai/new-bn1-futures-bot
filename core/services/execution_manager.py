@@ -543,6 +543,7 @@ class ExecutionManager:
             KC_TWO_BAR_BREAKOUT,
             KC_EARLY_MIDLINE_BREAK,
             MEME_GATE_ENTRY,
+            KC_BEARISH_PULLBACK_RESUMPTION,
             KC_OUTER_PIVOT_REVERSAL,
             MA5_MA15_CROSS,
             KC_SINGLE_BAR_BREAKOUT,
@@ -568,6 +569,7 @@ class ExecutionManager:
             (only_method,) if only_method is not None else
             tuple(
                 m for m in (
+                    KC_BEARISH_PULLBACK_RESUMPTION,
                     MEME_GATE_ENTRY,
                     KC_DUAL_TREND_LOCATION,
                     KC_OUTER_PIVOT_REVERSAL,
@@ -777,6 +779,380 @@ class ExecutionManager:
         }
 
     @classmethod
+    async def _process_mtf_kc_state_machine(
+        cls,
+        *,
+        symbol: str,
+        account: Any,
+        engine_or_account: Any,
+        frame_1m: Any,
+        frame_15m: Any,
+        quote: float,
+        position: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        from core.symbol_aliases import is_meme_breakout_symbol
+        from core.services.mtf_kc_state_machine import (
+            MTF_KC_EXIT_REASON_PREFIX,
+            MTF_KC_STATE_MACHINE,
+            authorize_mtf_exit,
+            evaluate_flat_midline_exit,
+            evaluate_htf_kc_state,
+            evaluate_mtf_entry,
+            update_mtf_position_protection,
+        )
+
+        if not is_meme_breakout_symbol(symbol):
+            return None
+
+        metadata = getattr(account, "position_meta", {}).get(symbol, {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        managed_position = bool(
+            position and (
+                position.get("mtf_kc_state_machine")
+                or metadata.get("mtf_kc_state_machine")
+            )
+        )
+        htf = (
+            evaluate_htf_kc_state(frame_15m)
+            if frame_15m is not None
+            else {"valid": False, "reason": "BLOCKED_HTF_KC_FRAME_UNAVAILABLE"}
+        )
+        if not htf.get("valid"):
+            if managed_position and position is not None:
+                protection = update_mtf_position_protection(
+                    position, metadata, quote,
+                )
+                protection_reason = protection.get("reason") if protection else None
+                if protection_reason and not str(protection_reason).startswith("BLOCKED_"):
+                    if not authorize_mtf_exit(
+                        account, symbol, str(protection_reason), quote, protection,
+                    ):
+                        return {
+                            "status": "HOLD",
+                            "symbol": symbol,
+                            "reason": "BLOCKED_MTF_EXIT_AUTHORITY_PERSISTENCE",
+                            "success": False,
+                        }
+                    closed = await cls.close_position(
+                        account,
+                        symbol,
+                        quote,
+                        str(protection_reason),
+                        meta={"raw_df": frame_1m, "is_bar_closed": False},
+                    )
+                    return {
+                        "status": "EXIT_EXECUTED" if closed else "HOLD",
+                        "symbol": symbol,
+                        "reason": protection_reason,
+                        "success": bool(closed),
+                    }
+                logger.warning(
+                    "MTF_POSITION_HTF_DATA_UNAVAILABLE symbol=%s reason=%s",
+                    symbol, htf.get("reason"),
+                )
+                return {
+                    "status": "HOLD",
+                    "symbol": symbol,
+                    "reason": htf.get("reason"),
+                    "success": False,
+                }
+            if position or frame_15m is None:
+                return None
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": htf.get("reason"),
+                "success": False,
+            }
+        if position and not managed_position:
+            return None
+
+        side = str(position.get("side") or "").upper() if position else ""
+        current_bar_id = None
+        current_bar_start = None
+        if isinstance(frame_1m, pd.DataFrame) and not frame_1m.empty:
+            try:
+                current_bar_id = int(float(frame_1m.iloc[-1]["timestamp"]))
+                current_bar_timestamp = float(current_bar_id)
+                if current_bar_timestamp >= 1e11:
+                    current_bar_timestamp /= 1000.0
+                current_bar_start = int(current_bar_timestamp // 60)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                current_bar_id = None
+        if managed_position:
+            metadata["mtf_kc_state"] = htf["state"]
+            metadata["mtf_normalized_slope"] = htf["normalized_slope"]
+            metadata["mtf_kc_lower_15m"] = htf["kc_lower"]
+            metadata["mtf_kc_upper_15m"] = htf["kc_upper"]
+            position["mtf_kc_lower_15m"] = htf["kc_lower"]
+            position["mtf_kc_upper_15m"] = htf["kc_upper"]
+
+            protection = update_mtf_position_protection(position, metadata, quote)
+            exit_reason = protection.get("reason") if protection else None
+            exit_evidence = protection or {}
+            reverse_after_close = (
+                side == "LONG" and htf["state"] == "DOWNTREND"
+                or side == "SHORT" and htf["state"] == "UPTREND"
+            )
+            if exit_reason and str(exit_reason).startswith("BLOCKED_"):
+                return {
+                    "status": "HOLD",
+                    "symbol": symbol,
+                    "reason": exit_reason,
+                    "success": False,
+                }
+            if not exit_reason and htf["state"] == "FLAT":
+                flat_exit = evaluate_flat_midline_exit(frame_1m, side)
+                if flat_exit.get("allowed"):
+                    exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_MIDLINE_EXIT"
+                    exit_evidence = flat_exit
+            elif not exit_reason and reverse_after_close:
+                exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}{htf['state']}_REVERSAL_EXIT"
+                exit_evidence = htf
+
+            if not exit_reason:
+                logger.info(
+                    "[大週期狀態: %s] | [標準化斜率: %.4f] | [持倉: %s] | [決策: HOLD]",
+                    htf["state"], htf["normalized_slope"], side,
+                )
+                save_state = getattr(account, "save_state", None)
+                if callable(save_state):
+                    save_state()
+                return {"status": "HOLD", "symbol": symbol, "reason": "MTF_TREND_HOLD"}
+
+            if not authorize_mtf_exit(
+                account, symbol, str(exit_reason), quote, exit_evidence,
+            ):
+                return {
+                    "status": "HOLD",
+                    "symbol": symbol,
+                    "reason": "BLOCKED_MTF_EXIT_AUTHORITY_PERSISTENCE",
+                    "success": False,
+                }
+            closed = await cls.close_position(
+                account,
+                symbol,
+                quote,
+                str(exit_reason),
+                meta={"raw_df": frame_1m, "is_bar_closed": False},
+            )
+            if not closed:
+                return {
+                    "status": "HOLD",
+                    "symbol": symbol,
+                    "reason": exit_reason,
+                    "success": False,
+                }
+            position_opened_in_current_bar = False
+            if position and current_bar_start is not None:
+                try:
+                    opened_at = float(position.get("open_timestamp"))
+                    if opened_at >= 1e11:
+                        opened_at /= 1000.0
+                    position_opened_in_current_bar = (
+                        math.isfinite(opened_at)
+                        and int(opened_at // 60) == current_bar_start
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    position_opened_in_current_bar = False
+            logger.info(
+                "[大週期狀態: %s] | [標準化斜率: %.4f] | [平倉: %s] | [決策: CLOSE]",
+                htf["state"], htf["normalized_slope"], exit_reason,
+            )
+            if not reverse_after_close or position_opened_in_current_bar:
+                return {
+                    "status": "EXIT_EXECUTED",
+                    "symbol": symbol,
+                    "reason": exit_reason,
+                    "success": True,
+                }
+
+        preferred_side = (
+            "LONG" if htf["state"] == "UPTREND"
+            else "SHORT" if htf["state"] == "DOWNTREND"
+            else None
+        )
+        entry = evaluate_mtf_entry(
+            frame_1m, frame_15m, quote=quote, side=preferred_side,
+        )
+        decision = "OPEN" if entry.get("allowed") else str(entry.get("reason"))
+        logger.info(
+            "[大週期狀態: %s] | [標準化斜率: %.4f] | [MA5/15: %s/%s] | "
+            "[1m現價/中軌: %.8g/%s] | [最終決策: %s]",
+            htf["state"], htf["normalized_slope"],
+            entry.get("ma5", "N/A"), entry.get("ma15", "N/A"),
+            quote, entry.get("kc_middle_1m", "N/A"), decision,
+        )
+        if not entry.get("allowed"):
+            return {
+                "status": "HOLD",
+                "symbol": symbol,
+                "reason": entry.get("reason"),
+                "success": False,
+            }
+
+        if current_bar_id is None:
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "BLOCKED_MTF_ENTRY_BAR_ID_INVALID",
+                "success": False,
+            }
+        account_entry_state = getattr(account, "entry_filter_last", None)
+        if not isinstance(account_entry_state, dict):
+            account_entry_state = {}
+            account.entry_filter_last = account_entry_state
+        persisted_bars = account_entry_state.get(
+            "strict_ma3_ma15_last_trade_bar", {},
+        )
+        if not isinstance(persisted_bars, dict):
+            persisted_bars = {}
+        last_used = persisted_bars.get(symbol) or cls._last_trade_bar_time.get(symbol)
+        if last_used is not None:
+            try:
+                if int(float(last_used)) == current_bar_id:
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "ENTRY_METHOD_BAR_ALREADY_TRADED",
+                        "success": False,
+                    }
+            except (TypeError, ValueError, OverflowError):
+                return {
+                    "status": "VETO",
+                    "symbol": symbol,
+                    "reason": "BLOCKED_MTF_ENTRY_BAR_CLAIM_INVALID",
+                    "success": False,
+                }
+        account_key = cls._get_account_key(account, symbol)
+        recent_entries = [
+            stamp for stamp in cls._hourly_entry_records.get(
+                account_key, cls._hourly_entry_records.get(symbol, []),
+            )
+            if time.time() - stamp < 3600.0
+        ]
+        if len(recent_entries) >= cls.MAX_ENTRIES_PER_HOUR:
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "BLOCKED_HOURLY_ENTRY_LIMIT_EXCEEDED",
+                "success": False,
+            }
+        save_state = getattr(account, "save_state", None)
+        if not callable(save_state):
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "BLOCKED_MTF_ENTRY_CLAIM_STORE_UNAVAILABLE",
+                "success": False,
+            }
+        previous_persisted = persisted_bars.get(symbol)
+        previous_class_claim = cls._last_trade_bar_time.get(symbol)
+        persisted_bars[symbol] = current_bar_id
+        account_entry_state["strict_ma3_ma15_last_trade_bar"] = persisted_bars
+        cls._last_trade_bar_time[symbol] = current_bar_id
+        try:
+            try:
+                save_state(strict=True)
+            except TypeError:
+                save_state()
+        except Exception as exc:
+            if previous_persisted is None:
+                persisted_bars.pop(symbol, None)
+            else:
+                persisted_bars[symbol] = previous_persisted
+            if previous_class_claim is None:
+                cls._last_trade_bar_time.pop(symbol, None)
+            else:
+                cls._last_trade_bar_time[symbol] = previous_class_claim
+            logger.error(
+                "MTF_ENTRY_BAR_CLAIM_PERSIST_FAILED symbol=%s error=%s",
+                symbol, exc,
+            )
+            return {
+                "status": "VETO",
+                "symbol": symbol,
+                "reason": "BLOCKED_MTF_ENTRY_CLAIM_PERSIST_FAILED",
+                "success": False,
+            }
+
+        bar_id = current_bar_id
+        event_id = (
+            f"MTF_KC|{symbol}|{entry['side']}|{bar_id}|"
+            f"{int(float(htf['bar_timestamp']))}"
+        )
+        entry_meta = {
+            "entry_method_authority": MTF_KC_STATE_MACHINE,
+            "entry_method_signal": {
+                "method": MTF_KC_STATE_MACHINE,
+                "side": entry["side"],
+                "event_id": event_id,
+                "confirmation_bar_id": bar_id,
+                "bar_timestamp": bar_id,
+                "structure_confirmed": True,
+                "entry_phase": entry["reason"],
+            },
+            "entry_method_bar_id": bar_id,
+            "entry_method_event_id": event_id,
+            "entry_method_last_exit_timestamp": getattr(
+                account, "last_closed_at", {},
+            ).get(symbol),
+            "candidate_signal_type": f"MTF_KC_STATE_MACHINE_{entry['side']}",
+            "entry_type": MTF_KC_STATE_MACHINE,
+            "entry_pattern": "TREND",
+            "structure_confirmation": entry["reason"],
+            "intrabar_authorized": True,
+            "upstream_entry_gate_authorized": True,
+            "direction_override": True,
+            "allow_kc_internal": True,
+            "entry_mode": "WILD_SWING",
+            "no_rigid_sl": True,
+            "raw_df": frame_1m,
+            "frame_15m": frame_15m,
+            "atr": entry["ltf_atr"],
+            "mtf_kc_state_machine": True,
+            "mtf_ltf_atr": entry["ltf_atr"],
+            "mtf_kc_lower_15m": htf["kc_lower"],
+            "mtf_kc_upper_15m": htf["kc_upper"],
+            "mtf_kc_state": htf["state"],
+            "mtf_normalized_slope": htf["normalized_slope"],
+            "source": "UNIFIED_PIPELINE|MTF_KC_STATE_MACHINE",
+        }
+        opened = await cls.open_position(
+            engine_or_account, symbol, entry["side"], quote,
+            f"MTF_KC_STATE_MACHINE:{entry['reason']}", entry_meta,
+        )
+        if not opened:
+            if persisted_bars.get(symbol) == bar_id:
+                if previous_persisted is None:
+                    persisted_bars.pop(symbol, None)
+                else:
+                    persisted_bars[symbol] = previous_persisted
+            if cls._last_trade_bar_time.get(symbol) == bar_id:
+                if previous_class_claim is None:
+                    cls._last_trade_bar_time.pop(symbol, None)
+                else:
+                    cls._last_trade_bar_time[symbol] = previous_class_claim
+            try:
+                try:
+                    save_state(strict=True)
+                except TypeError:
+                    save_state()
+            except Exception as exc:
+                logger.error(
+                    "MTF_ENTRY_BAR_CLAIM_RELEASE_FAILED symbol=%s error=%s",
+                    symbol, exc,
+                )
+        return {
+            "status": "ENTRY_EXECUTED" if opened else "VETO",
+            "symbol": symbol,
+            "side": entry["side"],
+            "reason": entry["reason"] if opened else "MTF_ENTRY_FINAL_GATE_VETO",
+            "success": bool(opened),
+        }
+
+    @classmethod
     async def process_symbol_pipeline(
         cls,
         symbol: str,
@@ -846,6 +1222,17 @@ class ExecutionManager:
 
         curr_quote = float(quote if quote is not None else market_data.current_price)
         raw_df = getattr(market_data, "raw_df", None)
+        mtf_result = await cls._process_mtf_kc_state_machine(
+            symbol=symbol,
+            account=account,
+            engine_or_account=engine_or_account,
+            frame_1m=raw_df if isinstance(raw_df, pd.DataFrame) else klines_df,
+            frame_15m=frame_15m,
+            quote=curr_quote,
+            position=current_position if has_position else None,
+        )
+        if mtf_result is not None:
+            return mtf_result
         c_k = market_data.curr_k if market_data.curr_k else (raw_df.iloc[-1] if raw_df is not None and len(raw_df) >= 1 else {})
         p_k = market_data.prev_k if market_data.prev_k else (raw_df.iloc[-2] if raw_df is not None and len(raw_df) >= 2 else c_k)
         c_c = float(c_k.get("close", curr_quote))
@@ -2928,7 +3315,11 @@ class ExecutionManager:
                 _pv_cached_eval = (decision, ready, reentry_reason)
                 return _pv_cached_eval
 
-            from core.services.entry_methods import KC_OUTER_PIVOT_REVERSAL, evaluate_entry_method
+            from core.services.entry_methods import (
+                KC_OUTER_PIVOT_REVERSAL,
+                KC_TWO_BAR_BREAKOUT,
+                evaluate_entry_method,
+            )
             if evaluate_entry_method(
                 raw_df, quote=curr_quote, symbol=symbol,
                 expected_method=KC_OUTER_PIVOT_REVERSAL,
@@ -2940,6 +3331,30 @@ class ExecutionManager:
                 )
                 if pivot_result is not None:
                     return pivot_result
+            two_bar_breakout_signal = evaluate_entry_method(
+                raw_df,
+                quote=curr_quote,
+                symbol=symbol,
+                expected_method=KC_TWO_BAR_BREAKOUT,
+            )
+            if two_bar_breakout_signal is not None:
+                breakout_result = await cls._evaluate_closed_entry_methods(
+                    symbol=symbol,
+                    account=account,
+                    engine_or_account=engine_or_account,
+                    frame=raw_df,
+                    quote=curr_quote,
+                    macro_trend=macro_trend,
+                    only_method=KC_TWO_BAR_BREAKOUT,
+                )
+                if breakout_result is not None:
+                    return breakout_result
+                return {
+                    "status": "VETO",
+                    "symbol": symbol,
+                    "reason": "BLOCKED_ENTRY_TWO_BAR_BREAKOUT_AUTHORITY",
+                    "success": False,
+                }
             from core.services.entry_methods import MEME_GATE_ENTRY
             meme_final_gate_vetoed = False
             meme_signal = evaluate_entry_method(
@@ -2964,6 +3379,13 @@ class ExecutionManager:
                         logger.info(
                             "MEME_GATE_ENTRY_FINAL_VETO_FALLTHROUGH symbol=%s side=%s event=%s",
                             symbol, meme_result.get("side"), meme_result.get("event_id"),
+                        )
+                    elif two_bar_breakout_signal is not None:
+                        logger.info(
+                            "ENTRY_KC_DIRECTION_FLAT_BREAKOUT_BYPASS symbol=%s side=%s event=%s",
+                            symbol,
+                            two_bar_breakout_signal.get("side"),
+                            two_bar_breakout_signal.get("event_id"),
                         )
                     else:
                         return meme_result
@@ -3087,6 +3509,7 @@ class ExecutionManager:
                 location_only_rejection = (
                     method_result.get("status") == "VETO"
                     and method_result.get("reason") == "BLOCKED_ENTRY_METHOD_MACRO_GATE"
+                    and two_bar_breakout_signal is None
                     and bool(rejections)
                     and all(
                         rejection.get("reason")
@@ -5743,7 +6166,7 @@ class ExecutionManager:
             )
             if not macro_allowed:
                 return {"success": False, "side": target_side, "reason": macro_reason}
-        if not is_true_3pt_flip and not is_dual_trend_location:
+        if not is_dual_trend_location:
             location_veto = MasterGateFunnel.pivot_kc_location_veto(snapshot, target_side)
             if location_veto:
                 logger.info(
@@ -5751,6 +6174,7 @@ class ExecutionManager:
                     symbol, target_side, trigger, location_veto,
                 )
                 return {"success": False, "side": target_side, "reason": location_veto}
+        if not is_true_3pt_flip and not is_dual_trend_location:
             gate = (
                 MasterGateFunnel.evaluate_open_long(snapshot, is_in_cooldown=True)
                 if target_side == "LONG"
@@ -6162,6 +6586,7 @@ class ExecutionManager:
                                 "entry_method_bar_id",
                                 "entry_method_event_id",
                                 "entry_method_last_exit_timestamp",
+                                "frame_15m",
                             )
                         }
                         frame.attrs["entry_method_context"]["symbol"] = symbol
@@ -6313,7 +6738,13 @@ class ExecutionManager:
             # 建立多空方向與標頭/中軌一致性門禁
             from core.symbol_aliases import is_meme_breakout_symbol
             is_meme_symbol = is_meme_breakout_symbol(symbol)
-            if (is_meme_symbol or True) and "kc_middle" in frame.columns and len(frame) >= 2 and not pv_flip_verified_exec:
+            if (
+                entry_method_authority != "MTF_KC_STATE_MACHINE"
+                and (is_meme_symbol or True)
+                and "kc_middle" in frame.columns
+                and len(frame) >= 2
+                and not pv_flip_verified_exec
+            ):
                 eval_kc_mid = float(eval_f_row.get("kc_middle", 0.0))
                 prev_kc_mid = float(prev_eval_f_row.get("kc_middle", eval_kc_mid))
                 is_kc_up = eval_kc_mid > prev_kc_mid
@@ -6428,6 +6859,10 @@ class ExecutionManager:
                         return False
 
             if hasattr(account, "open_position"):
+                open_reject_reasons = getattr(account, "open_reject_reasons", None)
+                if isinstance(open_reject_reasons, dict):
+                    open_reject_reasons.pop(symbol, None)
+                getattr(cls, "_last_open_error", {}).pop(symbol, None)
                 opened = await account.open_position(
                     symbol=symbol,
                     side=side,
@@ -6469,7 +6904,23 @@ class ExecutionManager:
                     logger.info(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x")
                     print(f"🎉 [UNIFIED_ORDER_FILLED] {symbol} {side} @ {price} | Margin={amount_usdt:.2f}U Lev={leverage}x", flush=True)
                 else:
-                    last_err = getattr(cls, "_last_open_error", {}).get(symbol) or getattr(account, "last_error", None)
+                    account_open_rejects = getattr(account, "open_reject_reasons", None)
+                    account_open_error = (
+                        account_open_rejects.get(symbol)
+                        if isinstance(account_open_rejects, dict)
+                        else None
+                    )
+                    last_err = (
+                        account_open_error
+                        or getattr(cls, "_last_open_error", {}).get(symbol)
+                        or getattr(account, "last_error", None)
+                    )
+                    if not last_err:
+                        last_err = "ACCOUNT_REJECTED_WITHOUT_REASON"
+                        logger.error(
+                            "ACCOUNT_OPEN_REJECTED_WITHOUT_REASON symbol=%s side=%s",
+                            symbol, side,
+                        )
                     print(f"⚠️ [EXECUTION_FAILED] {symbol} {side} account.open_position returned False! reason={reason} detail={last_err}", flush=True)
                 return opened
             print(f"⚠️ [EXECUTION_FAILED] {symbol} account object does not have open_position method!", flush=True)

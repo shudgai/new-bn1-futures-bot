@@ -276,25 +276,35 @@ class UltimateExitGatekeeper:
             return False
 
         normalized_reason = str(reason or "").upper()
-        if (
-            any(token in normalized_reason for token in ("WATERFALL", "瀑布", "閃崩"))
-            and not any(token in normalized_reason for token in (
-                "ACCOUNT_", "CIRCUIT_BREAKER", "HARD_STOP", "LIQUIDATION",
-                "MARGIN_LOSS", "DATA_OUTAGE",
-            ))
-        ):
-            from core.symbol_aliases import is_meme_breakout_symbol
+        from core.services.mtf_kc_state_machine import (
+            MTF_KC_EXIT_REASON_PREFIX,
+            mtf_exit_is_authorized,
+        )
+        if normalized_reason.startswith(MTF_KC_EXIT_REASON_PREFIX):
+            return mtf_exit_is_authorized(
+                metadata,
+                reason,
+                exit_price,
+                str(position.get("side") or "").upper(),
+            )
 
-            if is_meme_breakout_symbol(symbol):
-                macro_kc_block = macro_kc_midline_exit_block_reason(
-                    position, frame, metadata,
-                )
-                if macro_kc_block is not None:
-                    logger.info(
-                        "[VETO_HOLD_%s] %s symbol=%s reason=%s",
-                        position.get("side"), macro_kc_block, symbol, reason,
-                    )
-                    return False
+        from core.services.exits.strict_true_pivot import (
+            PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,
+        )
+        if normalized_reason in PROFIT_PIVOT_REASONS:
+            if is_bar_closed is not None and is_bar_closed is not True:
+                return False
+            if meme_strategy_disaster_disabled(symbol, reason):
+                return False
+            if strategy_exit_bar_block_reason(position, metadata):
+                return False
+            pivot = profitable_true_pivot_exit(
+                {**position, "symbol": symbol},
+                frame,
+                dict(metadata or {}),
+                quote=exit_price,
+            )
+            return pivot is not None and pivot[0] == normalized_reason
 
         if not is_dual_trend_emergency_exit(reason):
             trend_block = dual_trend_exit_block_reason(position, frame, metadata)
@@ -367,15 +377,6 @@ class UltimateExitGatekeeper:
             return False
         if strategy_exit_bar_block_reason(position, metadata):
             return False
-
-        from core.services.exits.strict_true_pivot import (
-            PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,
-        )
-        if normalized_reason in PROFIT_PIVOT_REASONS:
-            pivot = profitable_true_pivot_exit(
-                {**position, "symbol": symbol}, frame, dict(metadata or {}), quote=exit_price,
-            )
-            return pivot is not None and pivot[0] == normalized_reason
 
         logger.info(
             "[VETO_HOLD_%s] UNAUTHORIZED_EXIT_REASON symbol=%s reason=%s",

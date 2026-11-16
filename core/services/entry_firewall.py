@@ -869,6 +869,7 @@ async def validate_account_entry(account, symbol, side, context):
         )
     from core.services.entry_methods import (
         ENTRY_METHODS,
+        KC_BEARISH_PULLBACK_RESUMPTION,
         KC_DUAL_TREND_LOCATION,
         KC_OUTER_PIVOT_REVERSAL,
         THREE_BAR_PIVOT_REVERSAL,
@@ -876,6 +877,7 @@ async def validate_account_entry(account, symbol, side, context):
         KC_EARLY_MIDLINE_BREAK,
         MEME_GATE_ENTRY,
         MA5_MA15_CROSS,
+        MTF_KC_STATE_MACHINE,
         POST_CLOSE_KC_REENTRY,
         revalidate_entry_method,
     )
@@ -968,7 +970,7 @@ async def validate_account_entry(account, symbol, side, context):
                     context=context,
                     symbol=symbol,
                 )
-        if not pv_bypass_meme_kc_lock:
+        if not pv_bypass_meme_kc_lock and method != MTF_KC_STATE_MACHINE:
             meme_gate = evaluate_meme_entry_frame(
                 fresh_meme_frame, symbol, side, context.get("entry_gate_quote"),
                 last_closed_at=(
@@ -977,6 +979,9 @@ async def validate_account_entry(account, symbol, side, context):
                 ),
                 macro_trend=context.get("macro_trend"),
                 allow_kc_location_override=method == KC_DUAL_TREND_LOCATION,
+                allow_bearish_pullback_override=(
+                    method == KC_BEARISH_PULLBACK_RESUMPTION
+                ),
             )
             if not meme_gate.can_execute:
                 raise ValueError("[FORBIDDEN_ENTRY] " + meme_gate.reason)
@@ -1009,13 +1014,71 @@ async def validate_account_entry(account, symbol, side, context):
         fresh_frame = fresh_meme_frame if fresh_meme_frame is not None else provider(symbol)
         if hasattr(fresh_frame, "__await__"):
             fresh_frame = await fresh_frame
+        method_quote = context.get("entry_gate_quote")
+        if method == MTF_KC_STATE_MACHINE:
+            quote_provider = getattr(account, "wait_quote_provider", None)
+            if not callable(quote_provider):
+                raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_LIVE_QUOTE_PROVIDER_REQUIRED")
+            try:
+                quote_snapshot = quote_provider(symbol)
+                method_quote = float(quote_snapshot["price"])
+                observed_at = float(quote_snapshot["observed_at"])
+                from core.config import WATCHDOG_MAX_TIMEOUT_SECONDS
+                quote_fresh = (
+                    math.isfinite(method_quote)
+                    and method_quote > 0
+                    and math.isfinite(observed_at)
+                    and 0 <= time.monotonic() - observed_at
+                    <= WATCHDOG_MAX_TIMEOUT_SECONDS
+                )
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_LIVE_QUOTE_INVALID") from exc
+            if not quote_fresh:
+                raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_LIVE_QUOTE_STALE")
+            if (
+                not isinstance(fresh_frame, pd.DataFrame)
+                or fresh_frame.empty
+                or fresh_frame.attrs.get("entry_finality_verified") is not True
+                or fresh_frame.attrs.get("timeframe_ms") != 60_000
+            ):
+                raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_FRESH_FRAME_UNVERIFIED")
+            context["entry_gate_frame"] = fresh_frame
+            context["entry_gate_quote"] = method_quote
         allowed, reason = revalidate_entry_method(
             fresh_frame, symbol=symbol, side=side,
-            quote=context.get("entry_gate_quote"), context=context,
+            quote=method_quote, context=context,
             final_submission=True,
         )
         if not allowed:
             raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_REVALIDATION: " + reason)
+        if method == MTF_KC_STATE_MACHINE:
+            from core.services.mtf_kc_state_machine import evaluate_mtf_entry
+
+            final_evaluation = evaluate_mtf_entry(
+                fresh_frame,
+                context.get("frame_15m"),
+                quote=method_quote,
+                side=side,
+            )
+            if not final_evaluation.get("allowed"):
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] MTF_KC_FINAL_REVALIDATION: "
+                    + str(final_evaluation.get("reason"))
+                )
+            logger.info(
+                "MTF_KC_PREORDER_PASS symbol=%s side=%s price=%s open=%s",
+                symbol, side, method_quote, final_evaluation["open"],
+            )
+            return {
+                "type": method,
+                "side": side,
+                "entry_mode": "WILD_SWING",
+                "entry_phase": method,
+                "confirmation_bar_id": context["entry_method_bar_id"],
+                "price": float(method_quote),
+                "entry_atr": float(final_evaluation["ltf_atr"]),
+                "mtf_evaluation": final_evaluation,
+            }
         logger.info(
             "%s_FIREWALL_PASS symbol=%s side=%s event=%s",
             firewall_authority, symbol, side, context.get("entry_method_event_id"),

@@ -270,9 +270,9 @@ def test_macro_kc_gate_derives_confirmed_5m_trend_from_closed_1m_data(
 
 @pytest.mark.parametrize(
     ("macro_reversed", "expected"),
-    [(False, False), (True, True)],
+    [(False, True), (True, True)],
 )
-def test_meme_waterfall_exit_requires_macro_kc_midline_reversal(
+def test_meme_waterfall_exit_is_not_blocked_by_macro_kc_midline(
     monkeypatch, macro_reversed, expected,
 ):
     import core.services.math_execution_gate as math_gate
