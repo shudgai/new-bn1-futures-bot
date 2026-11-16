@@ -2616,24 +2616,32 @@ def check_entry_gates(
     # ══════════════════════════════════════════════════════════════════════
     # 【Gate: StrictCrossAndKcTrendGate 前置硬檢核】
     # ══════════════════════════════════════════════════════════════════════
-    from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
     spatial_bypass = trigger_type in (
         "TRIGGER_A_KC_BREAKOUT",
         "TRIGGER_C_CONTINUATION",
         "RE_ENTRY_LONG",
         "RE_ENTRY_SHORT",
     )
-    cross_frame = live_frame if trigger_type in (
-        GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
-    ) and live_frame is not None else closed_frame
-    gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(
-        cross_frame, side, quote=quote, bypass_spatial_check=spatial_bypass,
-        allow_flat_channel=trigger_type in (
-            GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
-        ),
+    cross_trigger = trigger_type in (
+        GOLDEN_CROSS_FAST_LONG_CODE,
+        DEATH_CROSS_FAST_SHORT_CODE,
+        "TRIGGER_B_MA_CROSS",
     )
-    if not gate_ok:
-        return False, gate_reason
+    cross_frame = closed_frame
+    if cross_trigger:
+        from core.gates.strict_cross_kc_gate import StrictCrossAndKcTrendGate
+        if trigger_type in (
+            GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
+        ) and live_frame is not None:
+            cross_frame = live_frame
+        gate_ok, gate_reason = StrictCrossAndKcTrendGate.evaluate(
+            cross_frame, side, quote=quote, bypass_spatial_check=spatial_bypass,
+            allow_flat_channel=trigger_type in (
+                GOLDEN_CROSS_FAST_LONG_CODE, DEATH_CROSS_FAST_SHORT_CODE,
+            ),
+        )
+        if not gate_ok:
+            return False, gate_reason
 
     if len(closed_frame) < 12: return True, "PASSED"
     curr = closed_frame.iloc[-1]
@@ -3697,6 +3705,17 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         quote = price if price is not None else float(frame.iloc[-1].close)
         forming_bar = not bool(frame.iloc[-1].get('is_closed', True))
         closed = closed_entry_candles(frame)
+        pending = None
+        if code is None or code in KC_PENDING_CODES:
+            pending = evaluate_kc_pending_entry(
+                closed, quote,
+                code=code if code in KC_PENDING_CODES else None,
+                symbol=symbol,
+                live=frame.iloc[-1] if forming_bar else None,
+            )
+        confirmed_pending_breakout = bool(
+            pending and pending.get('action') == 'ENTER'
+        )
         # MA cross is a quote-confirmed live entry lane. Validate its complete
         # evidence before the generic meme-coin closed-bar restriction and
         # reuse that result only to admit the candidate to downstream gates.
@@ -3737,6 +3756,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         )
         if (forming_bar and is_meme_breakout_symbol(symbol)
                 and not live_swing_origin and not live_outer_pivot and live_cross is None
+                and not confirmed_pending_breakout
                 and code not in KC_PENDING_CODES
                 and code not in MEME_ENTRY_CODES
                 and code != 'TRIGGER_C_CONTINUATION'):
@@ -3830,7 +3850,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
                     return authorize(decision, quote)
 
         # ── 妖幣專屬極速破軌、延續補倉與提前埋伏入口（Meme Coin Authority）──
-        if symbol and MemeCoinGate.is_meme_coin(symbol):
+        if (symbol and MemeCoinGate.is_meme_coin(symbol)
+                and not confirmed_pending_breakout):
             meme_general_codes = frozenset((
                 'TRIGGER_C_CONTINUATION', 'TRIGGER_A_KC_BREAKOUT',
                 'KC_2BAR_CONFIRM_LONG', 'KC_2BAR_CONFIRM_SHORT',
@@ -3951,7 +3972,9 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         # The live scanner and final order firewall share this closed set of
         # entry authorities. Do not evaluate legacy, continuation, or reversal
         # candidates when no general breakout is present.
-        if code == "TRIGGER_A_KC_BREAKOUT" or (code is None and live_cross is None):
+        if (code == "TRIGGER_A_KC_BREAKOUT"
+                or (code is None and live_cross is None
+                    and not confirmed_pending_breakout)):
             if not forming_bar:
                 return reject("BLOCKED_GENERAL_BREAKOUT_REQUIRES_LIVE_THIRD_BAR")
             candidate = evaluate_three_bar_outer_breakout(
@@ -4023,7 +4046,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         # A live lower-rail breach is its own entry authority. It does not
         # inherit the separate two-closed-bar breakout confirmation rule.
-        if forming_bar and code in (None, REALTIME_RAIL_BREACH_SHORT_CODE):
+        if (forming_bar and not confirmed_pending_breakout
+                and code in (None, REALTIME_RAIL_BREACH_SHORT_CODE)):
             realtime_short = evaluate_realtime_short_rail_breach(
                 frame, quote, symbol=symbol,
             )
@@ -4065,17 +4089,6 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         is_instant_reverse = code in (
             BEARISH_INSTANT_BREAKOUT_CODE,
             BULLISH_INSTANT_BREAKOUT_CODE,
-        )
-        pending = None
-        if code is None or code in KC_PENDING_CODES:
-            pending = evaluate_kc_pending_entry(
-                closed, quote,
-                code=code if code in KC_PENDING_CODES else None,
-                symbol=symbol,
-                live=frame.iloc[-1] if forming_bar else None,
-            )
-        confirmed_pending_breakout = bool(
-            pending and pending.get('action') == 'ENTER'
         )
         post_close_diagnostics = {}
         post_close_candidate = (
@@ -4306,7 +4319,7 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
 
         # A qualified forming-bar rail break is time-sensitive. Evaluate it
         # before the generic pipeline can return a slower closed-bar candidate.
-        if live_pattern_candidate is not None:
+        if live_pattern_candidate is not None and not confirmed_pending_breakout:
             side = live_pattern_candidate['side']
             meme_impulse = pipeline.has_meme_impulse_breakout(symbol, frame, quote)
             if not meme_impulse and not entry_trend_alignment_ready(frame, side):
@@ -4349,7 +4362,8 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
             return authorize(live_pattern_candidate, quote)
 
         live_breakout = live_body_candidate
-        if (not bool(frame.iloc[-1].get('is_closed', True))
+        if (not confirmed_pending_breakout
+                and not bool(frame.iloc[-1].get('is_closed', True))
                 and code in (None, 'KC_LIVE_BODY_BREAKOUT_LONG',
                              'KC_LIVE_BODY_BREAKOUT_SHORT')):
             requested_side = (

@@ -208,7 +208,7 @@ def validate_ma5_ma15_cross_entry(
         cross = (
             last_cross is not None
             and last_cross[1] == "LONG"
-            and cross_age in (0, 1, 2)
+            and cross_age in (1, 2)
         )
         if not cross:
             # MA3/MA15 is the canonical live cross for the fast lane. Its
@@ -329,7 +329,7 @@ def validate_ma5_ma15_cross_entry(
         cross = (
             last_cross is not None
             and last_cross[1] == "SHORT"
-            and cross_age in (0, 1, 2)
+            and cross_age in (1, 2)
         )
         valid = (
             cross and ma5_curr < ma5_prev

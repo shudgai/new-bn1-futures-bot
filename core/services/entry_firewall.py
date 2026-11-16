@@ -481,7 +481,7 @@ def market_structure_gate_problem(
             else (0.10 if relaxed_continuation else 0.15)
         )
         gap_price_pct = 0.0001 if is_meme else MA_PARALLEL_GAP_PRICE_PCT
-        min_mult = 0.5 if (is_relaxed_ma_entry or is_confirmed_outer_entry) else 1.0
+        min_mult = 0.5 if is_relaxed_ma_entry else 1.0
         min_gap = (
             max(gap_atr * current_atr, gap_price_pct * current_price)
             if current_atr > 0
@@ -534,7 +534,7 @@ def market_structure_gate_problem(
                     if abs(slope) < 0.00015:
                         return veto(f"VETO_LINE_PARALLEL_OR_FLAT_{name}")
 
-        if not is_manual and not pv_verified and not is_confirmed_outer_entry and not is_relaxed_ma_entry and gap < min_gap:
+        if not is_manual and not pv_verified and not is_relaxed_ma_entry and gap < min_gap:
             return veto(
                 f"VETO_MA_TOO_CLOSE (dist: {gap:.8f} < min: {min_gap:.8f})"
             )
@@ -1039,10 +1039,12 @@ async def validate_account_entry(account, symbol, side, context):
         if hasattr(fresh_frame, "__await__"):
             fresh_frame = await fresh_frame
         method_quote = context.get("entry_gate_quote")
-        if method == MTF_KC_STATE_MACHINE:
+        if method in (KC_TWO_BAR_BREAKOUT, MTF_KC_STATE_MACHINE):
             quote_provider = getattr(account, "wait_quote_provider", None)
             if not callable(quote_provider):
-                raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_LIVE_QUOTE_PROVIDER_REQUIRED")
+                raise ValueError(
+                    f"[FORBIDDEN_ENTRY] {firewall_authority}_LIVE_QUOTE_PROVIDER_REQUIRED"
+                )
             try:
                 quote_snapshot = quote_provider(symbol)
                 method_quote = float(quote_snapshot["price"])
@@ -1056,9 +1058,15 @@ async def validate_account_entry(account, symbol, side, context):
                     <= WATCHDOG_MAX_TIMEOUT_SECONDS
                 )
             except (KeyError, TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_LIVE_QUOTE_INVALID") from exc
+                raise ValueError(
+                    f"[FORBIDDEN_ENTRY] {firewall_authority}_LIVE_QUOTE_INVALID"
+                ) from exc
             if not quote_fresh:
-                raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_LIVE_QUOTE_STALE")
+                raise ValueError(
+                    f"[FORBIDDEN_ENTRY] {firewall_authority}_LIVE_QUOTE_STALE"
+                )
+            context["entry_gate_quote"] = method_quote
+        if method == MTF_KC_STATE_MACHINE:
             if (
                 not isinstance(fresh_frame, pd.DataFrame)
                 or fresh_frame.empty
@@ -1067,7 +1075,6 @@ async def validate_account_entry(account, symbol, side, context):
             ):
                 raise ValueError("[FORBIDDEN_ENTRY] MTF_KC_FRESH_FRAME_UNVERIFIED")
             context["entry_gate_frame"] = fresh_frame
-            context["entry_gate_quote"] = method_quote
         allowed, reason = revalidate_entry_method(
             fresh_frame, symbol=symbol, side=side,
             quote=method_quote, context=context,
@@ -1075,6 +1082,23 @@ async def validate_account_entry(account, symbol, side, context):
         )
         if not allowed:
             raise ValueError(f"[FORBIDDEN_ENTRY] {firewall_authority}_REVALIDATION: " + reason)
+        if method == KC_TWO_BAR_BREAKOUT:
+            signal_code = str(context.get("entry_signal_code") or "")
+            if signal_code != f"KC_2BAR_CONFIRM_{side}":
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] KC_TWO_BAR_BREAKOUT_SIGNAL_SIDE_MISMATCH"
+                )
+            final_decision = evaluate_entry_contract(
+                fresh_frame,
+                price=method_quote,
+                code=signal_code,
+                account=account,
+                symbol=symbol,
+            )
+            if final_decision is None or final_decision.get("side") != side:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] KC_TWO_BAR_BREAKOUT_LATEST_MARKET_REVALIDATION_FAILED"
+                )
         if method == MTF_KC_STATE_MACHINE:
             from core.services.mtf_kc_state_machine import evaluate_mtf_entry
 
@@ -1112,7 +1136,12 @@ async def validate_account_entry(account, symbol, side, context):
             "type": method, "side": side,
             "entry_mode": "WILD_SWING", "entry_phase": method,
             "confirmation_bar_id": context["entry_method_bar_id"],
-            "price": float(context["entry_gate_quote"]),
+            "price": float(method_quote),
+            **(
+                {"pending_signal_id": final_decision["pending_signal_id"]}
+                if method == KC_TWO_BAR_BREAKOUT
+                else {}
+            ),
         }
 
     def finite_bar_id(value):

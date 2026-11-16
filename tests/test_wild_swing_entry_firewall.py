@@ -121,6 +121,8 @@ def _firewall_cross_frame():
     frame.loc[frame.index[-1], "kc_middle"] = 99.9
     frame["kc_upper"] = 102.0
     frame["kc_lower"] = 98.0
+    frame.loc[frame.index[-1], "ma5"] = 99.7
+    frame.loc[frame.index[-1], "ma15"] = 100.0
     return frame
 
 

@@ -42,9 +42,11 @@ def _long_cross_frame(cross_age):
 
 def _short_cross_frame():
     rows = []
-    for index in range(4):
+    for index in range(5):
         ma15 = 100.0 - index * 0.01
         ma5 = ma15 + 0.2 if index < 3 else ma15 - 0.05
+        if index == 4:
+            ma5 = ma15 - 0.06
         rows.append({
             "timestamp": (index + 1) * 60_000,
             "is_closed": True,
@@ -169,8 +171,9 @@ def test_short_cross_rejects_ma15_bias_over_half_atr():
 
 def test_short_cross_allows_exact_half_atr_ma15_bias():
     frame = _short_cross_frame()
+    ma15 = float(frame.iloc[-1]["ma15"])
     allowed, reason, details = validate_ma5_ma15_cross_entry(
-        frame, "SHORT", price=97.97,
+        frame, "SHORT", price=ma15 - 2.0,
     )
 
     assert allowed, reason
@@ -183,7 +186,7 @@ def test_short_cross_allows_exact_half_atr_ma15_bias():
         (_aligned_market_structure_frame(0.14), "VETO_MA_TOO_CLOSE"),
         (
             _aligned_market_structure_frame(falling_ma5=True),
-            "VETO_LINE_PARALLEL_OR_FLAT_MA5",
+            "VETO_LONG_MA_CONDITION_NOT_MET",
         ),
     ],
 )

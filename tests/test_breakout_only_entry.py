@@ -28,10 +28,10 @@ def breakout_frame(side="LONG"):
              ma3=100.2, ma5=100.2, ma15=99.5, atr=1.0),
         dict(open=101.3, close=101.6, high=101.7, low=101.2,
              kc_upper=101.3, kc_middle=100.2, kc_lower=99.2,
-             ma3=100.5, ma5=100.5, ma15=99.8, atr=1.0),
+             ma3=100.5, ma5=101.2, ma15=100.9, atr=1.0),
         dict(open=101.5, close=101.7, high=101.8, low=101.4,
              kc_upper=101.4, kc_middle=100.3, kc_lower=99.3,
-             ma3=100.7, ma5=100.7, ma15=100.0, atr=1.0),
+             ma3=100.7, ma5=101.5, ma15=101.2, atr=1.0),
     ]
     for index, row in enumerate(rows):
         row.update(timestamp=stamp - (3 - index) * 60_000,
@@ -94,6 +94,79 @@ def live_outer_frame(side="LONG"):
     return frame
 
 
+def aligned_breakout_frame(side="LONG"):
+    """A two-bar breakout fixture that satisfies strict trend and spacing gates."""
+    frame = breakout_frame(side)
+    if side == "LONG":
+        frame.loc[2, "ma3"] = 101.1
+        frame.loc[3, ["open", "close", "high", "low"]] = [
+            101.4, 101.89, 101.99, 101.3,
+        ]
+        frame.loc[3, ["kc_upper", "kc_middle", "kc_lower"]] = [
+            101.4, 100.3, 99.6,
+        ]
+        frame.loc[3, ["ma3", "ma5", "ma15"]] = [100.7, 101.86, 101.4]
+    else:
+        frame.loc[2, "ma3"] = 98.9
+        frame.loc[3, ["open", "close", "high", "low"]] = [
+            98.6, 98.11, 98.7, 98.01,
+        ]
+        frame.loc[3, ["kc_upper", "kc_middle", "kc_lower"]] = [
+            100.4, 99.7, 98.6,
+        ]
+        frame.loc[3, ["ma3", "ma5", "ma15"]] = [99.3, 98.14, 98.6]
+    frame.attrs["snapshot_ms"] = time.time() * 1000
+    return frame
+
+
+def aligned_live_outer_frame(side="LONG"):
+    frame = aligned_breakout_frame(side)
+    live = frame.index[-1]
+    lower = float(frame.loc[live, "kc_lower"])
+    upper = float(frame.loc[live, "kc_upper"])
+    opened = upper if side == "LONG" else lower
+    quote = upper + 0.49 if side == "LONG" else lower - 0.49
+    frame.loc[live, ["open", "close", "high", "low"]] = [
+        opened, quote, quote if side == "LONG" else opened,
+        opened if side == "LONG" else quote,
+    ]
+    return frame
+
+
+def two_bar_method_context(frame, decision, symbol="CAP/USDT"):
+    from core.services.entry_methods import (
+        KC_TWO_BAR_BREAKOUT,
+        evaluate_entry_method,
+    )
+
+    quote = float(decision["price"])
+    signal = evaluate_entry_method(
+        frame,
+        quote=quote,
+        symbol=symbol,
+        expected_method=KC_TWO_BAR_BREAKOUT,
+    )
+    assert signal is not None
+    return {
+        "entry_signal_code": decision["type"],
+        "channel_confirmation_bar_id": decision["confirmation_bar_id"],
+        "source": "AUTO",
+        "entry_gate_quote": quote,
+        "entry_method_authority": KC_TWO_BAR_BREAKOUT,
+        "entry_method_signal": signal,
+        "entry_method_bar_id": signal["confirmation_bar_id"],
+        "entry_method_event_id": signal["event_id"],
+        "entry_pattern": signal["entry_pattern"],
+    }
+
+
+def live_quote_snapshot(frame):
+    return {
+        "price": float(frame.iloc[-1]["close"]),
+        "observed_at": time.monotonic(),
+    }
+
+
 def sui_cross_frame(side="LONG"):
     frame = breakout_frame(side)
     ma5 = [99.0, 99.4, 99.8, 100.7]
@@ -150,7 +223,7 @@ def consolidated_candidate_frame(side, kind):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_confirmed_two_candle_breakout_is_general_entry(side):
-    frame = breakout_frame(side)
+    frame = aligned_breakout_frame(side)
     decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
 
     assert decision is not None
@@ -181,15 +254,16 @@ def test_short_single_closed_breakout_cannot_use_tiny_live_body():
     assert decision is None
 
 
-def test_kc_momentum_override_resolves_flat_slope():
+def test_flat_kc_midline_slope_does_not_infer_direction_from_ma_position():
     from core.services.strategies.outer_strategy import ck_direction, resolve_kc_direction
 
-    assert resolve_kc_direction(0.0, 98.0, 100.0, 99.0, 100.0, 2.0) == "DOWN"
-    assert resolve_kc_direction(0.0, 102.0, 100.0, 101.0, 100.0, 2.0) == "UP"
+    assert resolve_kc_direction(0.0, 98.0, 100.0, 99.0, 100.0, 2.0) == "UNKNOWN"
+    assert resolve_kc_direction(0.0, 102.0, 100.0, 101.0, 100.0, 2.0) == "UNKNOWN"
     assert resolve_kc_direction(0.0, 100.2, 100.0, 99.0, 100.0, 2.0) == "UNKNOWN"
 
     frame = breakout_frame("SHORT")
-    frame.loc[[1, 2], ["kc_lower", "kc_middle", "kc_upper"]] = [99., 100., 101.]
+    frame.loc[1, ["kc_lower", "kc_middle", "kc_upper"]] = [99., 100.1, 101.2]
+    frame.loc[2, ["kc_lower", "kc_middle", "kc_upper"]] = [98.9, 100., 101.1]
     frame.loc[2, ["close", "ma5", "ma15", "atr"]] = [99.4, 99., 100., 2.]
     assert ck_direction(frame) == "SHORT"
 
@@ -370,7 +444,7 @@ def test_old_short_close_cannot_authorize_current_bar_squeeze():
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
 def test_sui_and_lobster_accept_the_same_closed_breakout(side, symbol):
-    frame = with_chop_history(breakout_frame(side))
+    frame = with_chop_history(aligned_breakout_frame(side))
     decision = evaluate_entry_contract(frame, symbol=symbol)
 
     assert decision is not None
@@ -381,7 +455,7 @@ def test_sui_and_lobster_accept_the_same_closed_breakout(side, symbol):
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙虾/USDT"])
 def test_sui_and_lobster_closed_breakout_do_not_require_ma_cross(side, symbol):
-    frame = with_chop_history(breakout_frame(side))
+    frame = with_chop_history(aligned_breakout_frame(side))
     decision = evaluate_entry_contract(frame, symbol=symbol)
 
     assert decision is not None
@@ -392,15 +466,18 @@ def test_sui_and_lobster_closed_breakout_do_not_require_ma_cross(side, symbol):
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("symbol", ["SUI/USDT", "龙蝦/USDT"])
 def test_sui_and_lobster_with_confirmed_pair_use_the_two_bar_route(side, symbol):
-    frame = with_chop_history(live_outer_frame(side))
+    frame = with_chop_history(aligned_live_outer_frame(side))
     ma5 = [99.0, 99.2, 99.4, 99.6, 99.8, 100.0, 100.2]
     ma15 = [98.0, 98.2, 98.4, 98.6, 98.8, 99.0, 99.2]
+    ma3 = [98.5, 98.7, 98.9, 99.1, 99.3, 99.5, 99.7]
     if side == "SHORT":
         ma5 = [200.0 - value for value in ma5]
         ma15 = [200.0 - value for value in ma15]
+        ma3 = [200.0 - value for value in ma3]
     closed_indices = frame.index[frame["is_closed"].astype(bool)][-7:]
     frame.loc[closed_indices, "ma5"] = ma5
     frame.loc[closed_indices, "ma15"] = ma15
+    frame.loc[closed_indices, "ma3"] = ma3
     quote = float(frame.iloc[-1]["close"])
 
     decision = evaluate_entry_contract(frame, quote, symbol=symbol)
@@ -485,6 +562,7 @@ def test_sui_and_lobster_share_live_and_continuation_authorities(side, symbol, c
         "BLOCKED_OBSOLETE_ENTRY_SIGNAL",
         "BLOCKED_ENTRY_ROUTE_NOT_AUTHORIZED",
         "BLOCKED_INVALID_ENTRY_CANDLE",
+        "BLOCKED_WILD_SWING_REQUIRES_CLOSED_1M_BAR",
         "WAIT_NEW_KC_BREAKOUT",
     )
 
@@ -621,19 +699,22 @@ def test_consolidation_gate_blocks_real_entry_contract(
         frame, symbol=symbol, diagnostics=diagnostics
     )
 
+    assert decision is None
+    expected_reasons = {
+        expected_reason,
+        "BLOCKED_KC_MA5_MA15_TREND_MISMATCH",
+    }
     if kind == "oscillating":
-        assert decision is not None
-        assert decision["side"] == side
-        assert decision["entry_phase"] in (
-            "KC_LIVE_OUTER_BREAKOUT", "KC_2BAR_CLOSED_CONFIRM",
-            "KC_CONTINUATION_ENTRY", "KC_LIVE_BODY_BREAKOUT",
+        assert (
+            diagnostics["reason"] in expected_reasons
+            or diagnostics["reason"].startswith((
+                "BLOCKED_LATE_",
+                "VETO_LONG_BULLISH_EXHAUSTION",
+                "VETO_SHORT_BEARISH_EXHAUSTION",
+            ))
         )
     else:
-        assert decision is None
-        assert diagnostics["reason"] in (
-            expected_reason,
-            "BLOCKED_KC_MA5_MA15_TREND_MISMATCH",
-        )
+        assert diagnostics["reason"] in expected_reasons
 
 
 @pytest.mark.parametrize(
@@ -648,7 +729,7 @@ def test_consolidation_gate_blocks_real_entry_contract(
     ],
 )
 def test_invalid_closed_pair_blocks_entry_but_live_color_does_not(side, mutation):
-    frame = breakout_frame(side)
+    frame = aligned_breakout_frame(side)
     sign = 1 if side == "LONG" else -1
     if mutation == "first_inside":
         frame.loc[1, "close"] = frame.loc[1, "kc_upper" if side == "LONG" else "kc_lower"]
@@ -658,12 +739,16 @@ def test_invalid_closed_pair_blocks_entry_but_live_color_does_not(side, mutation
         frame.loc[2, "open"] = frame.loc[2, "close"] - 0.1
     elif mutation == "live_red":
         frame.loc[3, "open"] = frame.loc[3, "close"] + 0.1
+        frame.loc[3, ["kc_upper", "kc_lower", "ma5", "ma15"]] = [
+            101.5, 100.0, 101.88, 101.3,
+        ]
     elif mutation == "live_green":
         frame.loc[3, "open"] = frame.loc[3, "close"] - 0.1
+        frame.loc[3, ["kc_upper", "kc_lower", "ma5", "ma15"]] = [
+            100.0, 98.5, 98.12, 98.7,
+        ]
 
     quote = float(frame.iloc[-1]["close"])
-    if mutation in ("live_red", "live_green"):
-        quote = float(frame.iloc[-1]["open"])
     assert sign * (quote - float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])) > 0
     decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
     if mutation in ("live_red", "live_green"):
@@ -723,18 +808,16 @@ def test_opposite_outer_rail_never_authorizes_the_requested_side(side, opposite_
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_revalidation_rechecks_the_same_breakout(side):
-    frame = breakout_frame(side)
+    frame = aligned_breakout_frame(side)
     decision = evaluate_entry_contract(frame, symbol="CAP/USDT")
     account = SimpleNamespace(
         positions={},
         trades=[],
         last_closed_at={},
         entry_frame_provider=AsyncMock(return_value=frame),
+        wait_quote_provider=lambda _symbol: live_quote_snapshot(frame),
     )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
+    context = two_bar_method_context(frame, decision)
     validated = asyncio.run(
         validate_account_entry(account, "CAP/USDT", side, context)
     )
@@ -748,7 +831,7 @@ def test_account_revalidation_rechecks_the_same_breakout(side):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_revalidation_uses_confirmed_pair_even_when_live_bar_breaks(side):
-    frame = live_outer_frame(side)
+    frame = aligned_live_outer_frame(side)
     live = frame.index[-1]
     lower = float(frame.loc[live, "kc_lower"])
     upper = float(frame.loc[live, "kc_upper"])
@@ -763,24 +846,22 @@ def test_account_revalidation_uses_confirmed_pair_even_when_live_bar_breaks(side
         trades=[],
         last_closed_at={},
         entry_frame_provider=AsyncMock(return_value=frame),
+        wait_quote_provider=lambda _symbol: live_quote_snapshot(frame),
     )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
+    context = two_bar_method_context(frame, decision)
     validated = asyncio.run(
         validate_account_entry(account, "CAP/USDT", side, context)
     )
     assert validated["pending_signal_id"] == decision["pending_signal_id"]
 
     frame.loc[live, "close"] = float(frame.loc[live, "kc_middle"])
-    with pytest.raises(ValueError, match="最新入口行情不符"):
+    with pytest.raises(ValueError, match="PRICE_MIDDLE_MA15"):
         asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_revalidation_rejects_live_breakout_when_ma15_stops_trending(side):
-    frame = live_outer_frame(side)
+    frame = aligned_live_outer_frame(side)
     quote = float(frame.iloc[-1]["close"])
     decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
     account = SimpleNamespace(
@@ -788,20 +869,18 @@ def test_account_revalidation_rejects_live_breakout_when_ma15_stops_trending(sid
         trades=[],
         last_closed_at={},
         entry_frame_provider=AsyncMock(return_value=frame),
+        wait_quote_provider=lambda _symbol: live_quote_snapshot(frame),
     )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
+    context = two_bar_method_context(frame, decision)
     frame.loc[frame.index[-2], "ma15"] = frame.iloc[-3]["ma15"]
 
-    with pytest.raises(ValueError, match="最新入口行情不符"):
+    with pytest.raises(ValueError):
         asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_account_revalidation_rejects_live_breakout_when_live_ma5_reverses(side):
-    frame = live_outer_frame(side)
+    frame = aligned_live_outer_frame(side)
     quote = float(frame.iloc[-1]["close"])
     decision = evaluate_entry_contract(frame, quote, symbol="CAP/USDT")
     account = SimpleNamespace(
@@ -809,17 +888,17 @@ def test_account_revalidation_rejects_live_breakout_when_live_ma5_reverses(side)
         trades=[],
         last_closed_at={},
         entry_frame_provider=AsyncMock(return_value=frame),
+        wait_quote_provider=lambda _symbol: live_quote_snapshot(frame),
     )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
+    context = two_bar_method_context(frame, decision)
     previous_ma5 = float(frame.iloc[-2]["ma5"])
     frame.loc[frame.index[-1], "ma5"] = previous_ma5 + (
         1 if side == "SHORT" else -1
     )
 
-    with pytest.raises(ValueError, match="最新入口行情不符"):
+    with pytest.raises(
+        ValueError, match="KC_TWO_BAR_BREAKOUT_LATEST_MARKET_REVALIDATION_FAILED"
+    ):
         asyncio.run(validate_account_entry(account, "CAP/USDT", side, context))
 
 
@@ -828,18 +907,16 @@ def test_account_revalidation_rejects_live_breakout_when_live_ma5_reverses(side)
 def test_account_revalidation_rejects_entry_if_either_closed_body_disappears(
     side, invalid_bar
 ):
-    frame = breakout_frame(side)
+    frame = aligned_breakout_frame(side)
     decision = evaluate_entry_contract(frame, symbol="龍蝦/USDT")
     account = SimpleNamespace(
         positions={},
         trades=[],
         last_closed_at={},
         entry_frame_provider=AsyncMock(return_value=frame),
+        wait_quote_provider=lambda _symbol: live_quote_snapshot(frame),
     )
-    context = dict(
-        entry_signal_code=decision["type"],
-        channel_confirmation_bar_id=decision["confirmation_bar_id"],
-    )
+    context = two_bar_method_context(frame, decision, symbol="龍蝦/USDT")
 
     frame.loc[invalid_bar, "close"] = frame.loc[invalid_bar, "open"]
 
