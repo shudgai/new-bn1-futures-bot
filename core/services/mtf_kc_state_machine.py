@@ -306,7 +306,7 @@ def evaluate_htf_kc_state(frame_15m: Any) -> dict[str, Any]:
     data = _valid_live_frame(frame_15m, 900_000.0)
     if data is None:
         return {"valid": False, "reason": "BLOCKED_HTF_KC_LIVE_DATA_INVALID"}
-    _closed, current = data
+    closed, current = data
     previous = frame_15m.iloc[-2]
     live_ohlc = tuple(_number(current, key) for key in ("open", "high", "low", "close"))
     middle_current = _number(current, "kc_middle")
@@ -330,9 +330,34 @@ def evaluate_htf_kc_state(frame_15m: Any) -> dict[str, Any]:
         else "DOWNTREND" if normalized_slope < -SLOPE_THRESHOLD
         else "FLAT"
     )
+    closed_midline_direction = None
+    closed_middle = None
+    previous_closed_middle = None
+    if len(closed) >= 2:
+        closed_middle = _number(closed.iloc[-1], "kc_middle")
+        previous_closed_middle = _number(closed.iloc[-2], "kc_middle")
+        if (
+            closed_middle is not None
+            and previous_closed_middle is not None
+            and closed_middle > 0
+            and previous_closed_middle > 0
+        ):
+            if math.isclose(
+                closed_middle, previous_closed_middle, rel_tol=1e-12, abs_tol=0,
+            ):
+                closed_midline_direction = "FLAT"
+            else:
+                closed_midline_direction = (
+                    "UPTREND"
+                    if closed_middle > previous_closed_middle
+                    else "DOWNTREND"
+                )
     return {
         "valid": True,
         "state": state,
+        "closed_midline_direction": closed_midline_direction,
+        "closed_kc_middle": closed_middle,
+        "previous_closed_kc_middle": previous_closed_middle,
         "normalized_slope": normalized_slope,
         "kc_middle": middle_current,
         "kc_upper": upper,

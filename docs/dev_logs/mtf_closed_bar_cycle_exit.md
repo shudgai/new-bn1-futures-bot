@@ -8,3 +8,9 @@
 - **Focused verification**: `pytest -q tests/test_mtf_kc_state_machine.py tests/test_math_execution_gate.py` — 54 passed. Python compilation and `git diff --check` passed.
 - **Broader verification**: An additional entry/firewall and KC breakout selection completed with 213 passed and 30 failed. Failures are in `tests/test_strict_entry_contract.py` and `tests/test_kc_bb_squeeze_breakout.py`; these assertions were not changed and are not represented as passing.
 - **Runtime verification**: Restarted the user-level `binance-8006.service`. `/api/status` reports the service running in paper mode for 龙虾/USDT and 1000PEPE/USDT; the existing 龙虾 SHORT and 1000PEPE LONG paper positions remained present. No live orders were submitted.
+
+## 2026-11-16 — Hold through MTF pullbacks
+
+- **Change**: MTF position exits now use the last two completed 15m KC midlines to determine cycle direction. An in-progress 15m pullback or live slope classified as FLAT/DOWNTREND cannot close a LONG while the completed midline remains rising (and vice versa for SHORT). A continuing trend cancels any stale pending cycle-exit confirmation; missing completed direction fails closed and cannot confirm an old cycle exit.
+- **Regression coverage**: Added LONG/SHORT tests for live pullbacks against the completed trend and pending-exit cancellation, plus invalid-HTF pending-exit retention. Initialized the post-close reversal flag for the new direction path.
+- **Verification**: `pytest -q tests/test_mtf_kc_state_machine.py tests/test_math_execution_gate.py tests/test_short_exit_and_direction_valve.py` — 71 passed. Python compilation and `git diff --check` passed.

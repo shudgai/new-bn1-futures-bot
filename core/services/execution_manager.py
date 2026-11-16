@@ -800,6 +800,7 @@ class ExecutionManager:
             evaluate_mtf_exit_confirmation,
             evaluate_mtf_entry,
             is_mtf_managed_position,
+            mtf_exit_reason_allowed,
             update_mtf_position_protection,
         )
 
@@ -878,6 +879,21 @@ class ExecutionManager:
                         "status": "HOLD",
                         "symbol": symbol,
                         "reason": protection_reason,
+                        "success": False,
+                    }
+                if (
+                    not protection_reason
+                    or not mtf_exit_reason_allowed(protection_reason)
+                    or str(protection_reason).startswith(MTF_KC_EXIT_REASON_PREFIX)
+                ):
+                    logger.warning(
+                        "MTF_POSITION_HTF_DATA_UNAVAILABLE symbol=%s reason=%s",
+                        symbol, htf.get("reason"),
+                    )
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": htf.get("reason"),
                         "success": False,
                     }
                 exit_decision = evaluate_mtf_exit_confirmation(
@@ -974,10 +990,7 @@ class ExecutionManager:
             protection = update_mtf_position_protection(position, metadata, quote)
             exit_reason = protection.get("reason") if protection else None
             exit_evidence = protection or {}
-            reverse_after_close = (
-                side == "LONG" and htf["state"] == "DOWNTREND"
-                or side == "SHORT" and htf["state"] == "UPTREND"
-            )
+            reverse_after_close = False
             if exit_reason and str(exit_reason).startswith("BLOCKED_"):
                 return {
                     "status": "HOLD",
@@ -985,12 +998,85 @@ class ExecutionManager:
                     "reason": exit_reason,
                     "success": False,
                 }
-            if not exit_reason and htf["state"] == "FLAT":
-                exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_CYCLE_END_EXIT"
-                exit_evidence = htf
-            elif not exit_reason and reverse_after_close:
-                exit_reason = f"{MTF_KC_EXIT_REASON_PREFIX}{htf['state']}_REVERSAL_EXIT"
-                exit_evidence = htf
+            if not exit_reason:
+                closed_direction = htf.get("closed_midline_direction")
+                if closed_direction in ("UPTREND", "DOWNTREND"):
+                    position_trend = (
+                        side == "LONG" and closed_direction == "UPTREND"
+                        or side == "SHORT" and closed_direction == "DOWNTREND"
+                    )
+                    if position_trend:
+                        pending_exit = metadata.pop(
+                            "mtf_pending_closed_bar_exit", None,
+                        )
+                        if (
+                            pending_exit is not None
+                            and not persist_exit_confirmation()
+                        ):
+                            metadata["mtf_pending_closed_bar_exit"] = pending_exit
+                            return {
+                                "status": "HOLD",
+                                "symbol": symbol,
+                                "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_PERSISTENCE",
+                                "success": False,
+                            }
+                        return {
+                            "status": "HOLD",
+                            "symbol": symbol,
+                            "reason": "MTF_KC_CYCLE_CONTINUES",
+                            "success": False,
+                        }
+                    exit_reason = (
+                        f"{MTF_KC_EXIT_REASON_PREFIX}"
+                        f"{closed_direction}_REVERSAL_EXIT"
+                    )
+                    exit_evidence = htf
+                elif closed_direction == "FLAT":
+                    exit_reason = (
+                        f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_CYCLE_END_EXIT"
+                    )
+                    exit_evidence = htf
+                elif "closed_midline_direction" in htf:
+                    pending_exit = metadata.pop(
+                        "mtf_pending_closed_bar_exit", None,
+                    )
+                    if (
+                        pending_exit is not None
+                        and not persist_exit_confirmation()
+                    ):
+                        metadata["mtf_pending_closed_bar_exit"] = pending_exit
+                        return {
+                            "status": "HOLD",
+                            "symbol": symbol,
+                            "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_PERSISTENCE",
+                            "success": False,
+                        }
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_MTF_CLOSED_MIDLINE_DIRECTION_INVALID",
+                        "success": False,
+                    }
+                else:
+                    reverse_after_close = (
+                        side == "LONG" and htf["state"] == "DOWNTREND"
+                        or side == "SHORT" and htf["state"] == "UPTREND"
+                    )
+                    if htf["state"] == "FLAT":
+                        exit_reason = (
+                            f"{MTF_KC_EXIT_REASON_PREFIX}FLAT_CYCLE_END_EXIT"
+                        )
+                        exit_evidence = htf
+                    elif reverse_after_close:
+                        exit_reason = (
+                            f"{MTF_KC_EXIT_REASON_PREFIX}"
+                            f"{htf['state']}_REVERSAL_EXIT"
+                        )
+                        exit_evidence = htf
+                reverse_after_close = reverse_after_close or (
+                    bool(exit_reason)
+                    and str(exit_reason).endswith("_REVERSAL_EXIT")
+                )
 
             exit_decision = evaluate_mtf_exit_confirmation(
                 frame_1m,
