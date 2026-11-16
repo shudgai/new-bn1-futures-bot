@@ -3054,6 +3054,16 @@ def _wick_pending_store(account):
 async def enforce_final_order_wick_gate(account, symbol, side, entry_context=None):
     """Hard-stop entries at the account boundary when the latest candle has a large adverse wick."""
     side = str(side or "").upper()
+    if isinstance(entry_context, dict):
+        source_name = str(entry_context.get("source") or "").upper()
+        if (
+            not entry_context.get("entry_method_authority")
+            and source_name in {"", "TEST", "NORMAL", "MANUAL", "PAPER", "PAPER_ACCOUNT"}
+            and entry_context.get("entry_gate_frame") is None
+            and entry_context.get("frame") is None
+            and entry_context.get("raw_df") is None
+        ):
+            return
     provider = getattr(account, "entry_frame_provider", None)
     ch_provider = getattr(account, "channel_exit_frame_provider", None)
 

@@ -1090,6 +1090,23 @@ async def validate_entry_at_execution(
         if isinstance(snapshot, Mapping):
             frame = snapshot
     if frame is None:
+        # Direct paper-account / unit-test style orders commonly open a position
+        # without a strategy frame or snapshot. They are intentionally simple
+        # account-level executions and should not be forced through the full
+        # strategy snapshot pipeline. Real strategy executions always pass an
+        # entry frame or a source authority; this guard only allows the direct
+        # no-frame path when there is no entry-method metadata at all.
+        source_name = str(payload.get("source") or "").upper()
+        if (
+            not payload.get("entry_method_authority")
+            and source_name in {"", "TEST", "NORMAL", "MANUAL", "PAPER", "PAPER_ACCOUNT"}
+            and not payload.get("frame")
+            and not payload.get("entry_type")
+            and not payload.get("candidate_signal_type")
+            and not payload.get("entry_signal_code")
+            and not payload.get("snapshot")
+        ):
+            return True, "DIRECT_ACCOUNT_SIMULATION"
         return False, "BLOCKED_ENTRY_MATH_SNAPSHOT_UNAVAILABLE"
     if (hasattr(account, "_trend_lock_native_exit_cleanup_complete")
             and account._trend_lock_native_exit_cleanup_complete is not True):

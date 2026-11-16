@@ -232,12 +232,20 @@ def evaluate_mtf_entry(
 
         early_breakout = False
         if htf["state"] == "FLAT":
-            tolerance = PREVIOUS_MIDLINE_TOLERANCE_ATR * previous_atr
-            prior_near_or_beyond = (
-                previous_close <= previous_middle + tolerance
-                if is_long else previous_close >= previous_middle - tolerance
-            )
-            early_breakout = prior_near_or_beyond
+            # FLAT 期間若 1m 已經完成同向破中軌 + MA5/MA15 轉強，
+            # 立即允許進場，避免等待大週期完全轉趨勢才開單，
+            # 導致進場延後到波段尾端。
+            midline_tolerance = 0.25 * previous_atr
+            if is_long:
+                price_broke_midline = quote_value > middle and previous_close <= previous_middle + midline_tolerance
+                ma_breakout = ma5_current > ma15_current and ma5_current > ma5_previous
+                candle_bullish = quote_value > open_price
+                early_breakout = price_broke_midline and ma_breakout and candle_bullish
+            else:
+                price_broke_midline = quote_value < middle and previous_close >= previous_middle - midline_tolerance
+                ma_breakout = ma5_current < ma15_current and ma5_current < ma5_previous
+                candle_bearish = quote_value < open_price
+                early_breakout = price_broke_midline and ma_breakout and candle_bearish
             if not early_breakout:
                 continue
         elif htf["state"] != expected_state:

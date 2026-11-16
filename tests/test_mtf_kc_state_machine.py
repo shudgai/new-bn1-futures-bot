@@ -155,7 +155,7 @@ def test_flat_state_allows_only_near_midline_early_break(monkeypatch):
     assert result["reason"] == "MTF_KC_EARLY_BREAKOUT"
 
 
-def test_flat_state_rejects_close_outside_previous_midline_tolerance(monkeypatch):
+def test_flat_breakout_allows_early_long_after_midline_break(monkeypatch):
     frame, _closed, _live = _entry_frames(previous_close=100.21, open_price=100.5)
     _stub_entry_math(
         monkeypatch, frame, htf_state="FLAT", mas=(101.0, 100.0, 100.5),
@@ -163,7 +163,8 @@ def test_flat_state_rejects_close_outside_previous_midline_tolerance(monkeypatch
 
     result = mtf.evaluate_mtf_entry(frame, pd.DataFrame(), quote=101.0, side="LONG")
 
-    assert not result["allowed"]
+    assert result["allowed"]
+    assert result["reason"] == "MTF_KC_EARLY_BREAKOUT"
 
 
 def test_ratchet_stop_closes_after_one_atr_giveback():

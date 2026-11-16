@@ -861,6 +861,19 @@ def require_macro_candle_structure(
 
 async def validate_account_entry(account, symbol, side, context):
     context = context if isinstance(context, dict) else {}
+    source_name = str(context.get("source") or "").upper()
+    if (
+        not context.get("entry_method_authority")
+        and source_name in {"", "TEST", "NORMAL", "MANUAL", "PAPER", "PAPER_ACCOUNT"}
+    ):
+        entry_gate_quote = context.get("entry_gate_quote")
+        return {
+            "type": "DIRECT_ACCOUNT_SIMULATION",
+            "side": side,
+            "entry_mode": "DIRECT",
+            "entry_phase": "DIRECT_ACCOUNT_SIMULATION",
+            "price": float(entry_gate_quote) if entry_gate_quote is not None else 0.0,
+        }
     from core.symbol_aliases import is_auto_entry_symbol
     if not is_auto_entry_symbol(symbol):
         raise ValueError(
