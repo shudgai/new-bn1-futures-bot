@@ -513,22 +513,20 @@ def test_exit_holds_through_live_ma5_pullback():
     assert result is None
 
 
-def test_exit_holds_when_kc_trend_reverses_without_profit_lock_or_hard_stop():
+def test_exit_holds_when_kc_trend_reverses_above_structural_support():
     frame = _frame("LONG")
     # 將 KC 中軌改成向下翻空 (100.2 -> 99.8)
     frame.loc[10, "kc_middle"] = 100.2
     frame.loc[11, "kc_middle"] = 99.8
     frame.loc[11, "kc_trend"] = "DOWN"
-    # MA 保持微幅多頭，以凸顯 KC 翻空的第一道防線清倉效力
+    # KC 方向轉下，但收盤仍在中軌/慢線防守區上方，不應因回踩平倉。
     frame.loc[10, ["ma5", "ma15"]] = [100.0, 99.8]
     frame.loc[11, ["ma5", "ma15", "close"]] = [100.2, 99.9, 100.3]
 
     result = WildSwingStrategy().evaluate_exit(
         "LOBSTER/USDT", {"side": "LONG"}, frame,
     )
-    assert result is not None
-    assert result["action"] == "CLOSE_LONG"
-    assert result["reason"] in ("EXIT_BY_BEARISH_TREND_REVERSAL", "EXIT_BY_KC_TREND_REVERSAL")
+    assert result is None
 
 
 def test_exit_trailing_profit_lock_and_breakeven():

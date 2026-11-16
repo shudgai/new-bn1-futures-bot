@@ -1153,17 +1153,20 @@ class WildSwingStrategy:
             except (KeyError, TypeError, ValueError, OverflowError):
                 return None
         if current_price > 0:
-            if frame is not None and not frame.empty:
-                last_candle = frame.iloc[-1].to_dict()
-                prev_candle = frame.iloc[-2].to_dict() if len(frame) > 1 else last_candle
+            closed_exit_bars = self._closed_frame(frame)
+            if not closed_exit_bars.empty:
+                last_candle = closed_exit_bars.iloc[-1].to_dict()
+                prev_candle = (
+                    closed_exit_bars.iloc[-2].to_dict()
+                    if len(closed_exit_bars) > 1 else last_candle
+                )
                 c_close = float(last_candle.get("close", current_price))
                 c_ma5 = float(last_candle.get("ma5", last_candle.get("ema5", 0.0)))
                 p_ma5 = float(prev_candle.get("ma5", prev_candle.get("ema5", c_ma5)))
                 c_mid = float(last_candle.get("kc_middle", last_candle.get("kc_basis", 0.0)))
-                p_mid = float(prev_candle.get("kc_middle", prev_candle.get("kc_basis", c_mid)))
 
                 from core.gates.strict_entry_and_immunity_gate import resolve_kc_trend
-                current_kc_trend = resolve_kc_trend(frame)
+                current_kc_trend = resolve_kc_trend(closed_exit_bars)
                 bar_id = float(last_candle.get("timestamp", 0))
 
                 # ── 獲利 R 值與配置參數 ──
@@ -1182,7 +1185,6 @@ class WildSwingStrategy:
                 p_kc_up = float(prev_candle.get("kc_upper", 0.0))
                 c_kc_low = float(last_candle.get("kc_lower", 0.0))
                 p_kc_low = float(prev_candle.get("kc_lower", 0.0))
-                p_ema13 = float(prev_candle.get("ema13", prev_candle.get("ma15", p_mid)))
 
                 c_ema13 = float(last_candle.get("ema13", last_candle.get("ma15", c_mid)))
                 open_time = float((position or {}).get("open_timestamp") or (position or {}).get("timestamp") or (position or {}).get("entry_timestamp") or 0.0)
@@ -1192,10 +1194,14 @@ class WildSwingStrategy:
 
                 if side == "LONG":
                     # ── 多單 1M 專業持倉防洗盤與動量衰退平倉 SOP ──
-                    # 1. 【回踩蓄勢防洗保護】：只要價格仍在 KC 中軌或慢線之上，且中軌未轉空，視為回踩蓄勢，嚴禁平多！
-                    # 2. 【真正平多條件】：均線死叉（或走平向下）且實質跌破 KC 中軌／慢線
+                    # A pullback is not a reversal until a completed close clears
+                    # both the KC middle and the slow-line defense buffer.
                     is_dead_cross_or_flat = (c_ma5 <= c_ema13) or (c_ma5 <= p_ma5 and c_ma5 <= c_ema13 * 1.0005)
-                    is_kc_mid_pierced = (c_mid > 0 and c_close < c_mid)
+                    is_kc_mid_pierced = (
+                        c_mid > 0
+                        and c_close < c_mid
+                        and c_close < c_ema13 * (1.0 - 0.0015)
+                    )
                     if not is_entry_bar and is_dead_cross_or_flat and is_kc_mid_pierced:
                         logger.info("[趨勢終結平多] %s EMA5死叉/走平下穿EMA13 且摜破 KC 中軌，趨勢告一段落，果斷平倉！", symbol)
                         print(f"[趨勢終結平多] {symbol} EMA5死叉且摜破 KC 中軌，果斷平倉！", flush=True)
@@ -1206,7 +1212,10 @@ class WildSwingStrategy:
                         }
 
                     # 3. 大週期趨勢強制平多：大週期轉為 KC 向下
-                    is_trend_bearish = (current_kc_trend in ("DOWN", "向下", "DOWNTREND", "BEARISH")) or (c_mid > 0 and p_mid > 0 and c_mid < p_mid and c_close < c_mid)
+                    is_trend_bearish = (
+                        current_kc_trend in ("DOWN", "向下", "DOWNTREND", "BEARISH")
+                        and is_kc_mid_pierced
+                    )
                     if is_trend_bearish:
                         logger.info("[強制平多] %s 大週期轉為 KC 向下，強制市價全平多單！", symbol)
                         print(f"[強制平多] {symbol} 大週期轉為 KC 向下，強制市價全平多單！", flush=True)
@@ -1218,10 +1227,14 @@ class WildSwingStrategy:
 
                 elif side == "SHORT":
                     # ── 空單 1M 專業持倉防洗盤與動量衰退平倉 SOP (反向對稱) ──
-                    # 1. 【反彈蓄勢防洗保護】：只要價格仍在 KC 中軌或慢線之下，且中軌未轉多，視為反彈遇阻蓄勢，嚴禁平空！
-                    # 2. 【真正平空條件】：均線金叉（或走平向上）且實質衝破 KC 中軌／慢線
+                    # A pullback is not a reversal until a completed close clears
+                    # both the KC middle and the slow-line defense buffer.
                     is_golden_cross_or_flat = (c_ma5 >= c_ema13) or (c_ma5 >= p_ma5 and c_ma5 >= c_ema13 * 0.9995)
-                    is_kc_mid_reclaimed = (c_mid > 0 and c_close > c_mid)
+                    is_kc_mid_reclaimed = (
+                        c_mid > 0
+                        and c_close > c_mid
+                        and c_close > c_ema13 * (1.0 + 0.0015)
+                    )
                     if not is_entry_bar and is_golden_cross_or_flat and is_kc_mid_reclaimed:
                         logger.info("[趨勢終結平空] %s EMA5金叉/走平上穿EMA13 且衝破 KC 中軌，趨勢告一段落，果斷平倉！", symbol)
                         print(f"[趨勢終結平空] {symbol} EMA5金叉且衝破 KC 中軌，果斷平倉！", flush=True)
@@ -1232,7 +1245,10 @@ class WildSwingStrategy:
                         }
 
                     # 3. 大週期趨勢強制平空：大週期轉為 KC 向上
-                    is_trend_bullish = (current_kc_trend in ("UP", "向上", "UPTREND", "BULLISH")) or (c_mid > 0 and p_mid > 0 and c_mid > p_mid and c_close > c_mid)
+                    is_trend_bullish = (
+                        current_kc_trend in ("UP", "向上", "UPTREND", "BULLISH")
+                        and is_kc_mid_reclaimed
+                    )
                     if is_trend_bullish:
                         logger.info("[強制平空] %s 大週期轉為 KC 向上，強制市價全平空單！", symbol)
                         print(f"[強制平空] {symbol} 大週期轉為 KC 向上，強制市價全平空單！", flush=True)

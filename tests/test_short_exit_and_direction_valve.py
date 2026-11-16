@@ -17,6 +17,7 @@ from core.services.key_level_dip_sniper import (
     check_comprehensive_long_entry,
 )
 from core.services.entry_firewall import market_structure_gate_problem
+from core.services.strategies.wild_swing_strategy import WildSwingStrategy
 
 
 def test_short_exit_veto_when_13ema_falling():
@@ -311,4 +312,92 @@ def test_long_exit_allowed_only_when_close_breaches_kc_middle():
     )
     assert veto_needed is False
     assert "多頭結構瓦解合法平多" in veto_reason
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_kc_trend_turn_does_not_close_on_pullback(side):
+    if side == "SHORT":
+        closes = [99.2, 99.4, 99.7]
+        middles = [99.8, 99.9, 100.0]
+        ma5 = [99.9, 99.8, 99.7]
+        ma15 = [100.2, 100.1, 100.0]
+    else:
+        closes = [100.8, 100.6, 100.3]
+        middles = [100.2, 100.1, 100.0]
+        ma5 = [100.1, 100.2, 100.3]
+        ma15 = [99.8, 99.9, 100.0]
+
+    frame = pd.DataFrame({
+        "timestamp": [1700000000000, 1700000060000, 1700000120000],
+        "open": [close - 0.1 for close in closes],
+        "high": [close + 0.2 for close in closes],
+        "low": [close - 0.2 for close in closes],
+        "close": closes,
+        "volume": [100.0, 100.0, 100.0],
+        "ma5": ma5,
+        "ma15": ma15,
+        "kc_middle": middles,
+        "kc_upper": [middle + 2.0 for middle in middles],
+        "kc_lower": [middle - 2.0 for middle in middles],
+        "atr": [1.0, 1.0, 1.0],
+        "is_closed": [True, True, True],
+    })
+    position = {
+        "side": side,
+        "entry_price": 101.0 if side == "SHORT" else 99.0,
+        "amount": 1.0,
+        "max_profit": 0.0,
+    }
+
+    decision = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", position, frame, quote=closes[-1],
+    )
+
+    assert decision is None
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_confirmed_midline_and_slow_line_break_still_closes(side):
+    if side == "SHORT":
+        closes = [99.2, 99.4, 100.3]
+        middles = [99.8, 99.9, 100.0]
+        ma5 = [99.9, 99.8, 100.2]
+        ma15 = [100.2, 100.1, 100.0]
+    else:
+        closes = [100.8, 100.6, 99.7]
+        middles = [100.2, 100.1, 100.0]
+        ma5 = [100.1, 100.2, 99.8]
+        ma15 = [99.8, 99.9, 100.0]
+
+    frame = pd.DataFrame({
+        "timestamp": [1700000000000, 1700000060000, 1700000120000],
+        "open": [close - 0.1 for close in closes],
+        "high": [close + 0.2 for close in closes],
+        "low": [close - 0.2 for close in closes],
+        "close": closes,
+        "volume": [100.0, 100.0, 100.0],
+        "ma5": ma5,
+        "ma15": ma15,
+        "kc_middle": middles,
+        "kc_upper": [middle + 2.0 for middle in middles],
+        "kc_lower": [middle - 2.0 for middle in middles],
+        "atr": [1.0, 1.0, 1.0],
+        "is_closed": [True, True, True],
+    })
+    position = {
+        "side": side,
+        "entry_price": 101.0 if side == "SHORT" else 99.0,
+        "amount": 1.0,
+        "max_profit": 0.0,
+    }
+
+    decision = WildSwingStrategy().evaluate_exit(
+        "LOBSTER/USDT", position, frame, quote=closes[-1],
+    )
+
+    assert decision is not None
+    assert decision["reason"] in {
+        "EXIT_BY_GOLDEN_CROSS_KC_MID_BREAKOUT",
+        "EXIT_BY_DEAD_CROSS_KC_MID_BREAKDOWN",
+    }
 
