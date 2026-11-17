@@ -59,15 +59,15 @@ async def test_status_response_preserves_shadow_contract(tmp_path, monkeypatch):
         {"delay_sec": 4., "chop_locked": False},
         {"delay_sec": 50., "chop_locked": True},
     ])
-    response = Response()
-    result = await api.get_status(response)
-    assert result["btc_lead_shadow"] == {
+    result = await api.get_status(Response())
+    payload = json.loads(result.body)
+    assert payload["btc_lead_shadow"] == {
         "active": {"direction": "LONG"},
         "events": api.engine._btc_lead_shadow_events,
         "total_events": 3, "eligible_events": 2, "average_delay_sec": 3.,
     }
-    assert response.headers["Cache-Control"].startswith("no-store")
-    json.dumps(result)
+    assert result.headers["Cache-Control"].startswith("no-store")
+    json.dumps(payload)
 
 
 def test_empty_shadow_status_is_read_only():
