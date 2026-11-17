@@ -113,7 +113,9 @@ def context(f, side):
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 @pytest.mark.parametrize('live', [True,False])
-def test_runner_to_paper_fill_and_dedup(monkeypatch, tmp_path, side, live):
+def test_runner_fails_closed_without_valid_higher_timeframe_data(
+    monkeypatch, tmp_path, side, live,
+):
     from core.engine import TradingEngine
     from core.paper_account import PaperAccount
     from core.services.symbol_runner import process_single_symbol_runner
@@ -141,17 +143,8 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, tmp_path, side, live):
         'price': float(f.iloc[-1].close), 'observed_at': time.monotonic(),
     }
     asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
-    if not live:
-        assert not account.positions
-        return
-    assert account.positions[symbol]['side'] == side
-    assert account.positions[symbol]['entry_atr'] == 2.
-    assert len(account.trades) == 1
-    assert account.trades[0]['action'] == f'OPEN_{side}'
-    account.positions.clear()
-    asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
-    assert len(account.trades) == 1
-    assert symbol not in account.positions
+    assert not account.positions
+    assert not account.trades
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
