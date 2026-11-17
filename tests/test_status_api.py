@@ -1,5 +1,6 @@
 """Status responses use the real engine methods and an isolated paper account."""
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import Response
@@ -31,6 +32,19 @@ def test_effective_runtime_environment_matches_account_mode(
     monkeypatch.setattr(api, "USE_DEMO_TRADING", use_demo_trading)
 
     assert api.effective_runtime_environment() == expected
+
+
+def test_example_environment_selects_binance_demo_orders():
+    settings = {}
+    example_env = Path(__file__).resolve().parents[1] / ".env.example"
+    for line in example_env.read_text().splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, value = line.split("=", 1)
+            settings[key.strip().lower()] = value.strip().lower()
+
+    assert settings["paper_trading"] == "false"
+    assert settings["entry_submission_enabled"] == "true"
+    assert settings["use_demo_trading"] == "true"
 
 
 @pytest.mark.anyio
