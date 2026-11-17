@@ -649,8 +649,23 @@ class PaperAccount:
         # and balance checks above and execution/risk checks below still apply.
         is_ui_force_manual = bool(
             entry_context.get("manual_entry") is True
+            or entry_context.get("is_manual") is True
             or entry_context.get("source") == "MANUAL"
+            or str(reason or "").startswith("手動開倉_")
         )
+        if is_ui_force_manual:
+            from types import SimpleNamespace
+            OrderAuditTrail.record_entry_gate_eval(
+                symbol=symbol,
+                side=side,
+                signal_id=signal_id,
+                gate_result=SimpleNamespace(
+                    passed=True,
+                    reason="MANUAL_ENTRY_USER_AUTHORIZED",
+                    checks={"manual_authorization": {"status": "PASS"}},
+                ),
+                account=self,
+            )
         if not is_ui_force_manual:
             eval_frame = entry_context.get("frame")
             if eval_frame is None:

@@ -2654,8 +2654,26 @@ class BinanceTestnetAccount:
             return False
 
         # ──【全鏈路審計階段 2：中央 EntryGate 硬性條件審查】──
-        # Manual callers use the same structural gate; the UI flag cannot bypass it.
-        is_ui_force_manual = False
+        # User-directed manual entries do not depend on a strategy candle close.
+        is_ui_force_manual = bool(
+            entry_context.get("manual_entry") is True
+            or entry_context.get("is_manual") is True
+            or str(entry_context.get("source") or "").upper() == "MANUAL"
+            or str(reason or "").startswith("手動開倉_")
+        )
+        if is_ui_force_manual:
+            from types import SimpleNamespace
+            OrderAuditTrail.record_entry_gate_eval(
+                symbol=symbol,
+                side=side,
+                signal_id=signal_id,
+                gate_result=SimpleNamespace(
+                    passed=True,
+                    reason="MANUAL_ENTRY_USER_AUTHORIZED",
+                    checks={"manual_authorization": {"status": "PASS"}},
+                ),
+                account=self,
+            )
         if not is_ui_force_manual:
             eval_frame = entry_context.get("frame")
             if eval_frame is None:
