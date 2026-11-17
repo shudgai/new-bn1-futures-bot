@@ -1159,10 +1159,12 @@ class PaperAccount:
                 return False
             try:
                 if entry_mode == "CHANNEL_SWING":
+                    init_stop = structural_stop if structural_stop is not None else (sl if sl and sl > 0 else None)
                     initialize_atr_protection({'entry_mode': 'CHANNEL_SWING'}, price, side, atr,
-                                              initial_stop=structural_stop)
+                                              initial_stop=init_stop)
             except (ValueError, TypeError):
-                return False
+                if entry_context.get("manual_entry") is not True:
+                    return False
             tp = 0.0
             if entry_mode == "WILD_SWING":
                 sl = 0.0
