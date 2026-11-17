@@ -2370,7 +2370,11 @@ class TradingEngine:
     def _full_wallet_entry_margin(wallet, available, leverage, symbol=None):
         if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
             return 0.
-        from core.config import MAX_SLOTS, TAKER_FEE_RATE
+        from core.config import MAX_SLOTS, TAKER_FEE_RATE, TEST_BUDGET_CAP_USDT
+
+        if TEST_BUDGET_CAP_USDT > 0:
+            wallet = min(wallet, TEST_BUDGET_CAP_USDT)
+            available = min(available, TEST_BUDGET_CAP_USDT)
 
         slot_count = max(1, int(MAX_SLOTS))
         fee_buffer = 1.0 + leverage * TAKER_FEE_RATE

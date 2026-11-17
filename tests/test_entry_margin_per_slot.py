@@ -69,6 +69,15 @@ def test_entry_margin_never_exceeds_available_balance_after_fee(monkeypatch):
     )
 
 
+def test_entry_margin_respects_150_usdt_budget_cap(monkeypatch):
+    monkeypatch.setattr(config, "MAX_SLOTS", 2)
+    monkeypatch.setattr(config, "TEST_BUDGET_CAP_USDT", 150.0)
+
+    amount = TradingEngine._full_wallet_entry_margin(4_713.81, 4_713.81, 5.0)
+
+    assert amount == pytest.approx(75.0 * 0.98)
+
+
 @pytest.mark.parametrize(
     "symbol",
     [LOBSTER, "龙虾/USDT", "LOBSTER/USDT", PEPE, "1000PEPEUSDT"],

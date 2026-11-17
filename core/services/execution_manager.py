@@ -7292,6 +7292,10 @@ class ExecutionManager:
             # 計算保證金與槓桿
             wallet = float(getattr(account, "get_wallet_balance", lambda: 100.0)())
             available = float(getattr(account, "get_available_balance", lambda: wallet)())
+            from core.config import TEST_BUDGET_CAP_USDT
+            if TEST_BUDGET_CAP_USDT > 0:
+                wallet = min(wallet, TEST_BUDGET_CAP_USDT)
+                available = min(available, TEST_BUDGET_CAP_USDT)
 
             engine = engine_or_account if hasattr(engine_or_account, "account") else None
             leverage = 5
