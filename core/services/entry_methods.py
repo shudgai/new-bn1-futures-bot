@@ -868,6 +868,40 @@ def revalidate_entry_method(
         )
         if not evaluation.get("allowed"):
             return False, str(evaluation.get("reason") or "BLOCKED_MTF_KC_ENTRY")
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return False, "BLOCKED_MTF_MACRO_STRUCTURE_NO_CLOSED_BARS"
+        try:
+            current = closed.iloc[-1]
+            macro_bar = current.to_dict()
+            macro_indicators = {
+                "kc_upper": float(current["kc_upper"]),
+                "kc_lower": float(current["kc_lower"]),
+                "kc_middle": float(current["kc_middle"]),
+                "ma15": float(current["ma15"]),
+                "atr": float(current["atr"]),
+            }
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            return False, "BLOCKED_MTF_MACRO_STRUCTURE_DATA_INVALID"
+
+        from core.gates.macro_candle_structure_gate import (
+            MTF_KC_DIRECTIONAL_ENTRY,
+            MacroCandleStructureGate,
+        )
+
+        macro_allowed, macro_reason = MacroCandleStructureGate(
+            max_bias_atr=1.2,
+        ).can_open(
+            side,
+            macro_bar,
+            macro_indicators,
+            symbol=symbol,
+            entry_pattern="CONTINUATION",
+            structure_confirmation=MTF_KC_DIRECTIONAL_ENTRY,
+            structure_confirmed=True,
+        )
+        if not macro_allowed:
+            return False, "BLOCKED_MTF_MACRO_STRUCTURE:" + macro_reason
         return True, "MTF_KC_STATE_MACHINE_ENTRY_CONFIRMED"
 
     # 🚨 多空方向一致性保護：

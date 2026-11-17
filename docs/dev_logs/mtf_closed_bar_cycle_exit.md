@@ -38,3 +38,9 @@
 - **Change**: A validated same-bar reversal from SHORT to LONG or LONG to SHORT no longer requires the previous completed 1m candle or current live candle to match the entry direction. The rule is limited to the persisted MTF reversal ticket; ordinary entries keep their candle-color requirements.
 - **Safety**: HTF/LTF direction, MA/KC alignment, strict consolidation filtering, quote validity, account checks, and final same-bar ticket validation remain required. Stale deferred candidates are not reused for this reversal.
 - **Regression coverage**: Added colorless evaluator and final-gate checks for both reversal directions, plus entry-method flag validation.
+
+## 2026-11-17 — Add 15m midline-hold MTF entries
+
+- **Trigger**: Reuse the existing 15m MTF slope classification. A directional candidate is created when two consecutive closed 1m closes and the latest quote are strictly above the current 15m KC middle for LONG, or strictly below for SHORT. This continuation signal does not require either candle to match the entry color.
+- **Preserved gates**: Existing MTF MA/KC alignment and consolidation filters remain. Final revalidation applies the Macro Candle Structure veto, including the 0.35/0.65 KC-position limits, 1.2 ATR MA15-bias cap, and wick-exhaustion checks.
+- **Regression coverage**: Added mirrored LONG/SHORT tests for the two-close condition, strict midline boundaries, colorless qualification, and macro-gate vetoes.

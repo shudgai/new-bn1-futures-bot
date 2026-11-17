@@ -469,25 +469,13 @@ def evaluate_mtf_entry(
     if (
         closed_open is None or closed_close is None
         or closed_open <= 0 or closed_close <= 0
-        or (
-            not colorless_reverse
-            and expected_closed_color == "LONG"
-            and closed_close <= closed_open
-        )
-        or (
-            not colorless_reverse
-            and expected_closed_color == "SHORT"
-            and closed_close >= closed_open
-        )
     ):
         return {
             **htf,
             "allowed": False,
-            "reason": "BLOCKED_MTF_LTF_CLOSED_BAR_COLOR",
+            "reason": "BLOCKED_MTF_LTF_CLOSED_BAR_INVALID",
             "closed_bar_id": _number(closed.iloc[-1], "timestamp"),
         }
-    if colorless_reverse:
-        pending_candidate = None
     if len(closed) < 15:
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_MA_HISTORY_INVALID"}
     from core.services.market_consolidation_filter import evaluate_market_blacklist
@@ -514,6 +502,45 @@ def evaluate_mtf_entry(
         quote_value = math.nan
     if not math.isfinite(quote_value) or quote_value <= 0:
         return {**htf, "allowed": False, "reason": "BLOCKED_LIVE_QUOTE_INVALID"}
+
+    normalized_side = str(side or "").upper()
+    expected_side = "LONG" if htf["state"] == "UPTREND" else "SHORT"
+    midline = float(htf["kc_middle"])
+    midline_hold_signal = False
+    if normalized_side == expected_side and len(closed) >= 2:
+        previous_close = _number(closed.iloc[-2], "close")
+        latest_close = _number(closed.iloc[-1], "close")
+        if (
+            previous_close is not None
+            and latest_close is not None
+            and previous_close > 0
+            and latest_close > 0
+        ):
+            midline_hold_signal = (
+                previous_close > midline
+                and latest_close > midline
+                and quote_value > midline
+                if expected_side == "LONG"
+                else previous_close < midline
+                and latest_close < midline
+                and quote_value < midline
+            )
+    if (
+        not colorless_reverse
+        and not midline_hold_signal
+        and (
+            (expected_closed_color == "LONG" and closed_close <= closed_open)
+            or (expected_closed_color == "SHORT" and closed_close >= closed_open)
+        )
+    ):
+        return {
+            **htf,
+            "allowed": False,
+            "reason": "BLOCKED_MTF_LTF_CLOSED_BAR_COLOR",
+            "closed_bar_id": _number(closed.iloc[-1], "timestamp"),
+        }
+    if colorless_reverse or midline_hold_signal:
+        pending_candidate = None
 
     ma_values = quote_adjusted_entry_mas(frame_1m, quote_value)
     if ma_values is None:
@@ -560,7 +587,6 @@ def evaluate_mtf_entry(
     ):
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_KC_INDICATORS_INVALID"}
 
-    expected_side = "LONG" if htf["state"] == "UPTREND" else "SHORT"
     from core.services.entry_contract import ma5_ma15_kc_midline_entry_problem
     alignment_problem = ma5_ma15_kc_midline_entry_problem(
         expected_side, ma5_current, ma15_current, middle, previous_atr,
@@ -579,7 +605,6 @@ def evaluate_mtf_entry(
             "bandwidth_pct": bandwidth_pct,
         }
 
-    normalized_side = str(side or "").upper()
     sides = (normalized_side,) if normalized_side in ("LONG", "SHORT") else ("LONG", "SHORT")
     live_bar_id = _number(live, "timestamp")
     deferred_wait: dict[str, Any] | None = None
@@ -593,7 +618,9 @@ def evaluate_mtf_entry(
 
         if is_long:
             ma_slope_aligned = ma5_current > ma5_previous
-            candle_aligned = colorless_reverse or quote_value > open_price
+            candle_aligned = (
+                colorless_reverse or midline_hold_signal or quote_value > open_price
+            )
             breakout_edge_offset = quote_value - upper if quote_value > upper else 0.0
             breakout_allowed = (
                 quote_value > upper
@@ -602,7 +629,9 @@ def evaluate_mtf_entry(
             )
         else:
             ma_slope_aligned = ma5_current < ma5_previous
-            candle_aligned = colorless_reverse or quote_value < open_price
+            candle_aligned = (
+                colorless_reverse or midline_hold_signal or quote_value < open_price
+            )
             breakout_edge_offset = lower - quote_value if quote_value < lower else 0.0
             breakout_allowed = (
                 quote_value < lower
@@ -716,6 +745,8 @@ def evaluate_mtf_entry(
             "reason": (
                 "MTF_KC_IMMEDIATE_REVERSE_ENTRY"
                 if colorless_reverse
+                else "MTF_KC_MIDLINE_HOLD_ENTRY"
+                if midline_hold_signal
                 else
                 "MTF_KC_BREAKOUT_ENTRY"
                 if breakout_allowed

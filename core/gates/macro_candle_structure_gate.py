@@ -27,6 +27,8 @@ from core.gates.breakout_continuation_entry_gate import (
 from core.gates.entry_pattern_permitted_gate import EntryPatternPermittedGate
 from core.gates.meme_entry_policy import is_exhausted_wick, uses_relaxed_entry_limits
 
+MTF_KC_DIRECTIONAL_ENTRY = "MTF_KC_DIRECTIONAL_ENTRY"
+
 
 class MacroCandleStructureGate:
     CROSSOVER_BREAKOUT_MAX_BIAS_ATR = 2.8
@@ -130,6 +132,35 @@ class MacroCandleStructureGate:
         confirmation = str(structure_confirmation or "").upper()
         relaxed = uses_relaxed_entry_limits(symbol)
         relaxed_outer = relaxed and mode in {"BREAKOUT", "CONTINUATION"}
+        if (
+            mode == "CONTINUATION"
+            and confirmation == MTF_KC_DIRECTIONAL_ENTRY
+            and structure_confirmed
+        ):
+            if bias_atr > self.max_bias_atr:
+                return False, (
+                    f"VETO_MTF_MIDLINE_HOLD: Bias {bias_atr:.2f}x ATR exceeds "
+                    f"{self.max_bias_atr:.2f}x ATR"
+                )
+            if side == "LONG":
+                if kc_pos > 0.35:
+                    return False, (
+                        f"VETO_MTF_MIDLINE_HOLD_LONG: KC_Pos {kc_pos:.2f} > 0.35"
+                    )
+                if upper_wick > body and close < high:
+                    return False, (
+                        "VETO_MTF_MIDLINE_HOLD_LONG: upper-wick exhaustion"
+                    )
+            else:
+                if kc_pos < 0.65:
+                    return False, (
+                        f"VETO_MTF_MIDLINE_HOLD_SHORT: KC_Pos {kc_pos:.2f} < 0.65"
+                    )
+                if lower_wick > body and close > low:
+                    return False, (
+                        "VETO_MTF_MIDLINE_HOLD_SHORT: lower-wick exhaustion"
+                    )
+            return True, f"PASSED_MACRO_{side}_GATE"
 
         # ═════════════════════════════════════════════════════════════════
         # 【進場前置過濾守衛 (Entry Pre-Filter)】

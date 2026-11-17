@@ -546,6 +546,75 @@ def test_mtf_reverse_ticket_passes_final_same_bar_entry_guards(
         )
 
 
+@pytest.mark.parametrize(
+    ("side", "source_open", "source_close", "live_open", "quote"),
+    [
+        ("LONG", 100.2, 100.1, 100.2, 100.1),
+        ("SHORT", 99.8, 99.9, 99.8, 99.9),
+    ],
+)
+def test_final_wick_gate_allows_colorless_mtf_midline_hold_entry(
+    monkeypatch, side, source_open, source_close, live_open, quote,
+):
+    import time
+    from types import SimpleNamespace
+
+    from core.services.entry_contract import enforce_final_order_wick_gate
+
+    symbol = "1000PEPE/USDT"
+    bar_id = int(time.time() // 60 * 60_000)
+    frame = pd.DataFrame([
+        {
+            "timestamp": bar_id - 60_000,
+            "open": source_open,
+            "high": max(source_open, source_close) + 0.05,
+            "low": min(source_open, source_close) - 0.05,
+            "close": source_close,
+            "atr": 1.0,
+            "is_closed": True,
+        },
+        {
+            "timestamp": bar_id,
+            "open": live_open,
+            "high": max(live_open, quote) + 0.05,
+            "low": min(live_open, quote) - 0.05,
+            "close": quote,
+            "atr": 1.0,
+            "is_closed": False,
+        },
+    ])
+    frame.attrs.update({
+        "snapshot_ms": int(time.time() * 1000),
+        "timeframe_ms": 60_000,
+        "entry_finality_verified": True,
+    })
+    account = SimpleNamespace(
+        positions={},
+        last_closed_at={},
+        last_closed_side={},
+        entry_filter_last={},
+        log=lambda *_args: None,
+    )
+    context = {
+        "entry_method_authority": mtf.MTF_KC_STATE_MACHINE,
+        "entry_gate_frame": frame,
+        "entry_gate_quote": quote,
+        "frame_15m": pd.DataFrame(),
+    }
+    monkeypatch.setattr(
+        mtf, "close_in_current_live_1m_bar", lambda *_args: False,
+    )
+    monkeypatch.setattr(mtf, "evaluate_mtf_entry", lambda *_args, **_kwargs: {
+        "allowed": True,
+        "reason": "MTF_KC_MIDLINE_HOLD_ENTRY",
+        "side": side,
+    })
+
+    asyncio.run(
+        enforce_final_order_wick_gate(account, symbol, side, context),
+    )
+
+
 def test_trend_entry_allows_long_inside_band_limit(monkeypatch):
     frame, _closed, _live = _entry_frames(open_price=101.0)
     _stub_entry_math(
@@ -555,7 +624,7 @@ def test_trend_entry_allows_long_inside_band_limit(monkeypatch):
     result = mtf.evaluate_mtf_entry(frame, pd.DataFrame(), quote=102.0, side="LONG")
 
     assert result["allowed"]
-    assert result["reason"] == "MTF_KC_TREND_ENTRY"
+    assert result["reason"] == "MTF_KC_MIDLINE_HOLD_ENTRY"
 
 
 @pytest.mark.parametrize(
@@ -595,20 +664,129 @@ def test_immediate_reversal_ignores_closed_and_live_candle_color(
     assert reversal["reason"] == "MTF_KC_IMMEDIATE_REVERSE_ENTRY"
 
 
+@pytest.mark.parametrize(
+    ("side", "trend", "open_price", "quote", "mas", "bar_open", "bar_close"),
+    [
+        ("LONG", "UPTREND", 101.0, 100.8, (101.0, 100.0, 100.5), 101.0, 100.8),
+        ("SHORT", "DOWNTREND", 99.0, 99.2, (99.0, 100.0, 99.5), 99.0, 99.2),
+    ],
+)
+def test_two_closed_bars_holding_on_15m_midline_side_allow_colorless_entry(
+    monkeypatch, side, trend, open_price, quote, mas, bar_open, bar_close,
+):
+    frame, _closed, _live = _entry_frames(open_price=open_price)
+    closed, _ = _stub_entry_math(
+        monkeypatch, frame, htf_state=trend, mas=mas,
+    )
+    closed.loc[closed.index[-2:], "open"] = bar_open
+    closed.loc[closed.index[-2:], "close"] = bar_close
+
+    result = mtf.evaluate_mtf_entry(
+        frame,
+        pd.DataFrame(),
+        quote=quote,
+        side=side,
+    )
+
+    assert result["allowed"]
+    assert result["reason"] == "MTF_KC_MIDLINE_HOLD_ENTRY"
+    assert result["side"] == side
+
+
+@pytest.mark.parametrize(
+    ("side", "trend", "open_price", "quote", "mas", "bar_open", "bar_close"),
+    [
+        ("LONG", "UPTREND", 101.0, 100.8, (101.0, 100.0, 100.5), 101.0, 100.8),
+        ("SHORT", "DOWNTREND", 99.0, 99.2, (99.0, 100.0, 99.5), 99.0, 99.2),
+    ],
+)
+def test_midline_hold_entry_needs_both_closes_strictly_on_same_side(
+    monkeypatch, side, trend, open_price, quote, mas, bar_open, bar_close,
+):
+    frame, _closed, _live = _entry_frames(open_price=open_price)
+    closed, _ = _stub_entry_math(
+        monkeypatch, frame, htf_state=trend, mas=mas,
+    )
+    closed.loc[closed.index[-2], "close"] = 100.0
+    closed.loc[closed.index[-2], "open"] = bar_open
+    closed.loc[closed.index[-1], "open"] = bar_open
+    closed.loc[closed.index[-1], "close"] = bar_close
+
+    result = mtf.evaluate_mtf_entry(
+        frame,
+        pd.DataFrame(),
+        quote=quote,
+        side=side,
+    )
+
+    assert not result["allowed"]
+    assert result["reason"] == "BLOCKED_MTF_LTF_CLOSED_BAR_COLOR"
+
+
+@pytest.mark.parametrize(
+    ("side", "trend", "open_price", "mas", "bar_open", "bar_close"),
+    [
+        ("LONG", "UPTREND", 101.0, (101.0, 100.0, 100.5), 101.0, 100.8),
+        ("SHORT", "DOWNTREND", 99.0, (99.0, 100.0, 99.5), 99.0, 99.2),
+    ],
+)
+def test_midline_hold_entry_requires_latest_quote_to_remain_on_side(
+    monkeypatch, side, trend, open_price, mas, bar_open, bar_close,
+):
+    frame, _closed, _live = _entry_frames(open_price=open_price)
+    closed, _ = _stub_entry_math(
+        monkeypatch, frame, htf_state=trend, mas=mas,
+    )
+    closed.loc[closed.index[-2:], "open"] = bar_open
+    closed.loc[closed.index[-2:], "close"] = bar_close
+
+    result = mtf.evaluate_mtf_entry(
+        frame,
+        pd.DataFrame(),
+        quote=100.0,
+        side=side,
+    )
+
+    assert not result["allowed"]
+    assert result["reason"] == "BLOCKED_MTF_LTF_CLOSED_BAR_COLOR"
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_mtf_entry_method_only_authorizes_colorless_reverse_with_ticket_flags(
     monkeypatch, side,
 ):
-    from core.services.entry_methods import revalidate_entry_method
+    from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+    from core.services import entry_methods
 
     frame, _closed, _live = _entry_frames()
     observed = {}
+    macro_observed = {}
 
     def evaluate(*_args, **kwargs):
         observed.update(kwargs)
-        return {"allowed": True}
+        return {"allowed": True, "reason": "MTF_KC_MIDLINE_HOLD_ENTRY"}
+
+    def allow_macro(_self, _side, _bar, _indicators, **kwargs):
+        macro_observed.update(kwargs)
+        return True, "PASSED_MACRO_GATE"
 
     monkeypatch.setattr(mtf, "evaluate_mtf_entry", evaluate)
+    monkeypatch.setattr(
+        entry_methods,
+        "closed_entry_candles",
+        lambda _frame: pd.DataFrame([{
+            "open": 101.5,
+            "high": 101.5,
+            "low": 101.2,
+            "close": 101.3,
+            "kc_upper": 104.0,
+            "kc_lower": 100.0,
+            "kc_middle": 102.0,
+            "ma15": 101.4,
+            "atr": 1.0,
+        }]),
+    )
+    monkeypatch.setattr(MacroCandleStructureGate, "can_open", allow_macro)
     context = {
         "entry_method_authority": mtf.MTF_KC_STATE_MACHINE,
         "entry_method_allow_same_bar_after_close": True,
@@ -616,7 +794,7 @@ def test_mtf_entry_method_only_authorizes_colorless_reverse_with_ticket_flags(
         "mtf_colorless_reverse": True,
     }
 
-    allowed, _ = revalidate_entry_method(
+    allowed, _ = entry_methods.revalidate_entry_method(
         frame,
         symbol="1000PEPE/USDT",
         side=side,
@@ -627,6 +805,8 @@ def test_mtf_entry_method_only_authorizes_colorless_reverse_with_ticket_flags(
 
     assert allowed
     assert observed["allow_colorless_reverse"] is True
+    assert macro_observed["entry_pattern"] == "CONTINUATION"
+    assert macro_observed["structure_confirmed"] is True
 
 
 def test_mtf_entry_blocks_choppy_market_without_adding_cooldown(monkeypatch):
@@ -909,9 +1089,10 @@ def test_breakout_cannot_bypass_live_candle_color(monkeypatch):
 
 def test_wrong_color_arms_one_bar_candidate_and_next_green_bar_confirms(monkeypatch):
     frame, _closed, _live = _entry_frames(open_price=101.0)
-    _stub_entry_math(
+    closed, _ = _stub_entry_math(
         monkeypatch, frame, htf_state="UPTREND", mas=(101.0, 100.0, 100.5),
     )
+    closed.loc[closed.index[-2], "close"] = 100.0
 
     waiting = mtf.evaluate_mtf_entry(
         frame, pd.DataFrame(), quote=100.5, side="LONG",
@@ -923,9 +1104,10 @@ def test_wrong_color_arms_one_bar_candidate_and_next_green_bar_confirms(monkeypa
 
     next_frame, _closed, _live = _entry_frames(open_price=100.3)
     next_frame.loc[next_frame.index[-1], "timestamp"] = 1_020_000
-    _stub_entry_math(
+    next_closed, _ = _stub_entry_math(
         monkeypatch, next_frame, htf_state="UPTREND", mas=(101.0, 100.0, 100.5),
     )
+    next_closed.loc[next_closed.index[-2], "close"] = 100.0
 
     confirmed = mtf.evaluate_mtf_entry(
         next_frame,

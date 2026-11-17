@@ -1,5 +1,8 @@
 import pytest
-from core.gates.macro_candle_structure_gate import MacroCandleStructureGate
+from core.gates.macro_candle_structure_gate import (
+    MTF_KC_DIRECTIONAL_ENTRY,
+    MacroCandleStructureGate,
+)
 from core.services.gates.entry_gate import MacroCandleStructureGate as ExportedGate
 
 def test_gate_export():
@@ -220,6 +223,100 @@ def test_short_passed_when_all_conditions_met():
     )
     assert can_open is True
     assert reason == "PASSED_MACRO_SHORT_GATE"
+
+
+@pytest.mark.parametrize(
+    ("side", "bar", "indicators"),
+    [
+        (
+            "LONG",
+            {"open": 101.5, "close": 101.3, "high": 101.5, "low": 101.2},
+            {
+                "kc_upper": 104.0, "kc_lower": 100.0, "kc_middle": 102.0,
+                "ma15": 101.4, "atr": 1.0,
+            },
+        ),
+        (
+            "SHORT",
+            {"open": 98.5, "close": 98.7, "high": 98.8, "low": 98.5},
+            {
+                "kc_upper": 100.0, "kc_lower": 96.0, "kc_middle": 98.0,
+                "ma15": 98.6, "atr": 1.0,
+            },
+        ),
+    ],
+)
+def test_mtf_directional_gate_allows_colorless_candles_when_structure_is_valid(
+    side, bar, indicators,
+):
+    allowed, reason = MacroCandleStructureGate(max_bias_atr=1.2).can_open(
+        side,
+        bar,
+        indicators,
+        entry_pattern="CONTINUATION",
+        structure_confirmation=MTF_KC_DIRECTIONAL_ENTRY,
+        structure_confirmed=True,
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"
+
+
+@pytest.mark.parametrize(
+    ("side", "bar", "indicators", "expected_reason"),
+    [
+        (
+            "LONG",
+            {"open": 101.5, "close": 101.3, "high": 101.5, "low": 101.2},
+            {
+                "kc_upper": 102.0, "kc_lower": 100.0, "kc_middle": 101.0,
+                "ma15": 101.3, "atr": 1.0,
+            },
+            "KC_Pos",
+        ),
+        (
+            "SHORT",
+            {"open": 98.5, "close": 98.7, "high": 98.8, "low": 98.5},
+            {
+                "kc_upper": 100.0, "kc_lower": 97.5, "kc_middle": 98.75,
+                "ma15": 98.7, "atr": 1.0,
+            },
+            "KC_Pos",
+        ),
+        (
+            "LONG",
+            {"open": 101.5, "close": 101.3, "high": 102.0, "low": 101.2},
+            {
+                "kc_upper": 104.0, "kc_lower": 100.0, "kc_middle": 102.0,
+                "ma15": 101.4, "atr": 1.0,
+            },
+            "upper-wick exhaustion",
+        ),
+        (
+            "SHORT",
+            {"open": 98.5, "close": 98.7, "high": 98.8, "low": 98.0},
+            {
+                "kc_upper": 100.0, "kc_lower": 96.0, "kc_middle": 98.0,
+                "ma15": 98.6, "atr": 1.0,
+            },
+            "lower-wick exhaustion",
+        ),
+    ],
+)
+def test_mtf_directional_gate_still_vetoes_bad_location_and_exhaustion(
+    side, bar, indicators, expected_reason,
+):
+    allowed, reason = MacroCandleStructureGate(max_bias_atr=1.2).can_open(
+        side,
+        bar,
+        indicators,
+        entry_pattern="CONTINUATION",
+        structure_confirmation=MTF_KC_DIRECTIONAL_ENTRY,
+        structure_confirmed=True,
+    )
+
+    assert allowed is False
+    assert expected_reason in reason
 
 
 @pytest.mark.parametrize(

@@ -3226,14 +3226,32 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
                 live_quote = float(entry_context["entry_gate_quote"])
             except (KeyError, TypeError, ValueError, OverflowError):
                 veto("BLOCKED_MTF_LIVE_QUOTE_INVALID", bar_id=bar_id)
+            colorless_midline_hold = False
+            if not colorless_reverse:
+                from core.services.mtf_kc_state_machine import evaluate_mtf_entry
+
+                midline_evaluation = evaluate_mtf_entry(
+                    frame,
+                    entry_context.get("frame_15m"),
+                    quote=live_quote,
+                    side=side,
+                )
+                colorless_midline_hold = (
+                    midline_evaluation.get("allowed") is True
+                    and midline_evaluation.get("reason")
+                    == "MTF_KC_MIDLINE_HOLD_ENTRY"
+                    and str(midline_evaluation.get("side") or "").upper()
+                    == str(side).upper()
+                )
+            colorless_mtf_entry = colorless_reverse or colorless_midline_hold
             if (
                 not all(math.isfinite(value) and value > 0 for value in (
                     completed_open, completed_close, live_quote,
                 ))
-                or (side == "LONG" and not colorless_reverse and (
+                or (side == "LONG" and not colorless_mtf_entry and (
                     completed_close <= completed_open or live_quote <= opening
                 ))
-                or (side == "SHORT" and not colorless_reverse and (
+                or (side == "SHORT" and not colorless_mtf_entry and (
                     completed_close >= completed_open or live_quote >= opening
                 ))
             ):
