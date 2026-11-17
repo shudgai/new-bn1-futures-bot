@@ -1518,7 +1518,7 @@ class TradingEngine:
                 from core.services.execution_manager import ExecutionManager
 
                 eval_frame = frame
-                now_tick_ms = quote_ms if quote_ms is not None else (time.time() * 1000.0)
+                now_tick_ms = float(quote_ms) if quote_ms is not None else (time.time() * 1000.0)
                 current_minute_ms = math.floor(now_tick_ms / 60_000.0) * 60_000.0
                 last_bar_ts = float(frame.iloc[-1]["timestamp"])
                 if last_bar_ts == current_minute_ms - 60_000.0:
@@ -1542,6 +1542,21 @@ class TradingEngine:
                     eval_frame.attrs["timeframe_ms"] = 60_000.0
                     eval_frame.attrs["snapshot_ms"] = now_tick_ms
                     eval_frame.attrs["live_kc_middle"] = prev_mid
+                    eval_frame.attrs["live_kc_middle_bar_timestamp"] = current_minute_ms
+                elif last_bar_ts == current_minute_ms:
+                    eval_frame = frame.copy()
+                    eval_frame.attrs.update(frame.attrs)
+                    eval_frame.attrs["timeframe_ms"] = 60_000.0
+                    eval_frame.attrs["snapshot_ms"] = now_tick_ms
+                    eval_frame.at[eval_frame.index[-1], "is_closed"] = False
+                    eval_frame.at[eval_frame.index[-1], "close"] = price
+                    eval_frame.at[eval_frame.index[-1], "high"] = max(float(eval_frame.iloc[-1]["high"]), price)
+                    eval_frame.at[eval_frame.index[-1], "low"] = min(float(eval_frame.iloc[-1]["low"]), price)
+                    mid_val = eval_frame.iloc[-1].get("kc_middle")
+                    if mid_val is None or not math.isfinite(float(mid_val)) or float(mid_val) <= 0:
+                        mid_val = eval_frame.iloc[-2].get("kc_middle", price)
+                        eval_frame.at[eval_frame.index[-1], "kc_middle"] = mid_val
+                    eval_frame.attrs["live_kc_middle"] = float(mid_val)
                     eval_frame.attrs["live_kc_middle_bar_timestamp"] = current_minute_ms
 
                 waterfall_evidence = live_adverse_waterfall_evidence(pos, eval_frame, price, now_ms=quote_ms)
