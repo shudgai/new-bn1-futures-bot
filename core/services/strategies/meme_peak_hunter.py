@@ -307,18 +307,6 @@ class MemePeakHunterStrategy:
             if kc_mid_val <= 0:
                 kc_mid_val = float(ind.get("ema13", 0.0) or 0.0)
 
-            # 1.1 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命 (風控優先)
-            adverse_loss_atr = (entry_p - close_p) / atr
-            if adverse_loss_atr >= 1.5:
-                details = {
-                    "cause": "ADVERSE_STOP_LOSS",
-                    "entry_price": entry_p,
-                    "close_price": close_p,
-                    "adverse_atr": adverse_loss_atr,
-                    "atr": atr,
-                }
-                return "EXIT_BY_MEME_ADVERSE_STOP_LOSS", f"妖幣假突破初始止損 (逆向 {adverse_loss_atr:.1f} ATR 斷尾求生)", details
-
             # 1.2 移除『突破/觸碰 KC 上軌或回踩初期平多』：價格在 KC 中軌之上強制抱牢讓利潤奔跑！
             if close_p >= kc_mid_val or closed_candle_close >= kc_mid_val:
                 return None
@@ -341,18 +329,6 @@ class MemePeakHunterStrategy:
             kc_mid_val = float(ind.get("kc_middle", ind.get("ema_20", 0.0)))
             if kc_mid_val <= 0:
                 kc_mid_val = float(ind.get("ema13", 0.0) or 0.0)
-
-            # 2.1 初始逆向硬止損 (Adverse Stop Loss)：進場後行情反走，虧損達 1.5 ATR 立即市價止損逃命 (風控優先)
-            adverse_loss_atr = (close_p - entry_p) / atr
-            if adverse_loss_atr >= 1.5:
-                details = {
-                    "cause": "ADVERSE_STOP_LOSS",
-                    "entry_price": entry_p,
-                    "close_price": close_p,
-                    "adverse_atr": adverse_loss_atr,
-                    "atr": atr,
-                }
-                return "EXIT_BY_MEME_ADVERSE_STOP_LOSS", f"妖幣假跌破初始止損 (逆向 {adverse_loss_atr:.1f} ATR 斷尾求生)", details
 
             # 2.2 廢除 CLIMAX_BOTTOM：大趨勢主跌浪中，禁止因單根短線小陽線或下軌放量提前平空！
             # 只要價格或收盤仍在 KC 中軌之下，空單一律抱牢，讓利潤持續延伸！

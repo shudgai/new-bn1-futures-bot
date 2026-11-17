@@ -8,6 +8,89 @@ import time
 from typing import Any, Mapping
 
 
+def swing_exit_authorization(
+    account: Any,
+    symbol: str,
+    position: Mapping[str, Any],
+    reason: str,
+    quote: float,
+    frame: Any,
+    metadata: Mapping[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """Allow only a confirmed swing end or verified disaster exits."""
+    import pandas as pd
+
+    normalized = str(reason or "").upper()
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    side = str(position.get("side") or "").upper()
+
+    if normalized == "PRIORITY_EXIT_P0_CIRCUIT_BREAKER":
+        authorization = metadata.get("priority_exit_authorization")
+        evidence = metadata.get("priority_exit_evidence")
+        if evidence is None and isinstance(authorization, Mapping):
+            evidence = authorization.get("evidence")
+        if isinstance(evidence, Mapping) and evidence.get("trigger") == "CONSECUTIVE_ABNORMAL_CANDLES":
+            return True, "VERIFIED_CONSECUTIVE_ABNORMAL_CANDLES"
+        return False, "BLOCKED_UNVERIFIED_CIRCUIT_BREAKER"
+
+    if "ACCOUNT_CIRCUIT_BREAKER" in normalized:
+        latched = bool(
+            getattr(account, "circuit_breaker_latched", False)
+            or metadata.get("market_circuit_breaker_latched") is True
+        )
+        return (True, "VERIFIED_MARKET_CIRCUIT_BREAKER") if latched else (
+            False, "BLOCKED_UNVERIFIED_CIRCUIT_BREAKER"
+        )
+
+    if "LIQUIDATION" in normalized:
+        return True, "EXCHANGE_LIQUIDATION"
+
+    if isinstance(frame, pd.DataFrame) and not frame.empty and side in ("LONG", "SHORT"):
+        from core.services.exits.abnormal_candle_exit import (
+            live_adverse_waterfall_evidence,
+            two_closed_adverse_abnormal_evidence,
+        )
+
+        waterfall = live_adverse_waterfall_evidence(position, frame, quote)
+        if waterfall is not None and any(token in normalized for token in ("WATERFALL", "CATASTROPHIC", "EMERGENCY")):
+            return True, "VERIFIED_WATERFALL"
+        abnormal = two_closed_adverse_abnormal_evidence(position, frame)
+        if abnormal is not None and any(token in normalized for token in ("ABNORMAL", "EMERGENCY", "CIRCUIT_BREAKER")):
+            return True, "VERIFIED_ABNORMAL_CANDLES"
+
+        wave_reason = any(token in normalized for token in (
+            "PIVOT", "PEAK", "VALLEY", "FRACTAL", "TREND_REVERSAL",
+            "MULTI_FACTOR_REVERSAL", "CLOSE_LONG_AT_TOP", "CLOSE_SHORT_AT_BOTTOM",
+            "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK", "BREAKEVEN",
+            "MTF_KC_STATE_MACHINE",
+        ))
+        if wave_reason:
+            try:
+                from core.gates.holding_protection_gate import has_confirmed_true_pivot
+                confirmed, pivot_type, _ = has_confirmed_true_pivot(
+                    position, frame, float(quote),
+                )
+                expected = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
+                if confirmed and str(pivot_type or "").upper().startswith(expected):
+                    return True, "VERIFIED_TRUE_SWING_END"
+            except Exception:
+                pass
+
+            try:
+                from core.gates.top_bottom_reversal_exit import evaluate_top_bottom_reversal_exit
+                atr = float(frame.iloc[-1].get("atr") or 0.0)
+                exits, exit_reason, _ = evaluate_top_bottom_reversal_exit(
+                    position, frame, atr_val=atr,
+                )
+                expected_exit = "CLOSE_LONG_AT_TOP" if side == "LONG" else "CLOSE_SHORT_AT_BOTTOM"
+                if exits and exit_reason == expected_exit:
+                    return True, "VERIFIED_FIRST_SWING_REVERSAL"
+            except Exception:
+                pass
+
+    return False, "VETO_HOLD_UNTIL_SWING_END_OR_DISASTER"
+
+
 def meme_strategy_disaster_disabled(symbol: str, reason: str) -> bool:
     from core.symbol_aliases import is_meme_breakout_symbol
     from core.services.math_execution_gate import is_emergency_exit

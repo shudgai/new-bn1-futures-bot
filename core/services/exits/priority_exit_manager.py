@@ -521,7 +521,8 @@ def evaluate_priority_exit(
             else:
                 trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
-    if entry is not None and entry > 0 and entry_atr is not None and entry_atr > 0:
+    from core.services.exits.hard_stop_service import POSITION_HARD_STOPS_ENABLED
+    if POSITION_HARD_STOPS_ENABLED and entry is not None and entry > 0 and entry_atr is not None and entry_atr > 0:
         stop = (
             entry - HARD_SL_ATR_MULT * entry_atr
             if side == "LONG"

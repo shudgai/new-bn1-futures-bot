@@ -50,12 +50,15 @@ class MacroCandleStructureGate:
         structure_confirmation: Optional[str] = None,
         structure_confirmed: bool = False,
         channel_expanding: bool = False,
+        ignore_directional_entry_kc_location: bool = False,
     ) -> tuple[bool, str]:
         """
         AI 開倉前置審查接口
         :param side: 'LONG' 或 'SHORT'
         :param closed_bar: 最近一根已確認收盤的 K 棒字典 (open, high, low, close, volume)
         :param indicators: 指標字典 (kc_upper, kc_lower, kc_middle, ma15, atr)
+        :param ignore_directional_entry_kc_location: Skip only the legacy KC location
+            threshold for the validated MTF directional-entry pattern.
         :return: (is_allowed: bool, reason: str)
         """
         supplied_pattern = (
@@ -149,7 +152,10 @@ class MacroCandleStructureGate:
                 )
             if side == "LONG":
                 max_long_kc_pos = 1.45 if relaxed else 0.35
-                if kc_pos > max_long_kc_pos:
+                if (
+                    not ignore_directional_entry_kc_location
+                    and kc_pos > max_long_kc_pos
+                ):
                     return False, (
                         f"VETO_MTF_MIDLINE_HOLD_LONG: KC_Pos {kc_pos:.2f} > {max_long_kc_pos:.2f}"
                     )
@@ -164,7 +170,10 @@ class MacroCandleStructureGate:
                     )
             else:
                 min_short_kc_pos = -0.45 if relaxed else 0.65
-                if kc_pos < min_short_kc_pos:
+                if (
+                    not ignore_directional_entry_kc_location
+                    and kc_pos < min_short_kc_pos
+                ):
                     return False, (
                         f"VETO_MTF_MIDLINE_HOLD_SHORT: KC_Pos {kc_pos:.2f} < {min_short_kc_pos:.2f}"
                     )

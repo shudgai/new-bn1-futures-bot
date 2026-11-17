@@ -380,6 +380,18 @@ def automatic_entry_kc_structure_problem(
     from core.services.low_latency_exit import unwrap_frame_ref
 
     frame = unwrap_frame_ref(frame)
+    # Evaluate a live first-impulse setup before the slower 8/15-bar KC
+    # alignment classifier. This is the entry path for the start of a swing;
+    # the downstream gate still checks fresh quotes, candle direction, MA5,
+    # channel location, and that the higher timeframe is not opposing.
+    if account is not None and symbol:
+        early_problem = dual_timeframe_entry_problem(
+            side, account, symbol, context, fallback_frame=frame,
+            reason=reason,
+        )
+        if early_problem is None:
+            return None
+
     structure = check_kc_overall_structure(frame)
     slopes = kc_midline_slope_evidence(frame)
     expected = {
@@ -407,6 +419,12 @@ def automatic_entry_kc_structure_problem(
         short_slope,
     )
     if structure == expected and slopes_aligned:
+        dual_timeframe_problem = dual_timeframe_entry_problem(
+            side, account, symbol, context, fallback_frame=frame,
+            reason=reason,
+        )
+        if dual_timeframe_problem:
+            return dual_timeframe_problem
         return None
 
     if structure != expected:
@@ -424,6 +442,105 @@ def automatic_entry_kc_structure_problem(
         short_slope,
     )
     return reason
+
+
+def dual_timeframe_entry_problem(
+    side, account, symbol, entry_context=None, *, fallback_frame=None,
+    reason=None,
+):
+    """Revalidate the live dual-timeframe entry gates using the latest account quote."""
+    context = entry_context if isinstance(entry_context, dict) else {}
+    if (
+        context.get("manual_entry") in (True, "true", "TRUE")
+        or context.get("is_manual") in (True, "true", "TRUE")
+        or context.get("source") == "MANUAL"
+        or context.get("entry_authority") == "WAIT"
+    ):
+        return None
+    source_name = str(context.get("source") or "").upper()
+    direct_simulation_sources = {
+        "", "TEST", "NORMAL", "MANUAL", "PAPER", "PAPER_ACCOUNT",
+    }
+    reason_name = str(reason or "").upper()
+    if (
+        not context.get("entry_method_authority")
+        and source_name in direct_simulation_sources
+        and not reason_name.startswith(
+            ("AUTOMATIC", "UNIFIED", "KC_", "MTF_", "TRIGGER", "CHANNEL_")
+        )
+    ):
+        return None
+    if account is None or not symbol:
+        return None
+
+    from core.gates.kc_overall_structure_gate import evaluate_entry_signal
+    from core.services.low_latency_exit import unwrap_frame_ref
+
+    live_frames = getattr(account, "_channel_exit_frames", {})
+    live_frame = live_frames.get(symbol) if isinstance(live_frames, dict) else None
+    if live_frame is None:
+        live_frame_provider = getattr(account, "channel_exit_frame_provider", None)
+        if callable(live_frame_provider):
+            live_frame = live_frame_provider(symbol)
+    if live_frame is None:
+        live_frame = next(
+            (
+                context.get(key)
+                for key in ("raw_df", "frame", "entry_gate_frame")
+                if context.get(key) is not None
+            ),
+            fallback_frame,
+        )
+    live_frame = unwrap_frame_ref(live_frame)
+
+    frame_15m = context.get("frame_15m")
+    if frame_15m is None:
+        frames_15m = getattr(account, "_macro_trend_frame_15m", {})
+        frame_15m = (
+            frames_15m.get(symbol)
+            if isinstance(frames_15m, dict) else None
+        )
+    frame_15m = unwrap_frame_ref(frame_15m)
+
+    quote_provider = getattr(account, "wait_quote_provider", None)
+    if not callable(quote_provider):
+        return "BLOCKED_ENTRY_LIVE_QUOTE_PROVIDER_REQUIRED"
+    try:
+        quote_snapshot = quote_provider(symbol)
+        quote = float(quote_snapshot["price"])
+        observed_at = float(quote_snapshot["observed_at"])
+        from core.config import WATCHDOG_MAX_TIMEOUT_SECONDS
+        quote_is_fresh = (
+            math.isfinite(quote)
+            and quote > 0
+            and math.isfinite(observed_at)
+            and 0 <= time.monotonic() - observed_at
+            <= WATCHDOG_MAX_TIMEOUT_SECONDS
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        quote_is_fresh = False
+        quote = 0.0
+    if not quote_is_fresh:
+        return "BLOCKED_ENTRY_LIVE_QUOTE_INVALID_OR_STALE"
+
+    evaluation = evaluate_entry_signal(
+        side,
+        live_frame,
+        frame_15m,
+        quote,
+        symbol=symbol,
+        account=account,
+    )
+    if not evaluation.get("allowed"):
+        gate_reason = str(
+            evaluation.get("reason") or "BLOCKED_DUAL_TIMEFRAME_ENTRY"
+        )
+        logger.warning(
+            "DUAL_TIMEFRAME_ENTRY_VETO symbol=%s side=%s reason=%s evidence=%s",
+            symbol, side, gate_reason, evaluation.get("evidence"),
+        )
+        return gate_reason
+    return None
 
 
 def post_close_reentry_problem(

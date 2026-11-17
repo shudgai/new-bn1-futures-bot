@@ -132,6 +132,42 @@ def evaluate_top_bottom_reversal_exit(
     prev_lower_wick = min(p_open, p_close) - p_low
     prev_upper_wick = p_high - max(p_open, p_close)
 
+    # Exit on the first closed bar that confirms a turn after the position has
+    # already captured a meaningful part of the swing. The older rules below
+    # required a cross against MA15, an outer-rail pattern, or a multi-bar
+    # structure break; that routinely gave back the end of a move.
+    peak_price = float(
+        pos.get("highest_price" if side == "LONG" else "lowest_price")
+        or (closed["high"].max() if side == "LONG" else closed["low"].min())
+    )
+    peak_gain = peak_price - entry_p if side == "LONG" else entry_p - peak_price
+    peak_roe = float(pos.get("peak_roe") or 0.0)
+    wave_expanded = peak_gain >= 0.25 * atr or peak_roe >= 0.004
+    ma3_turn = (
+        ma3_curr is not None and ma3_prev is not None
+        and (ma3_curr < ma3_prev if side == "LONG" else ma3_curr > ma3_prev)
+    )
+    reversal_bar = c_close < c_open if side == "LONG" else c_close > c_open
+    close_crossed_ma3 = (
+        ma3_curr is not None
+        and (c_close < ma3_curr if side == "LONG" else c_close > ma3_curr)
+    )
+    decisive_reversal = curr_body >= 0.20 * atr or (
+        c_close < p_low if side == "LONG" else c_close > p_high
+    )
+    if wave_expanded and reversal_bar and close_crossed_ma3 and ma3_turn and decisive_reversal:
+        meta.update(
+            cause="第一根已收線反轉棒確認波段轉折，立即出場",
+            triggers=["FIRST_CLOSED_SWING_REVERSAL"],
+            peak_price=peak_price,
+            peak_gain_atr=peak_gain / atr,
+            peak_roe=peak_roe,
+            reversal_body_atr=curr_body / atr,
+        )
+        return True, (
+            CLOSE_LONG_AT_TOP if side == "LONG" else CLOSE_SHORT_AT_BOTTOM
+        ), meta
+
     # 2. 波段展開防抖（必須有實質波段展開或獲利，嚴禁進場瞬間微幅震盪誤平）
     leverage = float(pos.get("leverage") or 5.0)
     stored_peak_roe = float(pos.get("peak_roe") or 0.0)

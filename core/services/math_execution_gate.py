@@ -1480,11 +1480,14 @@ def validate_exit_at_execution(
     provider = getattr(account, "channel_exit_frame_provider", None)
     frame = None
     if callable(provider):
-        maybe_frame = provider(symbol)
-        if hasattr(maybe_frame, "__await__"):
-            maybe_frame.close()
-        else:
-            frame = maybe_frame
+        try:
+            maybe_frame = provider(symbol)
+            if hasattr(maybe_frame, "__await__"):
+                maybe_frame.close()
+            else:
+                frame = maybe_frame
+        except Exception:
+            frame = None
     if frame is None:
         frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
     if frame is None:
@@ -1493,138 +1496,15 @@ def validate_exit_at_execution(
     metadata = getattr(account, "position_meta", {}).get(symbol, {})
     if str(close_reason or "").strip() == "手動平倉":
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
-    if str(close_reason or "").upper().startswith("PRIORITY_EXIT_"):
-        from core.services.exits.priority_exit_manager import _valid_authorization
 
-        evidence = _valid_authorization(
-            position, metadata, close_reason, price,
-        )
-        if evidence is None:
-            return False, "BLOCKED_PRIORITY_EXIT_AUTHORITY", {
-                "exit_type": "BLOCKED",
-            }
-        return True, "PRIORITY_EXIT_AUTHORIZED", evidence
-    from core.services.mtf_kc_state_machine import (
-        MTF_KC_EXIT_REASON_PREFIX,
-        is_mtf_managed_position,
-        mtf_exit_is_authorized,
-        mtf_exit_reason_allowed,
-    )
-    if (
-        is_mtf_managed_position(position, metadata)
-        and not mtf_exit_reason_allowed(close_reason)
-    ):
-        return False, "BLOCKED_MTF_MIDCYCLE_EXIT", {
-            "exit_type": "BLOCKED",
-            "reason": "MTF positions may close only at cycle end or on an account emergency",
-        }
-    if str(close_reason or "").upper().startswith(MTF_KC_EXIT_REASON_PREFIX):
-        if not mtf_exit_is_authorized(
-            metadata,
-            close_reason,
-            price,
-            str(position.get("side") or "").upper(),
-        ):
-            return False, "BLOCKED_MTF_EXIT_AUTHORITY", {"exit_type": "BLOCKED"}
-        ticket = metadata.get("mtf_kc_exit_authority", {})
-        evidence = ticket.get("evidence", {}) if isinstance(ticket, Mapping) else {}
-        return True, "MTF_KC_STATE_MACHINE_EXIT_APPROVED", dict(evidence)
-    if str(close_reason or "").strip().upper() == "ACTIVE_EXIT_DUAL_TREND_REVERSAL":
-        from core.services.exits.authorized_position_exit import dual_trend_exit_block_reason
+    from core.services.exits.authorized_position_exit import swing_exit_authorization
 
-        block_reason = dual_trend_exit_block_reason(position, frame, metadata)
-        if block_reason is not None:
-            return False, block_reason, {
-                "exit_type": "BLOCKED",
-                "gate": block_reason,
-            }
-        return True, "DUAL_TREND_REVERSAL_CONFIRMED", {
-            "exit_type": "DUAL_TREND_REVERSAL",
-        }
-    from core.services.low_latency_exit import (
-        evaluate_peak_valley_exit,
-        is_peak_valley_exit_authorized_reason,
+    allowed, authority = swing_exit_authorization(
+        account, symbol, position, close_reason, price, frame, metadata,
     )
-    if is_peak_valley_exit_authorized_reason(close_reason):
-        pv_eval = evaluate_peak_valley_exit(
-            frame,
-            position=position,
-            live_price=price,
-            metadata=metadata if isinstance(metadata, Mapping) else None,
-            symbol=symbol,
-        )
-        if not pv_eval.get("should_exit"):
-            return False, "BLOCKED_PEAK_VALLEY_EXIT_NOT_CONFIRMED", pv_eval.get("metrics", {})
-        return True, "PEAK_VALLEY_LOW_LATENCY_EXIT_APPROVED", pv_eval.get("metrics", {})
-    from core.services.exits.authorized_position_exit import (
-        automated_position_exit_allowed, strategy_exit_bar_block_reason,
-    )
-    from core.gates.ultimate_short_exit_gatekeeper import DEFER, UltimateShortExitGatekeeper
-    meme_verdict = UltimateShortExitGatekeeper.evaluate(
-        symbol, position, metadata, close_reason, price, frame=frame,
-    )
-    if meme_verdict.verdict != DEFER:
-        # A HOLD is logged once by the account boundary (POSITION_EXIT_BLOCK).
-        if meme_verdict.allowed and hasattr(account, "log"):
-            account.log(
-                f"EXIT_AUTHORIZATION symbol={symbol} side={position.get('side')} "
-                f"exit_reason={close_reason} authorization_function=UltimateShortExitGatekeeper "
-                f"final_execution_gate={meme_verdict.code} evidence={meme_verdict.evidence}",
-                "WARNING" if meme_verdict.allowed else "INFO",
-            )
-        if not meme_verdict.allowed:
-            return False, meme_verdict.code, {"exit_type": "BLOCKED"}
-        return True, meme_verdict.code, meme_verdict.evidence
-    is_emergency = is_emergency_exit(close_reason)
-    bar_block = (
-        strategy_exit_bar_block_reason(position, metadata) if not is_emergency else None
-    )
-    if bar_block:
-        return False, bar_block, {"exit_type": "BLOCKED", "exit_policy": "HOLD_ENTRY_CANDLE"}
-    allowed = automated_position_exit_allowed(
-        symbol, position, metadata, close_reason, price, frame=frame,
-    )
-    evidence = None
-    if allowed and is_emergency:
-        from core.config import SLIPPAGE_PCT, TAKER_FEE_RATE
-        allowed, code, evidence = validate_exit_math(
-            {**position, "symbol": symbol}, frame, price, metadata,
-            fee_rate=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT,
-            close_reason=close_reason,
-        )
-    elif allowed:
-        from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
-        pivot = profitable_true_pivot_exit(
-            {**position, "symbol": symbol}, frame, metadata, quote=price,
-        )
-        evidence = pivot[1] if pivot is not None else None
-        code = "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED"
-    else:
-        code = "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
-    if allowed and not is_emergency and evidence is None:
-        allowed = False
-        code = "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY"
-    if allowed and hasattr(account, "log"):
-        side = str(position.get("side") or "").upper()
-        qty = position.get("qty")
-        authorization = (
-            "emergency_exit_math" if is_emergency else "automated_position_exit_allowed"
-        )
-        account.log(
-            f"EXIT_AUTHORIZATION symbol={symbol} side={side} qty={qty} "
-            f"exit_reason={close_reason} authorization_function={authorization} "
-            f"trigger_source=account_close_boundary "
-            f"final_execution_gate={code} "
-            f"evidence={evidence if evidence is not None else 'none'}",
-            "WARNING" if allowed else "INFO",
-        )
     if not allowed:
-        return False, "BLOCKED_TREND_LOCK_OR_UNCONFIRMED_EMERGENCY", {
-            "exit_type": "BLOCKED",
-        }
-    if is_emergency:
-        return True, code, evidence or {"exit_type": "EMERGENCY"}
-    return True, code, evidence
+        return False, authority, {"exit_type": "BLOCKED"}
+    return True, authority, {"exit_type": authority, "swing_exit_authorized": True}
 
 
 def is_entry_bar(position: Mapping[str, Any], frame: Any) -> bool:

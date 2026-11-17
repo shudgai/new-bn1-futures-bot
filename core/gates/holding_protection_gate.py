@@ -1574,18 +1574,9 @@ class HoldingProtectionExitGate:
         atr = float(prev.get('atr', curr.get('atr', 0.0))) if has_frame else 0.0
         candle_closed = _current_bar_is_closed(frame)
 
-        # ── 1. 破軌多單進場保護期 (Grace Period: bars_held <= 2) ──
-        # 開倉後前 2 根 K 棒僅在跌破開倉停損底線（Stop Loss）時出場，避免被微幅盤中影線早洗。
-        bars_held = _calculate_bars_held(position, frame)
-        if side == 'LONG' and bars_held <= 2:
-            sl = float(position.get('sl') or position.get('initial_sl') or 0.0)
-            if sl <= 0 and atr > 0:
-                sl = entry_price - 1.5 * atr
-            if sl > 0 and quote <= sl:
-                return 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL', {
-                    'stop_loss': sl, 'quote': quote, 'bars_held': bars_held,
-                    'side': side, 'reason': 'STOP_LOSS_HIT_IN_GRACE_PERIOD',
-                }
+        # Entry-candle and grace-period price stops are disabled. Extreme
+        # waterfall/abnormal-candle and account circuit-breaker exits are
+        # evaluated by their dedicated evidence gates below.
 
         # ── 1.1 極端異常：大瀑布反轉 / 極速反撲 (EXIT_BY_EXTREME_WATERFALL) ──
         if frame is not None and len(frame) >= 1 and atr > 0:

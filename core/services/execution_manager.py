@@ -7054,6 +7054,7 @@ class ExecutionManager:
                     symbol=symbol,
                     current_price=price,
                     close_reason=reason,
+                    is_manual=manual_exit,
                     is_limit=is_limit,
                 )
                 if success and closed_side:

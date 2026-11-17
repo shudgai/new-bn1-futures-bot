@@ -1907,7 +1907,22 @@ class PaperAccount:
                 return False
             if exit_frame is None:
                 exit_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
-        if not UltimateExitGatekeeper.can_execute_exit(
+        if not is_manual:
+            from core.services.exits.authorized_position_exit import swing_exit_authorization
+            swing_allowed, swing_authority = swing_exit_authorization(
+                self, symbol, position, close_reason, current_price, exit_frame, meta,
+            )
+            if not swing_allowed:
+                self.log(
+                    f"SWING_HOLD_EXIT_VETO symbol={symbol} reason={close_reason} "
+                    f"authority={swing_authority}",
+                    "INFO",
+                )
+                return False
+        wave_end_authorized = swing_authority in (
+            "VERIFIED_TRUE_SWING_END", "VERIFIED_FIRST_SWING_REVERSAL",
+        )
+        if not wave_end_authorized and not UltimateExitGatekeeper.can_execute_exit(
             symbol, position, meta, close_reason, current_price,
             is_manual=is_manual, frame=exit_frame,
         ):

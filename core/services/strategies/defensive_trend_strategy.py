@@ -405,11 +405,6 @@ def check_long_exit(
             logger.info(f"[平倉觸發] {symbol} 多單 - 跌破成本線保本平多 (成本={entry_p:.6g}, 現價={curr_price:.6g})")
             return True, "EXIT_BY_BREAKEVEN", details
 
-    # 2. 伺服器級硬止損緊急避險
-    if pnl_pct <= -0.015 or (entry_p - curr_price) >= 2.2 * atr:
-        logger.info(f"[平倉觸發] {symbol} 多單 - 達到伺服器硬止損門檻 (虧損={pnl_pct:.2%})")
-        return True, "EXIT_BY_HARD_STOP_LOSS", details
-
     # 3. 結構破壞平多判定：只有收盤實體跌破 KC 中軌才平倉
     if close_p < kc_mid_curr:
         logger.info(f"[結構破壞平多] {symbol} 多單 - 3M收盤實體跌破KC中軌 (收盤={close_p:.6g} < 中軌={kc_mid_curr:.6g})，多頭瓦解平多")
@@ -567,10 +562,6 @@ def check_short_exit(
     if allow_pullback_exits and golden_cross and close_p > ma15_curr:
         logger.info(f"[平倉觸發] {symbol} 空單 - MA5/MA15 均線金叉且突破 MA15 (MA5={ma5_curr:.6g} > MA15={ma15_curr:.6g})")
         return True, "EXIT_BY_MA_GOLDEN_CROSS", details
-
-    if pnl_pct <= -0.015 or (curr_price - entry_p) >= 2.2 * atr:
-        logger.info(f"[平倉觸發] {symbol} 空單 - 達到伺服器硬止損門檻 (虧損={pnl_pct:.2%})")
-        return True, "EXIT_BY_HARD_STOP_LOSS", details
 
     # 7. 健康回抽容忍：正常回踩 MA5/MA15 但未站穩 MA15 且無金叉，視為健康回抽，嚴禁平空！
     return False, "HOLD: HEALTHY_PULLBACK_TOLERANCE", details

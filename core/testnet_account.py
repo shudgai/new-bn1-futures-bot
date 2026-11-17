@@ -2525,8 +2525,21 @@ class BinanceTestnetAccount:
         if not is_reduce:
             if side not in ('buy', 'sell'):
                 raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
+            from core.services.entry_contract import dual_timeframe_entry_problem
+            entry_side = 'LONG' if side == 'buy' else 'SHORT'
+            dual_timeframe_problem = dual_timeframe_entry_problem(
+                entry_side,
+                self,
+                symbol,
+                entry_context,
+            )
+            if dual_timeframe_problem:
+                raise ValueError(
+                    "[FORBIDDEN_ENTRY] DUAL_TIMEFRAME_ENTRY: "
+                    + dual_timeframe_problem
+                )
             await validate_account_entry(
-                self, symbol, 'LONG' if side == 'buy' else 'SHORT', entry_context)
+                self, symbol, entry_side, entry_context)
             params['_entry_context'] = dict(entry_context or {})
         return await self.exchange.create_order(symbol, order_type, side, qty, price, params)
 
@@ -4236,7 +4249,22 @@ class BinanceTestnetAccount:
                 return False
             if exit_frame is None:
                 exit_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
-        if not UltimateExitGatekeeper.can_execute_exit(
+        if not is_manual:
+            from core.services.exits.authorized_position_exit import swing_exit_authorization
+            swing_allowed, swing_authority = swing_exit_authorization(
+                self, symbol, position, close_reason, current_price, exit_frame, meta,
+            )
+            if not swing_allowed:
+                self.log(
+                    f"SWING_HOLD_EXIT_VETO symbol={symbol} reason={close_reason} "
+                    f"authority={swing_authority}",
+                    "INFO",
+                )
+                return False
+        wave_end_authorized = swing_authority in (
+            "VERIFIED_TRUE_SWING_END", "VERIFIED_FIRST_SWING_REVERSAL",
+        )
+        if not wave_end_authorized and not UltimateExitGatekeeper.can_execute_exit(
             symbol, position, meta, close_reason, current_price,
             is_manual=is_manual, frame=exit_frame,
         ):

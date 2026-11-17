@@ -1043,32 +1043,33 @@ def check_exit_conditions(
     # 1. 例外緊急狀況：大瀑布 / 異常 K 線 (盤中即時監控，無須等收盤)
     # =========================================================
     if entry_price is not None and entry_price > 0:
-        # 情況 A：價格波動超過 waterfall_atr_mult 倍 ATR (大瀑布 / 暴跌暴漲異常 K 線)
-        price_change = abs(current_price - entry_price)
-        if price_change > (atr_val * waterfall_atr_mult):
+        # Disaster exits require an abnormal adverse candle, not simply a
+        # large loss from entry. A normal pullback across a price threshold is
+        # not a hard-stop signal.
+        live = df.iloc[-1]
+        opening = float(live.get("open", current_price))
+        close = float(live.get("close", current_price))
+        middle = float(live.get("kc_middle", live.get("kc_mid", 0.0)) or 0.0)
+        adverse_body = (
+            max(opening - current_price, opening - close)
+            if current_position == PositionState.LONG
+            else max(current_price - opening, close - opening)
+        )
+        crossed_middle = middle > 0 and (
+            min(current_price, close) < middle
+            if current_position == PositionState.LONG
+            else max(current_price, close) > middle
+        )
+        if adverse_body >= max(1.5, waterfall_atr_mult) * atr_val and crossed_middle:
             return {
                 "action": "EMERGENCY_CLOSE",
-                "reason": f"防範大瀑布/異常極端 K 線，價格偏差={price_change:.4f} > {waterfall_atr_mult}*ATR({atr_val:.4f})，觸發緊急風控平倉！",
+                "reason": f"大瀑布/異常反向 K 實體={adverse_body:.4f}，貫穿 KC 中軌且達 {max(1.5, waterfall_atr_mult):.1f} ATR，緊急平倉",
                 "atr": atr_val,
                 "entry_price": entry_price,
                 "current_price": current_price,
             }
 
-        # 情況 B：硬止損 (Hard Stop Loss，如固定 2% 離場)
-        if current_position == PositionState.LONG and current_price <= entry_price * (1.0 - hard_sl_pct):
-            return {
-                "action": "STOP_LOSS",
-                "reason": f"觸及硬止損線 {hard_sl_pct*100:.1f}%，現價={current_price:.4f} <= 止損價={entry_price * (1.0 - hard_sl_pct):.4f}，立即平多",
-                "entry_price": entry_price,
-                "current_price": current_price,
-            }
-        elif current_position == PositionState.SHORT and current_price >= entry_price * (1.0 + hard_sl_pct):
-            return {
-                "action": "STOP_LOSS",
-                "reason": f"觸及硬止損線 {hard_sl_pct*100:.1f}%，現價={current_price:.4f} >= 止損價={entry_price * (1.0 + hard_sl_pct):.4f}，立即平空",
-                "entry_price": entry_price,
-                "current_price": current_price,
-            }
+        # Fixed percentage/entry-price hard stops are intentionally disabled.
 
     # =========================================================
     # 2. 一般情況：必須等待 K 線完全走完 (收盤) 才評估真峰谷轉向
@@ -1411,17 +1412,21 @@ def evaluate_exit_with_trend_lock(
 
     # 2. 判斷極端大瀑布 / 風控防禦 (防止黑天鵝)
     atr = float(df["atr"].iloc[-1]) if ("atr" in df.columns and len(df["atr"]) > 0 and pd.notna(df["atr"].iloc[-1])) else (c0 * 0.02)
-    price_change = (
-        (c0 - entry_price)
+    # Emergency close only for a large adverse candle that cuts through the
+    # KC middle. Distance from entry alone is not a disaster signal.
+    adverse_body = (
+        max(o0 - c0, 0.0)
         if current_position == PositionState.LONG
-        else (entry_price - c0)
+        else max(c0 - o0, 0.0)
     )
-
-    # 情況 A：防範極端大瀑布 (損失超過 2 倍 ATR 硬止損)
-    if entry_price > 0 and price_change < -abs(atr * 2.0):
+    if (
+        atr > 0 and adverse_body >= 1.5 * atr
+        and ((current_position == PositionState.LONG and o0 >= kc_mid and c0 < kc_mid)
+             or (current_position == PositionState.SHORT and o0 <= kc_mid and c0 > kc_mid))
+    ):
         return {
             "action": "EMERGENCY_CLOSE",
-            "reason": f"觸及極端風控硬止損 (損失={abs(price_change):.4f} > 2.0*ATR={2*atr:.4f})，保護本金平倉",
+            "reason": f"大瀑布/異常反向 K 實體={adverse_body:.4f} 達 1.5 ATR 並貫穿 KC 中軌，緊急平倉",
         }
 
     # =========================================================

@@ -33,6 +33,7 @@ from core.services.low_latency_entry import (
 from core.services.technical_indicators import compute_keltner_channels
 from core.services.strategies.outer_strategy import ck_direction
 from core.symbol_aliases import is_lobster_symbol, is_pepe_symbol
+from core.services.exits.hard_stop_service import POSITION_HARD_STOPS_ENABLED
 
 
 logger = logging.getLogger("LowLatencyExit")
@@ -1194,9 +1195,9 @@ def evaluate_kc_layered_exit(
     # ══════════════════════════════════════════════════════════════════════════
     # 第一層判斷：固定硬止損（盤中即時價 Tick 觸發，防範極端單邊暴跌暴漲）
     # ══════════════════════════════════════════════════════════════════════════
-    if side == "LONG" and math.isfinite(hard_sl_price) and hard_sl_price > 0 and price <= hard_sl_price:
+    if POSITION_HARD_STOPS_ENABLED and side == "LONG" and math.isfinite(hard_sl_price) and hard_sl_price > 0 and price <= hard_sl_price:
         return _build_exit(True, "ACTIVE_EXIT_KC_HARD_STOP_LOSS", "TICK", "LAYER1_HARD_STOP_LOSS")
-    if side == "SHORT" and math.isfinite(hard_sl_price) and hard_sl_price > 0 and price >= hard_sl_price:
+    if POSITION_HARD_STOPS_ENABLED and side == "SHORT" and math.isfinite(hard_sl_price) and hard_sl_price > 0 and price >= hard_sl_price:
         return _build_exit(True, "ACTIVE_EXIT_KC_HARD_STOP_LOSS", "TICK", "LAYER1_HARD_STOP_LOSS")
 
     # ── 【大結構破壞止損 (Swing Break SL)】 ────────────────────────────────────
@@ -1793,7 +1794,7 @@ def evaluate_peak_valley_exit(
     # ══════════════════════════════════════════════════════════════════════════
 
     # Rule 4A (Tick): 單筆最大價差硬止損（觸及即市價逃命，嚴禁反手）
-    if config.max_stop_loss_pct > 0 and curr_return_pct <= -config.max_stop_loss_pct:
+    if POSITION_HARD_STOPS_ENABLED and config.max_stop_loss_pct > 0 and curr_return_pct <= -config.max_stop_loss_pct:
         return _result(True, "ACTIVE_EXIT_PV_MAX_STOP_LOSS", "TICK")
 
     # Rule 4B (Tick): 假轉折結構破位快速止損（跌破進場前波谷 / 突破進場前波峰，嚴禁反手）

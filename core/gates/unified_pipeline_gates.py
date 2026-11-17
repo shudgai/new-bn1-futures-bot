@@ -249,6 +249,16 @@ class ExitGate:
             and not meme_strategy_disaster_disabled(symbol, priority_result[1])
         ):
             return priority_result
+        if (
+            priority_result[0]
+            and priority_result[1] in ("CLOSE_LONG_AT_TOP", "CLOSE_SHORT_AT_BOTTOM")
+            and (priority_result[2] or {}).get("top_bottom_reversal", {}).get("triggers")
+            and "FIRST_CLOSED_SWING_REVERSAL"
+            in (priority_result[2] or {}).get("top_bottom_reversal", {}).get("triggers", [])
+        ):
+            # The first closed reversal bar is the swing-end signal. Do not
+            # route it back through the slower three-point profit-pivot gate.
+            return priority_result
         frame = (
             market_data.raw_df if isinstance(market_data, MarketDataSnapshot)
             else market_data.get("raw_df") if isinstance(market_data, dict) else None

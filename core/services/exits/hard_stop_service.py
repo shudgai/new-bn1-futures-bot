@@ -21,22 +21,7 @@ def price_atr_stop_disabled(
 
 
 def hard_stop_reason(position, price):
-    """Evaluate market circuit breaker / hard stop (loss >= 2.0% or 3.0 ATR)."""
-    if not isinstance(position, Mapping):
-        return None
-    entry_price = float(position.get("entry_price") or 0.0)
-    if entry_price <= 0 or not price or price <= 0:
-        return None
-    side = str(position.get("side") or "").upper()
-    if side not in ("LONG", "SHORT"):
-        return None
-
-    loss_pct = (entry_price - price) / entry_price if side == "LONG" else (price - entry_price) / entry_price
-    atr = float(position.get("entry_atr") or position.get("atr") or 0.0)
-    loss_atr = ((entry_price - price) if side == "LONG" else (price - entry_price)) / atr if atr > 0 else 0.0
-
-    if loss_pct >= 0.02 or (atr > 0 and loss_atr >= 3.0):
-        return "CIRCUIT_BREAKER_HARD_SL"
+    """Per-position price/ATR stops are disabled; emergencies use dedicated gates."""
     return None
 
 
