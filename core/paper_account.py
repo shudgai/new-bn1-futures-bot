@@ -1265,6 +1265,7 @@ class PaperAccount:
         )
         if (
             not mtf_colorless_entry
+            and entry_context.get("manual_entry") is not True
             and _guard_frame is not None
             and isinstance(_guard_frame, pd.DataFrame)
             and len(_guard_frame) > 0
