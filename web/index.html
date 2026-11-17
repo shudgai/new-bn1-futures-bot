@@ -1327,6 +1327,10 @@
                     const currTime = number(current.time);
                     if (currMid === null || prevMid === null || currMid <= 0 || prevMid <= 0
                             || prevTime === null || currTime === null || currTime - prevTime !== 60) return 'wait';
+                    const atr = number(current.atr) || (currMid * 0.005);
+                    const slopeAtr = Math.abs(currMid - prevMid) / atr;
+                    const slopePct = Math.abs(currMid - prevMid) / prevMid;
+                    if (slopeAtr < 0.05 && slopePct < 0.0003) return 'range';
                     if (currMid > prevMid) return 'bull';
                     if (currMid < prevMid) return 'bear';
                     return 'range';

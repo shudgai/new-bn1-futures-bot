@@ -121,6 +121,11 @@ def _closed_kc_direction(closed: pd.DataFrame) -> str:
     if any(value is None or value <= 0 for value in values):
         return "FLAT"
     first, second, third = values
+    atr = _number(closed.iloc[-1], "atr") or 0.0
+    slope_atr = abs(third - first) / (2.0 * atr) if atr > 0 else 0.0
+    slope_pct = abs(third - first) / first if first > 0 else 0.0
+    if slope_atr < 0.05 and slope_pct < 0.0003:
+        return "FLAT"
     if first < second < third:
         return "UPTREND"
     if first > second > third:
@@ -211,6 +216,21 @@ def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
         return None
     curr_ma5 = _number(closed.iloc[-1], "ma5") if "ma5" in closed.columns else None
     curr_ma15 = _number(closed.iloc[-1], "ma15") if "ma15" in closed.columns else None
+
+    # Check for flat middle: if midline has no directional slope, it is FLAT / CHOP, not a trend!
+    curr_atr = _number(closed.iloc[-1], "atr") or 0.0
+    slope_atr = abs(curr_mid - prev_mid) / curr_atr if curr_atr > 0 else 0.0
+    slope_pct = abs(curr_mid - prev2_mid) / curr_mid if curr_mid > 0 else 0.0
+    if slope_atr < 0.05 and slope_pct < 0.0003:
+        return None
+
+    # Check for chop / MA5-MA15 entanglement in recent bars:
+    if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
+        spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
+        crossings = int((spread * spread.shift(1) < 0).sum())
+        if crossings >= 2:
+            return None
+
     if (
         curr_mid <= prev_mid
         and curr_mid < prev2_mid
@@ -246,18 +266,20 @@ def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
     if (
         last_lower_idx is not None
         and (last_upper_idx is None or last_lower_idx > last_upper_idx)
-        and (curr_mid > prev_mid or curr_mid > prev2_mid)
+        and (curr_mid > prev_mid and curr_mid > prev2_mid)
+        and (slope_atr >= 0.05 or slope_pct >= 0.0003)
         and curr_close > curr_mid
-        and (curr_ma5 is None or curr_ma15 is None or curr_ma5 >= curr_ma15)
+        and (curr_ma5 is None or curr_ma15 is None or curr_ma5 > curr_ma15)
         and _ltf_kc_wave_trend_conflict(closed, "LONG") is None
     ):
         return "UPTREND"
     if (
         last_upper_idx is not None
         and (last_lower_idx is None or last_upper_idx > last_lower_idx)
-        and (curr_mid < prev_mid or curr_mid < prev2_mid)
+        and (curr_mid < prev_mid and curr_mid < prev2_mid)
+        and (slope_atr >= 0.05 or slope_pct >= 0.0003)
         and curr_close < curr_mid
-        and (curr_ma5 is None or curr_ma15 is None or curr_ma5 <= curr_ma15)
+        and (curr_ma5 is None or curr_ma15 is None or curr_ma5 < curr_ma15)
         and _ltf_kc_wave_trend_conflict(closed, "SHORT") is None
     ):
         return "DOWNTREND"
@@ -421,6 +443,10 @@ def _has_ltf_outer_band_valley_or_peak_turn(
     prev_mid = _number(closed.iloc[-2], "kc_middle")
     curr_close = _number(closed.iloc[-1], "close")
     if None in (curr_mid, prev_mid, curr_close):
+        return False
+    curr_atr = _number(closed.iloc[-1], "atr") or 0.0
+    slope_atr = abs(curr_mid - prev_mid) / curr_atr if curr_atr > 0 else 0.0
+    if slope_atr < 0.05:
         return False
     if htf_state == "UPTREND":
         touched_lower = any(
@@ -675,7 +701,26 @@ def evaluate_mtf_exit_confirmation(
                     "changed": False,
                     "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_OHLC_INVALID",
                 }
-            adverse_close = close < opening if side == "LONG" else close > opening
+            color_adverse = close < opening if side == "LONG" else close > opening
+            mid_val = _number(matching_bar, "kc_middle")
+            ma15_val = _number(matching_bar, "ma15")
+            structural_adverse = False
+            if side == "SHORT":
+                if mid_val is not None and ma15_val is not None:
+                    structural_adverse = (close > min(mid_val, ma15_val))
+                elif mid_val is not None:
+                    structural_adverse = (close > mid_val)
+                else:
+                    structural_adverse = color_adverse
+            elif side == "LONG":
+                if mid_val is not None and ma15_val is not None:
+                    structural_adverse = (close < max(mid_val, ma15_val))
+                elif mid_val is not None:
+                    structural_adverse = (close < mid_val)
+                else:
+                    structural_adverse = color_adverse
+
+            adverse_close = color_adverse and structural_adverse
             if adverse_close:
                 confirmed = dict(pending)
                 confirmed["confirmed"] = True
@@ -883,6 +928,29 @@ def evaluate_mtf_entry(
     wave_conflict = _ltf_kc_wave_trend_conflict(closed, expected_side)
     if wave_conflict is not None:
         return {**htf, "allowed": False, "reason": wave_conflict}
+    has_ltf_kc_bands = {"kc_upper", "kc_lower", "kc_middle"}.issubset(closed.columns)
+    if has_ltf_kc_bands:
+        curr_mid = _number(closed.iloc[-1], "kc_middle")
+        prev_mid = _number(closed.iloc[-2], "kc_middle")
+        prev2_mid = _number(closed.iloc[-3], "kc_middle") if len(closed) >= 3 else prev_mid
+        curr_atr = _number(closed.iloc[-1], "atr") or 0.0
+        slope_atr = abs(curr_mid - prev_mid) / curr_atr if curr_atr > 0 else 0.0
+        slope_pct = abs(curr_mid - prev2_mid) / curr_mid if curr_mid and curr_mid > 0 else 0.0
+        if slope_atr < 0.05 and slope_pct < 0.0003:
+            return {
+                **htf,
+                "allowed": False,
+                "reason": "BLOCKED_MTF_KC_CONSOLIDATION:VETO_KC_MIDLINE_FLAT",
+            }
+        if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
+            spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
+            if int((spread * spread.shift(1) < 0).sum()) >= 2:
+                return {
+                    **htf,
+                    "allowed": False,
+                    "reason": "BLOCKED_MTF_KC_CONSOLIDATION:VETO_MA5_MA15_CHOP",
+                }
+
     from core.services.market_consolidation_filter import evaluate_market_blacklist
 
     consolidation_blocked, consolidation_reason, consolidation_evidence = (
