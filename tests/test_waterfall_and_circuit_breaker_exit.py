@@ -88,6 +88,37 @@ def test_extreme_waterfall_authorized_before_live_candle_closes():
     assert "EMERGENCY_EXIT" in code
 
 
+@pytest.mark.parametrize("reason", ["EMERGENCY_DUMP_EXIT", "EMERGENCY_EXTREME_ADVERSE_BAR"])
+def test_legacy_waterfall_aliases_still_require_and_accept_verified_waterfall(reason):
+    import time
+
+    now = math.floor(time.time() / 60) * 60
+    pos = {
+        "symbol": "1000LOBSTER/USDT", "side": "LONG", "entry_price": 1.0,
+        "amount": 100, "leverage": 10, "open_timestamp": now - 60 + 10,
+    }
+    frame = pd.DataFrame([
+        {"timestamp": (now - 120) * 1000, "open": 0.99, "high": 1.01,
+         "low": 0.97, "close": 1.00, "atr": 0.03, "kc_middle": 0.98,
+         "is_closed": True},
+        {"timestamp": (now - 60) * 1000, "open": 1.00, "high": 1.02,
+         "low": 0.98, "close": 1.01, "atr": 0.03, "kc_middle": 0.99,
+         "is_closed": True},
+        {"timestamp": now * 1000, "open": 1.05, "high": 1.06,
+         "low": 0.94, "close": 0.95, "atr": 0.03, "kc_middle": 1.00,
+         "is_closed": False},
+    ])
+    frame.attrs.update(timeframe_ms=60_000, snapshot_ms=time.time() * 1000)
+
+    allowed, code, evidence = HoldingProtectionExitGate.validate_exit(
+        pos, frame, 0.95, reason,
+    )
+
+    assert allowed
+    assert code == "EXIT_BY_EXTREME_WATERFALL"
+    assert evidence["adverse_body"] >= 1.5 * evidence["atr"]
+
+
 def test_sub_1_5_atr_short_bounce_below_kc_midline_is_not_waterfall_exit():
     from core.gates.unified_pipeline_gates import ExitGate
 

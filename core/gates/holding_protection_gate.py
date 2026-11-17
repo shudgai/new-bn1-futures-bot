@@ -757,6 +757,18 @@ def _current_bar_is_closed(frame):
     return value is True or (type(value).__name__ == 'bool_' and bool(value))
 
 
+def _kc_midline_favors_position(frame, side):
+    """Use the last two completed KC midlines to detect an aligned holding trend."""
+    if side not in ('LONG', 'SHORT'):
+        return False
+    try:
+        from core.services.candle_data import confirmed_kc_midline_slope
+        slope = confirmed_kc_midline_slope(frame)
+        return slope is not None and (slope > 0 if side == 'LONG' else slope < 0)
+    except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def _closed_bar_crossed_kc_middle(frame, side):
     """Require a confirmed close across KC mid before a soft profit exit."""
     if frame is None or len(frame) < 2 or side not in ('LONG', 'SHORT'):
@@ -1806,6 +1818,50 @@ class HoldingProtectionExitGate:
             print(reject_msg, flush=True)
             return False, reason, details
 
+        def _verified_waterfall_details():
+            if frame is None or frame.empty or side not in ('LONG', 'SHORT'):
+                return None
+            try:
+                live = frame.iloc[-1]
+                previous = frame.iloc[-2] if len(frame) > 1 else live
+                atr = float(previous.get('atr', live.get('atr', 0.0)))
+                opening = float(live.get('open', quote))
+                middle = float(live.get('kc_middle', live.get('kc_basis', 0.0)))
+                current_quote = float(quote)
+                adverse_body = opening - current_quote if side == 'LONG' else current_quote - opening
+                crossed_middle = (
+                    current_quote < middle if side == 'LONG' else current_quote > middle
+                )
+                live_ok = (
+                    all(math.isfinite(value) for value in (atr, opening, middle, current_quote, adverse_body))
+                    and atr > 0 and opening > 0 and middle > 0
+                    and adverse_body >= 1.5 * atr and crossed_middle
+                )
+                prev_open = float(previous.get('open', 0.0))
+                prev_close = float(previous.get('close', 0.0))
+                prev_mid = float(previous.get('kc_middle', middle))
+                prev_adverse = prev_open - prev_close if side == 'LONG' else prev_close - prev_open
+                prev_crossed = (
+                    prev_open >= prev_mid and prev_close < prev_mid
+                    if side == 'LONG'
+                    else prev_open <= prev_mid and prev_close > prev_mid
+                )
+                prev_ok = (
+                    all(math.isfinite(value) for value in (prev_open, prev_close, prev_mid, prev_adverse))
+                    and atr > 0 and prev_open > 0 and prev_mid > 0
+                    and prev_adverse >= 1.5 * atr and prev_crossed
+                )
+                if not live_ok and not prev_ok:
+                    return None
+                return {
+                    'adverse_body': adverse_body if live_ok else prev_adverse,
+                    'atr': atr, 'kc_middle': middle,
+                    'quote': current_quote, 'side': side,
+                }
+            except (AttributeError, KeyError, TypeError, ValueError,
+                    OverflowError, IndexError):
+                return None
+
         hard_exit = any(marker in clean_reason.upper() for marker in (
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
             'EMERGENCY_STOP', 'EXIT_BY_CIRCUIT_BREAKER_HARD_SL',
@@ -1830,6 +1886,35 @@ class HoldingProtectionExitGate:
 
         if hard_exit:
             return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
+
+        # 順勢中即使報價刺穿反側 KC 外軌，也必須等進場後真峰／真谷確認。
+        # 瀑布類出口繼續往下交由實體與中軌穿越驗證；市場熔斷已由 hard_exit 優先放行。
+        waterfall_candidate = any(token in clean_reason.upper() for token in (
+            'WATERFALL', 'CATASTROPHIC_DUMP', 'CATASTROPHIC_PUMP',
+            'EMERGENCY_DUMP_EXIT', 'EMERGENCY_EXTREME_ADVERSE_BAR',
+        ))
+        if waterfall_candidate:
+            waterfall_details = _verified_waterfall_details()
+            if waterfall_details is None:
+                return _reject(reason='VETO_UNVERIFIED_WATERFALL')
+            details.update(waterfall_details)
+            return _auth('EXIT_BY_EXTREME_WATERFALL')
+        if (not waterfall_candidate
+                and _kc_midline_favors_position(frame, side)):
+            trend_pivot, trend_pivot_type, trend_pivot_info = has_confirmed_true_pivot(
+                position, frame, quote,
+            )
+            if not trend_pivot:
+                return _reject(reason='VETO_KC_MIDLINE_TREND_UNTIL_TRUE_PIVOT')
+            details.update(
+                true_pivot_type=trend_pivot_type, **trend_pivot_info,
+            )
+            pivot_exit_reason = (
+                'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT'
+                if side == 'LONG'
+                else 'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT'
+            )
+            return _auth(pivot_exit_reason)
 
         # 順勢K棒保護鎖：多單遇綠K、空單遇紅K，一律讓該分鐘走完不平倉（大瀑布/異常K例外）。
         color_block = bar_color_exit_block(side, frame, clean_reason)
@@ -1880,8 +1965,8 @@ class HoldingProtectionExitGate:
             details.update(evidence)
             return _auth(clean_reason)
 
-        # 反側 KC 外軌擊穿屬已授權緊急避險：以最新報價重新驗證確實擊穿，
-        # 驗證通過即放行，不得被盤整/中軌/寬限期等持倉防洗否決困住虧損部位。
+        # 反側 KC 外軌擊穿只有在 KC 中軌未沿持倉方向時才可作為既有緊急出口；
+        # 中軌順勢時已在上方的趨勢鎖先要求真峰谷。
         if 'OPPOSITE_KC_BAND_BREACH' in clean_reason.upper():
             try:
                 live_bar = frame.iloc[-1]
@@ -1981,8 +2066,7 @@ class HoldingProtectionExitGate:
             'HARD_STOP', 'CIRCUIT_BREAKER', 'HARD_SL', 'ACCOUNT_HARD_STOP',
             'EMERGENCY_STOP', 'EMERGENCY_DUMP', 'EMERGENCY_EXTREME_ADVERSE',
             'EXTREME_WATERFALL', 'CATASTROPHIC_DUMP',
-            'CATASTROPHIC_PUMP', 'OPPOSITE_KC_BAND_BREACH',
-            'EXIT_LONG_ON_KC_LOWER_BREACH', 'EXIT_SHORT_ON_KC_UPPER_BREACH',
+            'CATASTROPHIC_PUMP',
             'MEME_ADVERSE_STOP',
         ))
 
@@ -2351,55 +2435,11 @@ class HoldingProtectionExitGate:
             # never an independent strategy exit under the approved exit policy.
             return _reject(wait_for_close=not candle_closed)
 
-        # ── 1. 硬止損 / 市場熔斷 (CIRCUIT_BREAKER_HARD_SL / OPPOSITE_KC_BAND_BREACH) ──
-        if is_safety_exit or any(token in clean_reason.upper() for token in ('CIRCUIT_BREAKER', 'HARD_SL', 'HARD_STOP', 'OPPOSITE_KC_BAND_BREACH')):
+        # ── 1. 硬止損 / 市場熔斷 ──
+        if is_safety_exit or any(token in clean_reason.upper() for token in ('CIRCUIT_BREAKER', 'HARD_SL', 'HARD_STOP')):
             if any(token in clean_reason.upper() for token in ('CIRCUIT_BREAKER', 'HARD_SL', 'HARD_STOP')):
                 details.update(quote=quote, side=side, reason=clean_reason)
                 return _auth('EXIT_BY_CIRCUIT_BREAKER_HARD_SL')
-            if 'OPPOSITE_KC_BAND_BREACH' in clean_reason.upper():
-                details.update(quote=quote, side=side, reason=clean_reason)
-                return _auth('OPPOSITE_KC_BAND_BREACH')
-
-        # ── 2. 極端異常大瀑布：原因標籤不構成授權，重新驗證實體與中軌 ──
-        if clean_reason in ('EXIT_BY_EXTREME_WATERFALL', 'CATASTROPHIC_DUMP_EXIT', 'CATASTROPHIC_PUMP_EXIT'):
-            try:
-                if frame is None or frame.empty or side not in ('LONG', 'SHORT'):
-                    return _reject()
-                live = frame.iloc[-1]
-                previous = frame.iloc[-2] if len(frame) > 1 else live
-                atr = float(previous.get('atr', live.get('atr', 0.0)))
-                opening = float(live.get('open', quote))
-                middle = float(live.get('kc_middle', live.get('kc_basis', 0.0)))
-                current_quote = float(quote)
-                adverse_body = opening - current_quote if side == 'LONG' else current_quote - opening
-                crossed_middle = (
-                    current_quote < middle if side == 'LONG' else current_quote > middle
-                )
-                live_ok = (
-                    all(math.isfinite(value) for value in (atr, opening, middle, current_quote, adverse_body))
-                    and atr > 0 and opening > 0 and middle > 0
-                    and adverse_body >= 1.5 * atr and crossed_middle
-                )
-                prev_open = float(previous.get('open', 0.0))
-                prev_close = float(previous.get('close', 0.0))
-                prev_mid = float(previous.get('kc_middle', middle))
-                prev_adverse = prev_open - prev_close if side == 'LONG' else prev_close - prev_open
-                prev_crossed = (prev_open >= prev_mid and prev_close < prev_mid) if side == 'LONG' else (prev_open <= prev_mid and prev_close > prev_mid)
-                prev_ok = (
-                    all(math.isfinite(value) for value in (prev_open, prev_close, prev_mid, prev_adverse))
-                    and atr > 0 and prev_open > 0 and prev_mid > 0
-                    and prev_adverse >= 1.5 * atr and prev_crossed
-                )
-                if not live_ok and not prev_ok:
-                    return _reject(wait_for_close=not candle_closed)
-                details.update(
-                    adverse_body=adverse_body if live_ok else prev_adverse, atr=atr, kc_middle=middle,
-                    quote=current_quote, side=side,
-                )
-                return _auth('EXIT_BY_EXTREME_WATERFALL')
-            except (KeyError, TypeError, ValueError, OverflowError, IndexError):
-                return _reject(wait_for_close=not candle_closed)
-
         # ── 3. 階梯鎖利回吐 (WHITELIST SCENARIO 3) ──
         if _is_profit_lock_reason(clean_reason):
             lock = _verified_profit_lock_details(position, quote)

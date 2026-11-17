@@ -293,18 +293,70 @@ def _losing_short_above_upper():
 
 
 class TestExitAuthorization:
-    # 錢丟了風險（回歸）：多單虧損且已跌破 KC 下軌，反側擊穿緊急出場曾被盤整否決卡死
-    def test_long_opposite_band_breach_always_escapes(self):
+    # 中軌未沿多方持倉上行時，既有反側軌道緊急出口仍有效。
+    def test_long_opposite_band_breach_escapes_when_midline_not_rising(self):
         position, df = _losing_long_below_lower()
         ok, code, _ = HoldingProtectionExitGate.validate_exit(
             position, df, 96.9, "OPPOSITE_KC_BAND_BREACH")
         assert ok and code == "OPPOSITE_KC_BAND_BREACH"
 
-    def test_short_opposite_band_breach_always_escapes(self):
+    def test_short_opposite_band_breach_escapes_when_midline_not_falling(self):
         position, df = _losing_short_above_upper()
         ok, code, _ = HoldingProtectionExitGate.validate_exit(
             position, df, 103.1, "OPPOSITE_KC_BAND_BREACH")
         assert ok and code == "OPPOSITE_KC_BAND_BREACH"
+
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_opposite_band_breach_holds_while_kc_midline_trends_with_position(self, side):
+        if side == "LONG":
+            position, df = _losing_long_below_lower()
+            df["kc_middle"] = [99.0 + index * 0.1 for index in range(len(df))]
+            quote = 96.9
+        else:
+            position, df = _losing_short_above_upper()
+            df["kc_middle"] = [101.0 - index * 0.1 for index in range(len(df))]
+            quote = 103.1
+
+        ok, code, _ = HoldingProtectionExitGate.validate_exit(
+            position, df, quote, "OPPOSITE_KC_BAND_BREACH",
+        )
+
+        assert not ok
+        assert code == "VETO_KC_MIDLINE_TREND_UNTIL_TRUE_PIVOT"
+
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_opposite_band_candidate_closes_only_after_true_pivot_in_aligned_trend(self, side):
+        if side == "LONG":
+            rows = [
+                _bar(2, 102.0, 104.0, 101.0, 103.0, mid=100.1),
+                _bar(3, 104.0, 106.0, 103.0, 104.8, mid=100.2),
+                _bar(4, 104.5, 105.0, 103.5, 103.8, mid=100.3),
+            ]
+            position = {"side": side, "entry_price": 100.0, "open_timestamp": 60}
+            quote = 103.8
+        else:
+            rows = [
+                _bar(2, 98.0, 99.0, 96.0, 97.0, mid=100.3),
+                _bar(3, 96.0, 97.0, 94.0, 95.0, mid=100.2),
+                _bar(4, 95.0, 97.0, 94.8, 96.2, mid=100.1),
+            ]
+            position = {"side": side, "entry_price": 100.0, "open_timestamp": 60}
+            quote = 96.2
+
+        ok, code, evidence = HoldingProtectionExitGate.validate_exit(
+            position, _frame(rows), quote, "OPPOSITE_KC_BAND_BREACH",
+        )
+
+        assert ok
+        expected = (
+            "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+            if side == "LONG"
+            else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+        )
+        assert code == expected
+        assert evidence["true_pivot_type"].startswith(
+            "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
+        )
 
     # 詐欺型態：標籤寫「反側擊穿」但價格其實沒擊穿 → 標籤不構成授權
     def test_mislabelled_opposite_breach_not_authorized(self):
