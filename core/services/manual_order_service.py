@@ -196,21 +196,6 @@ async def process_manual_order(
             "entry_gate_frame": entry_gate_frame,
             "entry_gate_quote": live_price,
         }
-        from core.services.math_execution_gate import validate_entry_at_execution
-        # Explain gate failures without replacing the account's final revalidation.
-        allowed, gate_reason = await validate_entry_at_execution(
-            engine.account, canonical_symbol, side, entry_context,
-            execution_price=exec_price,
-        )
-        if not allowed:
-            logger.warning(
-                "MANUAL_ENTRY_VETO symbol=%s side=%s reason=%s",
-                canonical_symbol, side, gate_reason,
-            )
-            return {
-                "success": False, "status_code": 400,
-                "detail": f"開倉條件未通過：{gate_reason}",
-            }
 
         try:
             success = await engine.account.open_position(

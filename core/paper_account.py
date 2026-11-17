@@ -1050,7 +1050,10 @@ class PaperAccount:
                     except Exception:
                         gate_frame = None
 
-            if entry_context.get("entry_method_authority") != "MTF_KC_STATE_MACHINE":
+            if (
+                entry_context.get("entry_method_authority") != "MTF_KC_STATE_MACHINE"
+                and entry_context.get("manual_entry") is not True
+            ):
                 require_ma5_ma15_entry_gates(
                     entry_context.get("entry_gate_frame"),
                     side,
