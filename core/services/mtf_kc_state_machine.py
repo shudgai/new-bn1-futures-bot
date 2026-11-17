@@ -947,7 +947,9 @@ def evaluate_mtf_entry(
             )
 
         location_allowed = -1.0 < ratio < (
-            1.05 if has_ltf_kc_bands else MAX_ENTRY_BAND_RATIO
+            1.5 if (colorless_reverse and has_ltf_kc_bands)
+            else 1.05 if has_ltf_kc_bands
+            else MAX_ENTRY_BAND_RATIO
         )
 
         pending_matches_next_bar = False
