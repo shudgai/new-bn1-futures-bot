@@ -1493,9 +1493,83 @@ class TradingEngine:
                 await asyncio.sleep(.1)
 
     async def _instant_quote_exit(self, symbol, price, quote_ms=None):
-        """Per-position hard stops are disabled; account circuit breakers run separately."""
+        """Evaluate real-time tick emergency waterfall exit on incoming aggTrade/ticker (<10ms latency)."""
+        if not math.isfinite(price) or price <= 0:
+            return False
+
+        from core.symbol_aliases import to_canonical_display_symbol
+        canonical_sym = to_canonical_display_symbol(symbol)
+        positions = getattr(self.account, "positions", {})
+        pos = positions.get(canonical_sym) or positions.get(symbol)
+        if not pos or abs(float(pos.get("amount", 0.0) or pos.get("qty", 0.0))) <= 0:
+            return False
+
+        # 1. 檢查帳戶/持倉熔斷
         from core.services.exits.hard_stop_service import enforce_hard_stop
-        return await enforce_hard_stop(self.account, symbol, price)
+        closed = await enforce_hard_stop(self.account, canonical_sym, price)
+        if closed:
+            return True
+
+        # 2. 毫秒級極端反向大瀑布（實體 >= 1.5 ATR 且貫穿中軌）立即市價避險離場
+        frames = getattr(self, "_channel_exit_frames", {})
+        frame = frames.get(canonical_sym)
+        if frame is None:
+            frame = frames.get(symbol)
+        if frame is not None and isinstance(frame, pd.DataFrame) and len(frame) >= 2:
+            try:
+                from core.services.exits.abnormal_candle_exit import live_adverse_waterfall_evidence
+                from core.services.execution_manager import ExecutionManager
+
+                waterfall_evidence = live_adverse_waterfall_evidence(pos, frame, price, now_ms=quote_ms)
+                if waterfall_evidence is None and quote_ms is not None:
+                    waterfall_evidence = live_adverse_waterfall_evidence(pos, frame, price, now_ms=None)
+                if waterfall_evidence is not None:
+                    waterfall_reason = "EXIT_BY_EXTREME_WATERFALL"
+                    self.account.log(
+                        f"⚡ [INSTANT_TICK_WATERFALL_EXIT] {canonical_sym} 即時成交流秒級觸發大瀑布避險！"
+                        f"price={price} body={waterfall_evidence.get('body')} "
+                        f"atr={waterfall_evidence.get('atr')} threshold={waterfall_evidence.get('threshold')}",
+                        "CRITICAL"
+                    )
+                    closed = await ExecutionManager.close_position(
+                        self.account,
+                        canonical_sym,
+                        price,
+                        waterfall_reason,
+                        meta={"raw_df": frame, "is_bar_closed": False},
+                    )
+                    if closed:
+                        side = str(pos.get("side") or "").upper()
+                        entry_state = getattr(self.account, "entry_filter_last", None)
+                        if not isinstance(entry_state, dict):
+                            entry_state = {}
+                            self.account.entry_filter_last = entry_state
+                        reverse_tickets = entry_state.setdefault("mtf_cycle_reverse_pending", {})
+                        if isinstance(reverse_tickets, dict):
+                            target_side = "SHORT" if side == "LONG" else "LONG"
+                            bar_id = None
+                            try:
+                                bar_id = int(float(frame.iloc[-1]["timestamp"]))
+                            except Exception:
+                                pass
+                            reverse_tickets[canonical_sym] = {
+                                "source_side": side,
+                                "target_side": target_side,
+                                "reason": waterfall_reason,
+                                "close_timestamp": getattr(self.account, "last_closed_at", {}).get(canonical_sym),
+                                "bar_id": bar_id,
+                            }
+                            save_state = getattr(self.account, "save_state", None)
+                            if callable(save_state):
+                                try:
+                                    save_state()
+                                except Exception:
+                                    pass
+                    return bool(closed)
+            except Exception as e:
+                logger.debug(f"[INSTANT_QUOTE_EXIT] {symbol} live waterfall check exception: {e}")
+
+        return False
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
         """Ticker shares the same lock-free decision path as aggTrade."""

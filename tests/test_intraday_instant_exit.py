@@ -149,3 +149,51 @@ def test_trade_stream_maps_lobster_exchange_alias_to_position_symbol():
         )
 
     asyncio.run(run())
+
+
+def test_instant_quote_exit_triggers_extreme_waterfall():
+    import math
+    async def run():
+        symbol = "龙虾/USDT"
+        now = math.floor(time.time() / 60) * 60
+        frame = pd.DataFrame([
+            dict(timestamp=(now - 60) * 1000, open=100.0, high=101.0, low=99.0, close=100.0,
+                 atr=2.0, kc_middle=100.0, kc_upper=110.0, kc_lower=90.0, is_closed=True),
+            dict(timestamp=now * 1000, open=100.0, high=100.5, low=99.5, close=100.0,
+                 atr=2.0, kc_middle=100.0, kc_upper=110.0, kc_lower=90.0, is_closed=False),
+        ])
+        frame.attrs.update(timeframe_ms=60_000, snapshot_ms=(now + 10) * 1000)
+
+        position = {
+            "symbol": symbol,
+            "side": "SHORT",
+            "entry_price": 100.0,
+            "qty": 1.0,
+            "margin": 20.0,
+            "leverage": 5,
+            "open_timestamp": now + 1,
+        }
+        account = SimpleNamespace(
+            positions={symbol: position},
+            position_meta={},
+            entry_filter_last={},
+            last_closed_at={},
+            save_state=Mock(),
+            close_position=AsyncMock(return_value=True),
+            log=Mock(),
+        )
+
+        engine = object.__new__(TradingEngine)
+        engine.account = account
+        engine.is_running = True
+        engine._channel_exit_frames = {symbol: frame}
+
+        # Price explodes upward to 104.0 (body = 4.0 >= 1.5 * atr(2.0)=3.0 and price > kc_middle(100.0))
+        closed = await engine._instant_quote_exit(symbol, 104.0, (now + 15) * 1000)
+        assert closed is True
+        assert account.close_position.await_count == 1
+        args, kwargs = account.close_position.call_args
+        assert kwargs.get("close_reason") == "EXIT_BY_EXTREME_WATERFALL" or args[2] == "EXIT_BY_EXTREME_WATERFALL"
+
+    asyncio.run(run())
+
