@@ -699,7 +699,13 @@ class PaperAccount:
                         pv_flip_verified = verify_pv_flip_entry_authority(
                             eval_frame, side=side_up, live_price=price, context=entry_context, symbol=symbol,
                         )
-                    if kc_m_p is not None and math.isfinite(kc_m_p) and not pv_override and not pv_flip_verified:
+                    if (
+                        kc_m_p is not None
+                        and math.isfinite(kc_m_p)
+                        and not pv_override
+                        and not pv_flip_verified
+                        and entry_context.get("manual_entry") is not True
+                    ):
                         if (
                             (not entry_context.get("_entry_method_validated") or is_mtf_entry)
                             and side_up == "SHORT" and kc_m >= kc_m_p
