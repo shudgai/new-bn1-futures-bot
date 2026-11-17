@@ -498,6 +498,52 @@ def evaluate_closed_15m_kc_trend(frame_15m: Any) -> dict[str, Any]:
     return {"valid": True, "direction": direction, "reason": "PASS"}
 
 
+def _kc_midline_entry_problem(frame: Any, timeframe_ms: float, side: str, prefix: str):
+    data = _valid_live_frame(frame, timeframe_ms)
+    if data is None:
+        return f"BLOCKED_{prefix}_KC_MIDLINE_DATA_INVALID"
+    closed, _ = data
+    if len(closed) < 3:
+        return f"BLOCKED_{prefix}_KC_MIDLINE_HISTORY_INVALID"
+
+    middle = [_number(closed.iloc[index], "kc_middle") for index in (-3, -2, -1)]
+    atr = _number(closed.iloc[-1], "atr")
+    if (
+        any(value is None or value <= 0 for value in middle)
+        or atr is None
+        or atr <= 0
+    ):
+        return f"BLOCKED_{prefix}_KC_MIDLINE_DATA_INVALID"
+
+    normalized_side = str(side or "").upper()
+    delta = float(middle[2]) - float(middle[1])
+    if (
+        normalized_side == "LONG" and delta <= 0
+        or normalized_side == "SHORT" and delta >= 0
+        or normalized_side not in ("LONG", "SHORT")
+    ):
+        return f"BLOCKED_{prefix}_KC_MIDLINE_NOT_DIRECTIONAL"
+
+    slope_atr = abs(delta) / float(atr)
+    slope_pct = abs(float(middle[2]) - float(middle[0])) / abs(float(middle[2]))
+    if (
+        slope_atr < 0.05
+        and not math.isclose(slope_atr, 0.05, rel_tol=1e-9, abs_tol=0.0)
+    ) or (
+        slope_pct < 0.0003
+        and not math.isclose(slope_pct, 0.0003, rel_tol=1e-9, abs_tol=0.0)
+    ):
+        return f"BLOCKED_{prefix}_KC_MIDLINE_FLAT"
+    return None
+
+
+def mtf_entry_midline_problem(frame_1m: Any, frame_15m: Any, side: str):
+    return (
+        _kc_midline_entry_problem(frame_1m, 60_000.0, side, "LTF")
+        or _kc_midline_entry_problem(frame_15m, 900_000.0, side, "HTF")
+    )
+
+
 def close_in_current_live_1m_bar(frame: Any, closed_at: Any) -> Optional[bool]:
     """Return whether the latest close happened in the current live 1m candle."""
     if closed_at is None:
@@ -636,6 +682,25 @@ def evaluate_mtf_exit_confirmation(
             metadata.pop(pending_key, None)
             pending = None
             changed = True
+
+    if _is_mtf_cycle_exit(reason):
+        expected_reversal = "DOWNTREND" if side == "LONG" else "UPTREND"
+        confirmed_direction = (
+            (evidence or {}).get("closed_midline_direction")
+            or (evidence or {}).get("closed_trend")
+        )
+        if (
+            (evidence or {}).get("valid") is True
+            and confirmed_direction == expected_reversal
+        ):
+            changed = metadata.pop(pending_key, None) is not None
+            return {
+                "allowed": True,
+                "waiting": False,
+                "changed": changed,
+                "reason": reason,
+                "evidence": dict(evidence or {}),
+            }
 
     if isinstance(pending, Mapping) and pending.get("confirmed") is True:
         return {
@@ -907,6 +972,11 @@ def evaluate_mtf_entry(
             "reason": "BLOCKED_LTF_KC_LIVE_DATA_INVALID",
         }
     closed, live = data
+    midline_problem = mtf_entry_midline_problem(
+        frame_1m, frame_15m, expected_side,
+    )
+    if midline_problem is not None:
+        return {**htf, "allowed": False, "reason": midline_problem}
     closed_open = _number(closed.iloc[-1], "open")
     closed_close = _number(closed.iloc[-1], "close")
     expected_closed_color = expected_side
@@ -930,18 +1000,6 @@ def evaluate_mtf_entry(
         return {**htf, "allowed": False, "reason": wave_conflict}
     has_ltf_kc_bands = {"kc_upper", "kc_lower", "kc_middle"}.issubset(closed.columns)
     if has_ltf_kc_bands:
-        curr_mid = _number(closed.iloc[-1], "kc_middle")
-        prev_mid = _number(closed.iloc[-2], "kc_middle")
-        prev2_mid = _number(closed.iloc[-3], "kc_middle") if len(closed) >= 3 else prev_mid
-        curr_atr = _number(closed.iloc[-1], "atr") or 0.0
-        slope_atr = abs(curr_mid - prev_mid) / curr_atr if curr_atr > 0 else 0.0
-        slope_pct = abs(curr_mid - prev2_mid) / curr_mid if curr_mid and curr_mid > 0 else 0.0
-        if slope_atr < 0.05 and slope_pct < 0.0003:
-            return {
-                **htf,
-                "allowed": False,
-                "reason": "BLOCKED_MTF_KC_CONSOLIDATION:VETO_KC_MIDLINE_FLAT",
-            }
         if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
             spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
             if int((spread * spread.shift(1) < 0).sum()) >= 2:
@@ -1352,7 +1410,13 @@ def update_mtf_position_protection(
 
 
 def authorize_mtf_exit(
-    account: Any, symbol: str, reason: str, price: float, evidence: Mapping[str, Any],
+    account: Any,
+    symbol: str,
+    reason: str,
+    price: float,
+    evidence: Mapping[str, Any],
+    *,
+    allow_direction_mismatch: bool = False,
 ) -> bool:
     if not mtf_exit_reason_allowed(reason):
         return False
@@ -1361,7 +1425,21 @@ def authorize_mtf_exit(
         return False
     position = getattr(account, "positions", {}).get(symbol, {})
     if not is_mtf_managed_position(position, meta):
-        return False
+        side = str(position.get("side") or "").upper()
+        state = str(evidence.get("state") or "").upper()
+        expected_state = "UPTREND" if side == "SHORT" else "DOWNTREND"
+        expected_reason = (
+            f"{MTF_KC_EXIT_REASON_PREFIX}{expected_state}_REVERSAL_EXIT"
+        )
+        if (
+            not allow_direction_mismatch
+            or evidence.get("forced_state_mismatch") is not True
+            or evidence.get("valid") is not True
+            or side not in ("LONG", "SHORT")
+            or state != expected_state
+            or reason != expected_reason
+        ):
+            return False
     meta["mtf_kc_exit_authority"] = {
         "reason": reason,
         "side": str(position.get("side") or "").upper(),

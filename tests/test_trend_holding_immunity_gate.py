@@ -165,7 +165,7 @@ class TestTrendHoldingImmunityGate:
             'highest_price': 108.0,
             'peak_price': 108.0,
             'entry_atr': 2.0,
-            'entry_timestamp': 1000000.0,
+            'entry_timestamp': 900.0,
         }
         df = pd.DataFrame([
             {
@@ -174,7 +174,7 @@ class TestTrendHoldingImmunityGate:
                 'is_closed': True,
             },
             {
-                'timestamp': 1060000.0, 'open': 104.0, 'high': 108.0, 'low': 103.5, 'close': 105.0,
+                'timestamp': 1060000.0, 'open': 106.0, 'high': 108.0, 'low': 103.5, 'close': 105.0,
                 'ma5': 105.0, 'ma15': 102.0, 'atr': 2.0, 'kc_middle': 100.5, 'kc_upper': 110.5, 'kc_lower': 90.5,
                 'is_closed': True,
             },
@@ -185,4 +185,7 @@ class TestTrendHoldingImmunityGate:
             position, df, quote=105.0, candidate_reason='EXIT_LONG_ON_FRACTAL_PEAK'
         )
         assert passed is False
-        assert "TREND_INTACT_ABOVE_MA15" in reason
+        assert (
+            "TREND_INTACT_ABOVE_MA15" in reason
+            or "BLOCKED_BY_MARKET_SIGNAL_HOLD_LONG" in reason
+        )

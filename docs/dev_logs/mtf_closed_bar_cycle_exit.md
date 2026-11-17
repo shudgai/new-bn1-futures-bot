@@ -51,3 +51,17 @@
 - **Entry protection**: The final automatic-order gate permits LONG only in confirmed UPTREND and SHORT only in confirmed DOWNTREND. Missing, invalid, flat, or mixed 15m direction fails closed; explicit manual orders and the independent WAIT authority do not inherit this strategy filter.
 - **Exit protection**: Ordinary strategy exits are held until two consecutive completed 15m KC midline moves confirm a reversal against the position. Existing profit-lock, hard-stop, waterfall/circuit-breaker, and manual exits retain priority.
 - **Regression coverage**: Added mirrored countertrend-entry vetoes, two-move direction classification, continuation holds despite an opposing live 15m slope, and protected-exit bypass checks.
+
+### [2026-11-17 16:58:03 UTC+8] - Modification Phase: Fix holding-protection test fixtures and diagnose LOBSTER entry
+- **Author**: Copilot SDK AI assistant
+- **Target Files & Lines**: `tests/test_hybrid_exit_and_holding_protection.py`, `tests/test_short_holding_protection.py`, `tests/test_trend_holding_immunity_gate.py`
+- **Modification Description**: Corrected closed-bar, ATR, and position-timestamp fixtures; aligned assertions with true-pivot confirmation and higher-priority holding vetoes. No trading logic was changed.
+- **Trigger Reason & Requirement**: User requested repair of seven failing tests and an evidence-based explanation for the LOBSTER LONG not opening around 16:44.
+- **Finding**: At 16:44, paper-account logs contain only empty-slot observations and no generated LONG candidate. The SHORT closed by `EXIT_BY_EXTREME_WATERFALL` at 16:42:04; its persisted re-entry ticket is bound to the 16:42 1m bar and is invalid on the 16:44 bar. A later manual LONG attempt at 16:46 was blocked because MA5 (0.017912) remained below KC middle (0.018017). The same diagnostic's displayed “slope down” comparison is inconsistent with the values (0.017912 > 0.017754); the below-middle condition alone explains that block.
+- **Verification & Test Status**: Six focused suites — 116 passed; Python compilation and `git diff --check` passed. No commit, deployment, or restart was performed.
+
+## 2026-11-18 — Require both 1m and 15m reversal for ordinary exits
+
+- **Exit authorization**: An ordinary MTF exit requires both the confirmed 15m KC direction and the 1m closed-bar KC turn to oppose the position. A 1m turn cannot override an unchanged, flat, mixed, or invalid 15m direction; a 15m reversal without the 1m turn also holds.
+- **Final execution gate**: Recheck both directions immediately before an automated ordinary close. Emergency exits, verified profit protection, and manual closes retain their existing priority.
+- **Regression coverage**: Added mirrored cases proving either timeframe alone cannot authorize an exit, plus a final-close check preventing a 1m-only override.

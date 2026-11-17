@@ -15,6 +15,8 @@ def meme_strategy_disaster_disabled(symbol: str, reason: str) -> bool:
     normalized = str(reason).upper()
     if not is_meme_breakout_symbol(symbol) or not is_emergency_exit(reason):
         return False
+    if "PRIORITY_EXIT_" in normalized:
+        return False
     if any(token in normalized for token in (
         "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP",
         "EMERGENCY_SURGE", "閃崩", "瀑布",
@@ -71,6 +73,7 @@ def strategy_exit_bar_block_reason(
 def is_dual_trend_emergency_exit(reason: str) -> bool:
     normalized = str(reason or "").upper().replace(" ", "_")
     return any(token in normalized for token in (
+        "PRIORITY_EXIT_",
         "ACCOUNT_HARD_STOP", "ACCOUNT_CIRCUIT_BREAKER",
         "CIRCUIT_BREAKER_HARD_SL", "EXIT_BY_CIRCUIT_BREAKER_HARD_SL",
         "CIRCUIT_BREAKER", "HARD_STOP_LOSS", "HARD_STOP",
@@ -276,6 +279,12 @@ class UltimateExitGatekeeper:
             return False
 
         normalized_reason = str(reason or "").upper()
+        if normalized_reason.startswith("PRIORITY_EXIT_"):
+            from core.services.exits.priority_exit_manager import _valid_authorization
+
+            return _valid_authorization(
+                position, metadata, reason, exit_price,
+            ) is not None
         from core.services.mtf_kc_state_machine import (
             MTF_KC_EXIT_REASON_PREFIX,
             mtf_exit_is_authorized,

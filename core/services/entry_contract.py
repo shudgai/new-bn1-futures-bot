@@ -344,6 +344,210 @@ def same_bar_close_entry_problem(account, symbol, frame, side):
         return 'BLOCKED_CURRENT_BAR_ID_INVALID'
 
 
+def automatic_entry_kc_structure_problem(
+    side, frame, entry_context=None, reason=None, *, account=None, symbol=None,
+):
+    context = entry_context if isinstance(entry_context, dict) else {}
+    if account is not None and symbol:
+        from core.services.exits.priority_exit_manager import (
+            entry_circuit_breaker_cooldown_problem,
+        )
+
+        cooldown_problem = entry_circuit_breaker_cooldown_problem(
+            account, symbol,
+        )
+        if cooldown_problem:
+            logger.warning(
+                "ENTRY_CIRCUIT_BREAKER_COOLDOWN symbol=%s reason=%s",
+                symbol, cooldown_problem,
+            )
+            return cooldown_problem
+    if (
+        context.get("manual_entry") in (True, "true", "TRUE")
+        or context.get("is_manual") in (True, "true", "TRUE")
+        or context.get("source") == "MANUAL"
+        or context.get("entry_authority") == "WAIT"
+        or str(reason or "").upper() == "MANUAL"
+    ):
+        return None
+
+    from core.gates.kc_overall_structure_gate import (
+        KC_OVERALL_DOWN_ALIGNED,
+        KC_OVERALL_UP_ALIGNED,
+        check_kc_overall_structure,
+        kc_midline_slope_evidence,
+    )
+    from core.services.low_latency_exit import unwrap_frame_ref
+
+    frame = unwrap_frame_ref(frame)
+    structure = check_kc_overall_structure(frame)
+    slopes = kc_midline_slope_evidence(frame)
+    expected = {
+        "LONG": KC_OVERALL_UP_ALIGNED,
+        "SHORT": KC_OVERALL_DOWN_ALIGNED,
+    }.get(str(side or "").upper())
+    long_slope = slopes.get("long_slope") if slopes else None
+    short_slope = slopes.get("short_slope") if slopes else None
+    if str(side or "").upper() == "LONG":
+        slopes_aligned = bool(
+            slopes is not None and long_slope > 0 and short_slope > 0
+        )
+    elif str(side or "").upper() == "SHORT":
+        slopes_aligned = bool(
+            slopes is not None and long_slope < 0 and short_slope < 0
+        )
+    else:
+        slopes_aligned = False
+    logger.info(
+        "KC_OVERALL_STRUCTURE_CHECK side=%s structure=%s long_slope=%s "
+        "short_slope=%s",
+        side,
+        structure,
+        long_slope,
+        short_slope,
+    )
+    if structure == expected and slopes_aligned:
+        return None
+
+    if structure != expected:
+        reason = f"BLOCKED_KC_OVERALL_STRUCTURE:{structure}"
+    elif slopes is None:
+        reason = "BLOCKED_KC_OVERALL_STRUCTURE:SLOPE_HISTORY_INVALID"
+    else:
+        reason = "BLOCKED_KC_OVERALL_STRUCTURE:MIDLINE_SLOPE_MISMATCH"
+    logger.warning(
+        "[攔截開單] KC 整體處於水平箱體或三軌未同步，放棄進場 "
+        "side=%s structure=%s long_slope=%s short_slope=%s",
+        side,
+        structure,
+        long_slope,
+        short_slope,
+    )
+    return reason
+
+
+def post_close_reentry_problem(
+    account, symbol, side, frame, frame_15m=None, entry_context=None, reason=None,
+):
+    """Require a fresh, trend-aligned, non-consolidating signal after any close."""
+    context = entry_context if isinstance(entry_context, dict) else {}
+    if (
+        context.get("manual_entry") in (True, "true", "TRUE")
+        or context.get("is_manual") in (True, "true", "TRUE")
+        or context.get("source") == "MANUAL"
+        or str(reason or "").upper() == "MANUAL"
+    ):
+        return None
+    if account is None or symbol in getattr(account, "positions", {}):
+        return None
+
+    is_mtf_entry = (
+        str(context.get("entry_method_authority") or "").upper()
+        == "MTF_KC_STATE_MACHINE"
+        or str(reason or "").upper().startswith("MTF_KC_STATE_MACHINE")
+    )
+    if is_mtf_entry:
+        from core.services.low_latency_exit import unwrap_frame_ref
+        from core.services.mtf_kc_state_machine import mtf_entry_midline_problem
+
+        frame = unwrap_frame_ref(frame)
+        if frame is None:
+            frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
+            frame = unwrap_frame_ref(frame)
+        if frame_15m is None:
+            frames_15m = getattr(account, "_macro_trend_frame_15m", {})
+            if isinstance(frames_15m, dict):
+                frame_15m = frames_15m.get(symbol)
+        midline_problem = mtf_entry_midline_problem(frame, frame_15m, side)
+        if midline_problem is not None:
+            return midline_problem
+
+    last_closed_at = getattr(account, "last_closed_at", {})
+    if not isinstance(last_closed_at, dict) or symbol not in last_closed_at:
+        return None
+    try:
+        closed_at = float(last_closed_at[symbol])
+    except (TypeError, ValueError, OverflowError):
+        return "BLOCKED_POST_CLOSE_INVALID_CLOSE_TIMESTAMP"
+    if not math.isfinite(closed_at) or closed_at <= 0:
+        return "BLOCKED_POST_CLOSE_INVALID_CLOSE_TIMESTAMP"
+    close_ms = closed_at if closed_at >= 1e11 else closed_at * 1000.0
+
+    from core.services.low_latency_exit import unwrap_frame_ref
+    from core.services.mtf_kc_state_machine import (
+        close_in_current_live_1m_bar,
+        evaluate_closed_15m_kc_trend,
+    )
+
+    frame = unwrap_frame_ref(frame)
+    if frame is None:
+        frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
+        frame = unwrap_frame_ref(frame)
+    same_bar = close_in_current_live_1m_bar(frame, closed_at)
+    if same_bar is None:
+        return "BLOCKED_POST_CLOSE_CURRENT_1M_DATA_INVALID"
+    if same_bar:
+        return "BLOCKED_POST_CLOSE_SAME_1M_BAR"
+
+    closed = closed_entry_candles(frame)
+    if closed.empty:
+        return "BLOCKED_POST_CLOSE_CLOSED_CANDLES_INVALID"
+    try:
+        interval_ms = float(frame.attrs.get("timeframe_ms", 60_000))
+        signal_bar_id = next(
+            (
+                context[key]
+                for key in (
+                    "entry_method_bar_id",
+                    "channel_confirmation_bar_id",
+                    "candidate_bar_id",
+                    "bar_id",
+                )
+                if context.get(key) is not None
+            ),
+            closed.iloc[-1]["timestamp"],
+        )
+        signal_bar_ms = float(signal_bar_id)
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return "BLOCKED_POST_CLOSE_SIGNAL_BAR_INVALID"
+    if (
+        not math.isfinite(interval_ms)
+        or interval_ms != 60_000
+        or not math.isfinite(signal_bar_ms)
+        or signal_bar_ms <= 0
+    ):
+        return "BLOCKED_POST_CLOSE_SIGNAL_BAR_INVALID"
+    if signal_bar_ms < 1e11:
+        signal_bar_ms *= 1000.0
+    signal_bar_start_ms = math.floor(signal_bar_ms / interval_ms) * interval_ms
+    if signal_bar_start_ms + interval_ms <= close_ms:
+        return "BLOCKED_POST_CLOSE_SIGNAL_NOT_NEW"
+
+    frames_15m = getattr(account, "_macro_trend_frame_15m", {})
+    if frame_15m is None and isinstance(frames_15m, dict):
+        frame_15m = frames_15m.get(symbol)
+    trend = evaluate_closed_15m_kc_trend(frame_15m)
+    expected_trend = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
+        str(side or "").upper()
+    )
+    if not trend.get("valid") or expected_trend is None:
+        return "BLOCKED_POST_CLOSE_15M_TREND_INVALID"
+    if trend.get("direction") != expected_trend:
+        return "BLOCKED_POST_CLOSE_15M_TREND_MISMATCH"
+
+    from core.services.market_consolidation_filter import evaluate_market_blacklist
+
+    blocked, consolidation_reason, _evidence = evaluate_market_blacklist(
+        closed,
+        side=side,
+        cooldown_bars=0,
+        strict_consolidation=True,
+    )
+    if blocked:
+        return f"BLOCKED_POST_CLOSE_CONSOLIDATION:{consolidation_reason}"
+    return None
+
+
 def same_side_anti_churn_problem(account, symbol, frame, side, quote=None):
     """Block same-side re-entry until price escapes half an ATR from its close."""
     try:

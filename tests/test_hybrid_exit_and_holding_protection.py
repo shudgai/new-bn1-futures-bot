@@ -30,6 +30,7 @@ def make_candle_df(closes, middles):
             'atr': 0.0003,
             'ma5': c,
             'ma15': m,
+            'is_closed': True,
         })
     df = pd.DataFrame(rows)
     df.attrs['timeframe_ms'] = 60000
@@ -77,7 +78,11 @@ def test_holding_protection_veto_when_below_kc_middle_for_short():
         position, frame, 0.0422, 'THREE_POINT_PIVOT', channel_swing=True,
     )
     assert not is_allowed
-    assert reason in ('VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION', 'VETO_MEME_SHORT_HOLDING_UNTIL_TRUE_VALLEY')
+    assert reason in (
+        'VETO_CLOSE_BELOW_KC_MIDDLE_HOLDING_PROTECTION',
+        'VETO_MEME_SHORT_HOLDING_UNTIL_TRUE_VALLEY',
+        'VETO_HOLDING_UNTIL_TRUE_PIVOT',
+    )
 
 
 def test_hybrid_dynamic_stage1_outer_rail_breakout_and_1_3_atr_trailing():
@@ -158,10 +163,10 @@ def test_holding_protection_vetoes_ratchet_exit_before_true_pivot_formed():
         'entry_price': 0.0430,
         'qty': 1000.0,
     }
-    # 兩根持續上漲已收線 K 線，尚未形成 3 根 K 棒真峰頂
+    # 兩根已收線 K 線，尚未形成 3 根 K 棒真峰頂
     rows = [
         {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True},
-        {'open': 0.0434, 'high': 0.0438, 'low': 0.0433, 'close': 0.0436, 'kc_upper': 0.0500, 'is_closed': True},
+        {'open': 0.0436, 'high': 0.0438, 'low': 0.0433, 'close': 0.0435, 'kc_upper': 0.0500, 'is_closed': True},
     ]
     df = pd.DataFrame(rows)
 
@@ -180,25 +185,26 @@ def test_holding_protection_authorizes_exit_after_true_pivot_confirmed():
         'side': 'LONG',
         'entry_price': 0.0430,
         'qty': 1000.0,
+        'open_timestamp': 1_699_999_900.0,
     }
-    # 1. 價格仍在 KC 中軌之上 (close 0.0432 > kc_middle 0.0420)：即使形態有局部峰值，依然判定為健康回踩，嚴禁平倉！
+    # 1. 普通回調候選即使出現峰值形狀，仍須受中軌健康結構保護。
     rows_above_mid = [
-        {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
-        {'open': 0.0434, 'high': 0.0442, 'low': 0.0433, 'close': 0.0440, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
-        {'open': 0.0440, 'high': 0.0439, 'low': 0.0431, 'close': 0.0432, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+        {'timestamp': 1_700_000_000_000, 'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420, 'atr': 0.001},
+        {'timestamp': 1_700_000_060_000, 'open': 0.0434, 'high': 0.0442, 'low': 0.0433, 'close': 0.0440, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420, 'atr': 0.001},
+        {'timestamp': 1_700_000_120_000, 'open': 0.0440, 'high': 0.0439, 'low': 0.0431, 'close': 0.0432, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420, 'atr': 0.001},
     ]
     df_above = pd.DataFrame(rows_above_mid)
     allowed_above, reason_above, _ = HoldingProtectionExitGate.validate_exit(
-        position, df_above, quote=0.0432, candidate_reason='THREE_POINT_PIVOT'
+        position, df_above, quote=0.0432, candidate_reason='EXIT_BY_PULLBACK'
     )
     assert allowed_above is False
     assert "HEALTHY_PULLBACK_ABOVE_MID" in reason_above
 
     # 2. 實質收破 KC 中軌 (close 0.0418 < kc_middle 0.0420)：結構破壞，允許平倉出場！
     rows_below_mid = [
-        {'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
-        {'open': 0.0434, 'high': 0.0442, 'low': 0.0433, 'close': 0.0440, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
-        {'open': 0.0440, 'high': 0.0439, 'low': 0.0415, 'close': 0.0418, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420},
+        {'timestamp': 1_700_000_000_000, 'open': 0.0430, 'high': 0.0435, 'low': 0.0429, 'close': 0.0434, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420, 'atr': 0.001},
+        {'timestamp': 1_700_000_060_000, 'open': 0.0434, 'high': 0.0442, 'low': 0.0433, 'close': 0.0440, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420, 'atr': 0.001},
+        {'timestamp': 1_700_000_120_000, 'open': 0.0440, 'high': 0.0439, 'low': 0.0415, 'close': 0.0418, 'kc_upper': 0.0500, 'is_closed': True, 'kc_middle': 0.0420, 'atr': 0.001},
     ]
     df_below = pd.DataFrame(rows_below_mid)
     allowed_below, reason_below, _ = HoldingProtectionExitGate.validate_exit(

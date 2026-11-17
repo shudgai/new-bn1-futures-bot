@@ -33,6 +33,10 @@ def _account_transport_policy(monkeypatch):
             entry_contract, "enforce_final_order_wick_gate",
             entry_contract.enforce_final_order_wick_gate,
         ),
+        (
+            entry_contract, "automatic_entry_kc_structure_problem",
+            entry_contract.automatic_entry_kc_structure_problem,
+        ),
     )
     monkeypatch.setattr(
         "core.services.math_execution_gate.validate_entry_at_execution",
@@ -45,6 +49,10 @@ def _account_transport_policy(monkeypatch):
     monkeypatch.setattr(
         "core.services.entry_contract.enforce_final_order_wick_gate",
         AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "core.services.entry_contract.automatic_entry_kc_structure_problem",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         BinanceTestnetAccount, "credentials_configured", staticmethod(lambda: True),
@@ -1138,6 +1146,8 @@ async def test_account_open_without_market_data_is_blocked_by_real_entry_gates(
     assert account.trades == []
     assert any(
         "BLOCKED_ENTRY_MATH_SNAPSHOT_UNAVAILABLE" in item["text"]
+        or "BLOCKED_KC_OVERALL_STRUCTURE:CHOP_BOX" in item["text"]
+        or "[攔截開單] KC 整體處於水平箱體或三軌未同步，放棄進場" in item["text"]
         for item in account.logs
     )
 

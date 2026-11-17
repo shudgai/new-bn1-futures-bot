@@ -805,12 +805,29 @@ class ExecutionManager:
             update_mtf_position_protection,
         )
 
-        if not is_meme_breakout_symbol(symbol):
+        is_meme_symbol = is_meme_breakout_symbol(symbol)
+        if not is_meme_symbol and not position:
             return None
 
         metadata = getattr(account, "position_meta", {}).get(symbol, {})
         if not isinstance(metadata, dict):
             metadata = {}
+        if position is not None:
+            from core.services.exits.priority_exit_manager import (
+                evaluate_and_execute_exit,
+            )
+
+            priority_exit = await evaluate_and_execute_exit(
+                account,
+                symbol,
+                position,
+                frame_1m,
+                frame_15m,
+                quote,
+                cls.close_position,
+            )
+            if priority_exit is not None:
+                return priority_exit
         managed_position = bool(
             position and is_mtf_managed_position(position, metadata)
         )
@@ -896,6 +913,52 @@ class ExecutionManager:
                 )
                 return False
             return True
+
+        if position is not None and htf.get("valid"):
+            side = str(position.get("side") or "").upper()
+            state = str(htf.get("state") or "").upper()
+            opposite_state = (
+                side == "SHORT" and state == "UPTREND"
+                or side == "LONG" and state == "DOWNTREND"
+            )
+            if opposite_state:
+                exit_reason = (
+                    f"{MTF_KC_EXIT_REASON_PREFIX}{state}_REVERSAL_EXIT"
+                )
+                metadata.pop("mtf_pending_closed_bar_exit", None)
+                exit_evidence = {
+                    **htf,
+                    "valid": True,
+                    "state": state,
+                    "forced_state_mismatch": True,
+                }
+                if not authorize_mtf_exit(
+                    account,
+                    symbol,
+                    exit_reason,
+                    quote,
+                    exit_evidence,
+                    allow_direction_mismatch=True,
+                ):
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "BLOCKED_KC_STATE_MISMATCH_AUTHORITY",
+                        "success": False,
+                    }
+                closed = await cls.close_position(
+                    account,
+                    symbol,
+                    quote,
+                    exit_reason,
+                    meta={"raw_df": frame_1m, "is_bar_closed": False},
+                )
+                return {
+                    "status": "EXIT_EXECUTED" if closed else "HOLD",
+                    "symbol": symbol,
+                    "reason": exit_reason,
+                    "success": bool(closed),
+                }
 
         if not htf.get("valid"):
             if managed_position and position is not None:
@@ -1035,7 +1098,7 @@ class ExecutionManager:
                     if ltf_pair is not None
                     else None
                 )
-                closed_direction = ltf_turn or htf.get("closed_trend")
+                closed_direction = htf.get("closed_trend")
                 reversed_direction = "DOWNTREND" if side == "LONG" else "UPTREND"
                 if closed_direction == reversed_direction:
                     exit_reason = (
@@ -1047,7 +1110,7 @@ class ExecutionManager:
                         "macro_state": htf["state"],
                         "closed_midline_direction": closed_direction,
                     }
-                    reverse_after_close = True
+                    reverse_after_close = False
                 else:
                     pending_exit = metadata.pop(
                         "mtf_pending_closed_bar_exit", None,
@@ -6743,20 +6806,23 @@ class ExecutionManager:
                 "CATASTROPHIC_PUMP", "LIQUIDATION", "閃崩", "瀑布",
                 "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
                 "TWO_CLOSED_ADVERSE_ABNORMAL",
+                "PRIORITY_EXIT_",
             ))
             profit_protection_exit = any(token in reason_upper for token in (
                 "PROFIT_LOCK", "TRAILING_LOCK", "RATCHET", "BREAKEVEN",
             ))
             position_side = str((pos_obj or {}).get("side") or "").upper()
+            is_mtf_reversal = reason_upper.startswith(
+                "MTF_KC_STATE_MACHINE_"
+            ) and "REVERSAL_EXIT" in reason_upper
             if (
                 position_side in ("LONG", "SHORT")
+                and is_mtf_reversal
                 and not manual_exit
                 and not emergency_exit
                 and not profit_protection_exit
             ):
                 from core.services.mtf_kc_state_machine import (
-                    _detect_ltf_outer_band_turn_state,
-                    _valid_live_frame,
                     evaluate_closed_15m_kc_trend,
                 )
 
@@ -6764,23 +6830,36 @@ class ExecutionManager:
                 if not isinstance(frame_15m, pd.DataFrame):
                     frames = getattr(account, "_macro_trend_frame_15m", {})
                     frame_15m = frames.get(symbol) if isinstance(frames, dict) else None
-                trend = evaluate_closed_15m_kc_trend(frame_15m)
                 expected_exit_trend = (
                     "DOWNTREND" if position_side == "LONG" else "UPTREND"
                 )
-                exit_trend_dir = trend.get("direction")
-                if isinstance((meta or {}).get("raw_df"), pd.DataFrame):
-                    ltf_exit_data = _valid_live_frame((meta or {}).get("raw_df"), 60_000.0)
-                    if ltf_exit_data is not None:
-                        ltf_exit_turn = _detect_ltf_outer_band_turn_state(ltf_exit_data[0])
-                        if ltf_exit_turn == expected_exit_trend:
-                            exit_trend_dir = expected_exit_trend
-                if not trend.get("valid") or exit_trend_dir != expected_exit_trend:
+                position_meta = getattr(account, "position_meta", {}).get(symbol, {})
+                exit_authority = (
+                    position_meta.get("mtf_kc_exit_authority")
+                    if isinstance(position_meta, dict) else None
+                )
+                forced_state_mismatch = (
+                    isinstance(exit_authority, dict)
+                    and isinstance(exit_authority.get("evidence"), dict)
+                    and exit_authority["evidence"].get("forced_state_mismatch") is True
+                )
+                if forced_state_mismatch:
+                    from core.services.mtf_kc_state_machine import mtf_exit_is_authorized
+
+                    authorized = mtf_exit_is_authorized(
+                        position_meta, reason, price, position_side,
+                    )
+                else:
+                    trend = evaluate_closed_15m_kc_trend(frame_15m)
+                    authorized = (
+                        trend.get("valid")
+                        and trend.get("direction") == expected_exit_trend
+                    )
+                if not authorized:
                     logger.info(
                         "POSITION_EXIT_VETO_MTF_TREND symbol=%s side=%s "
-                        "reason=%s trend=%s trend_reason=%s",
-                        symbol, position_side, reason, trend.get("direction"),
-                        trend.get("reason"),
+                        "reason=%s",
+                        symbol, position_side, reason,
                     )
                     return False
 
@@ -6905,6 +6984,26 @@ class ExecutionManager:
             wait_authority = (
                 str((meta or {}).get("entry_authority") or "").upper() == "WAIT"
             )
+            from core.services.entry_contract import (
+                automatic_entry_kc_structure_problem,
+            )
+
+            entry_frame = (meta or {}).get("raw_df")
+            if entry_frame is None:
+                entry_frame = (meta or {}).get("entry_gate_frame")
+            if entry_frame is None:
+                entry_frame = (meta or {}).get("frame")
+            if entry_frame is None:
+                frames = getattr(account, "_channel_exit_frames", {})
+                if isinstance(frames, dict):
+                    entry_frame = frames.get(symbol)
+            structure_problem = automatic_entry_kc_structure_problem(
+                side, entry_frame, meta, reason,
+                account=account, symbol=symbol,
+            )
+            if structure_problem:
+                cls._last_open_error[symbol] = structure_problem
+                return False
             if not manual_entry and not wait_authority:
                 from core.services.mtf_kc_state_machine import (
                     _detect_ltf_outer_band_turn_state,
@@ -6912,12 +7011,25 @@ class ExecutionManager:
                     _valid_live_frame,
                     evaluate_closed_15m_kc_trend,
                     evaluate_htf_kc_state,
+                    mtf_entry_midline_problem,
                 )
 
                 frame_15m = (meta or {}).get("frame_15m")
                 if not isinstance(frame_15m, pd.DataFrame):
                     frames = getattr(account, "_macro_trend_frame_15m", {})
                     frame_15m = frames.get(symbol) if isinstance(frames, dict) else None
+                raw_frame_1m = (meta or {}).get("raw_df")
+                if isinstance(raw_frame_1m, pd.DataFrame):
+                    midline_problem = mtf_entry_midline_problem(
+                        raw_frame_1m, frame_15m, str(side).upper(),
+                    )
+                    if midline_problem is not None:
+                        cls._last_open_error[symbol] = midline_problem
+                        logger.warning(
+                            "ENTRY_MTF_MIDLINE_VETO symbol=%s side=%s reason=%s",
+                            symbol, side, midline_problem,
+                        )
+                        return False
                 trend = evaluate_closed_15m_kc_trend(frame_15m)
                 normalized_side = str(side).upper()
                 expected_entry_trend = (

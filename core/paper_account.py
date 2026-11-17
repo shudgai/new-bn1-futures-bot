@@ -1259,6 +1259,39 @@ class PaperAccount:
         if _guard_frame is None:
             _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
 
+        from core.services.entry_contract import (
+            automatic_entry_kc_structure_problem,
+            post_close_reentry_problem,
+        )
+        structure_problem = automatic_entry_kc_structure_problem(
+            side, _guard_frame, entry_context, reason,
+            account=self, symbol=symbol,
+        )
+        if structure_problem:
+            self.open_reject_reasons[symbol] = structure_problem
+            self.log(
+                f"[攔截開單] KC 整體處於水平箱體或三軌未同步，放棄進場 "
+                f"{symbol} {side}: {structure_problem}",
+                "WARNING",
+            )
+            return False
+        post_close_problem = post_close_reentry_problem(
+            self,
+            symbol,
+            side,
+            _guard_frame,
+            frame_15m=entry_context.get("frame_15m"),
+            entry_context=entry_context,
+            reason=reason,
+        )
+        if post_close_problem:
+            self.open_reject_reasons[symbol] = post_close_problem
+            self.log(
+                f"POST_CLOSE_REENTRY_BLOCK {symbol} {side}: {post_close_problem}",
+                "WARNING",
+            )
+            return False
+
         mtf_colorless_entry = (
             entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE"
             and isinstance(entry_context.get("mtf_final_evaluation"), dict)

@@ -66,13 +66,13 @@ class TestShortHoldingProtection:
         """空單收線確認形成三點真谷底，授權平倉"""
         # 構造三點谷底：K0 low 8.2, K1 low 7.8 (中間最低), K2 low 8.1 (收線包夾確認)
         df = make_frame([
-            {'open': 8.5, 'close': 8.3, 'high': 8.6, 'low': 8.2, 'is_closed': True,
+            {'timestamp': 1_700_000_000_000, 'open': 8.5, 'close': 8.3, 'high': 8.6, 'low': 8.2, 'is_closed': True,
              'ma5': 8.5, 'ma15': 9.0, 'kc_upper': 9.5, 'kc_lower': 8.0, 'kc_middle': 8.75, 'atr': 0.5},
-            {'open': 8.3, 'close': 7.9, 'high': 8.4, 'low': 7.8, 'is_closed': True,
+            {'timestamp': 1_700_000_060_000, 'open': 8.3, 'close': 7.9, 'high': 8.4, 'low': 7.8, 'is_closed': True,
              'ma5': 8.3, 'ma15': 8.8, 'kc_upper': 9.4, 'kc_lower': 7.9, 'kc_middle': 8.65, 'atr': 0.5},
-            {'open': 7.9, 'close': 8.2, 'high': 8.3, 'low': 8.1, 'is_closed': True,
+            {'timestamp': 1_700_000_120_000, 'open': 7.9, 'close': 8.2, 'high': 8.3, 'low': 8.1, 'is_closed': True,
              'ma5': 8.2, 'ma15': 8.6, 'kc_upper': 9.3, 'kc_lower': 7.8, 'kc_middle': 8.55, 'atr': 0.5},
-            {'open': 8.2, 'close': 8.3, 'high': 8.4, 'low': 8.15, 'is_closed': False,
+            {'timestamp': 1_700_000_180_000, 'open': 8.2, 'close': 8.3, 'high': 8.4, 'low': 8.15, 'is_closed': False,
              'ma5': 8.25, 'ma15': 8.5, 'kc_upper': 9.3, 'kc_lower': 7.8, 'kc_middle': 8.55, 'atr': 0.5},
         ])
         position = {
@@ -80,6 +80,7 @@ class TestShortHoldingProtection:
             'side': 'SHORT',
             'entry_price': 9.0,
             'qty': 100.0,
+            'open_timestamp': 1_699_999_900.0,
         }
 
         # 檢驗三點谷底確認
@@ -89,7 +90,7 @@ class TestShortHoldingProtection:
 
         # MemeCoinGate 應授權真谷底出場
         should_exit, reason = MemeCoinGate.evaluate_meme_exit(
-            df, quote=8.3, side='SHORT', symbol='CAP/USDT'
+            df, quote=8.3, side='SHORT', symbol='CAP/USDT', position=position,
         )
         assert should_exit is True
         assert reason == 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'
@@ -148,45 +149,59 @@ class TestShortHoldingProtection:
 
     def test_intrabar_pivot_candidate_is_not_a_confirmed_exit(self):
         """未收線的右側確認棒不得授權真谷底平倉。"""
-        # 1. 空單遇盤中真谷底：K0 low 8.5, K1 low 8.0 (谷底棒已收線，open 8.6, close 8.1 -> mid 8.35), K2 正在走 (is_closed=False)，最新報價 8.4 已反彈突破前棒中點
+        # 1. 空單右側確認棒未收線，即使報價已反彈突破前棒中點也不能確認。
         df_short = make_frame([
-            {'open': 8.8, 'close': 8.6, 'high': 8.9, 'low': 8.5, 'is_closed': True, 'atr': 0.3},
-            {'open': 8.6, 'close': 8.1, 'high': 8.65, 'low': 8.0, 'is_closed': True, 'atr': 0.3}, # 谷底棒
-            {'open': 8.1, 'close': 8.3, 'high': 8.45, 'low': 8.08, 'is_closed': False, 'atr': 0.3}, # 正在走（盤中第 10 秒）
+            {'timestamp': 1_700_000_000_000, 'open': 8.8, 'close': 8.6, 'high': 8.9, 'low': 8.5, 'is_closed': True, 'atr': 0.3},
+            {'timestamp': 1_700_000_060_000, 'open': 8.6, 'close': 8.1, 'high': 8.65, 'low': 8.0, 'is_closed': True, 'atr': 0.3}, # 谷底棒
+            {'timestamp': 1_700_000_120_000, 'open': 8.1, 'close': 8.3, 'high': 8.45, 'low': 8.08, 'is_closed': False, 'atr': 0.3}, # 正在走（盤中第 10 秒）
         ])
-        pos_short = {'symbol': '1000PEPE/USDT', 'side': 'SHORT', 'entry_price': 8.8}
+        pos_short = {
+            'symbol': '1000PEPE/USDT', 'side': 'SHORT', 'entry_price': 8.8,
+            'open_timestamp': 1_699_999_900.0,
+        }
 
-        # 檢驗盤中即時偵測真谷底，不等 1m 跑完！
+        # 未收線的右側 K 棒不能確認真谷底。
         has_v, p_type, p_info = has_confirmed_true_pivot(pos_short, df_short, quote=8.4)
-        assert has_v is True
-        assert p_info.get('intrabar_confirmed') is True
+        assert has_v is False
+        assert p_type is None
+        assert p_info == {}
 
-        # MemeCoinGate 馬上授權平倉
-        should_exit, reason = MemeCoinGate.evaluate_meme_exit(df_short, quote=8.4, side='SHORT', symbol='1000PEPE/USDT')
-        assert should_exit is True
-        assert reason == 'EXIT_MEME_TRUE_VALLEY_CONFIRMED'
+        # MemeCoinGate 也不得授權盤中候選。
+        should_exit, reason = MemeCoinGate.evaluate_meme_exit(
+            df_short, quote=8.4, side='SHORT', symbol='1000PEPE/USDT',
+            position=pos_short,
+        )
+        assert should_exit is False
+        assert reason is None
 
         # Intrabar pivot signals are not exit authority.
         can_exit, veto_r, _ = HoldingProtectionExitGate.validate_exit(pos_short, df_short, quote=8.4, candidate_reason='EXIT_MEME_TRUE_VALLEY_CONFIRMED')
         assert can_exit is False
 
-        # 2. 多單遇盤中真峰頂：K0 high 8.0, K1 high 8.8 (頂部棒已收線，open 7.9, close 8.7 -> mid 8.3), K2 正在走 (is_closed=False)，最新報價 8.2 已跌破前棒中點
+        # 2. 多單對稱驗證：右側確認棒未收線，不確認真峰頂。
         df_long = make_frame([
-            {'open': 7.8, 'close': 7.9, 'high': 8.0, 'low': 7.7, 'is_closed': True, 'atr': 0.3},
-            {'open': 7.9, 'close': 8.7, 'high': 8.8, 'low': 7.85, 'is_closed': True, 'atr': 0.3}, # 頂部棒
-            {'open': 8.7, 'close': 8.3, 'high': 8.75, 'low': 8.15, 'is_closed': False, 'atr': 0.3}, # 正在走（盤中第 15 秒）
+            {'timestamp': 1_700_000_000_000, 'open': 7.8, 'close': 7.9, 'high': 8.0, 'low': 7.7, 'is_closed': True, 'atr': 0.3},
+            {'timestamp': 1_700_000_060_000, 'open': 7.9, 'close': 8.7, 'high': 8.8, 'low': 7.85, 'is_closed': True, 'atr': 0.3}, # 頂部棒
+            {'timestamp': 1_700_000_120_000, 'open': 8.7, 'close': 8.3, 'high': 8.75, 'low': 8.15, 'is_closed': False, 'atr': 0.3}, # 正在走（盤中第 15 秒）
         ])
-        pos_long = {'symbol': '龙虾/USDT', 'side': 'LONG', 'entry_price': 7.9}
+        pos_long = {
+            'symbol': '龙虾/USDT', 'side': 'LONG', 'entry_price': 7.9,
+            'open_timestamp': 1_699_999_900.0,
+        }
 
-        # 檢驗盤中即時偵測真峰頂，不等 1m 跑完！
+        # 未收線的右側 K 棒不能確認真峰頂。
         has_p, p_type, p_info = has_confirmed_true_pivot(pos_long, df_long, quote=8.2)
-        assert has_p is True
-        assert p_info.get('intrabar_confirmed') is True
+        assert has_p is False
+        assert p_type is None
+        assert p_info == {}
 
-        # MemeCoinGate 馬上授權平倉
-        should_exit_long, reason_long = MemeCoinGate.evaluate_meme_exit(df_long, quote=8.2, side='LONG', symbol='龙虾/USDT')
-        assert should_exit_long is True
-        assert reason_long == 'EXIT_MEME_TRUE_PEAK_CONFIRMED'
+        # MemeCoinGate 也不得授權盤中候選。
+        should_exit_long, reason_long = MemeCoinGate.evaluate_meme_exit(
+            df_long, quote=8.2, side='LONG', symbol='龙虾/USDT',
+            position=pos_long,
+        )
+        assert should_exit_long is False
+        assert reason_long is None
 
         # Intrabar pivot signals are not exit authority.
         can_exit_long, _, _ = HoldingProtectionExitGate.validate_exit(pos_long, df_long, quote=8.2, candidate_reason='EXIT_MEME_TRUE_PEAK_CONFIRMED')

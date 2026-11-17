@@ -84,6 +84,7 @@ def _stub_entry_math(
     )
     live = frame.iloc[-1]
     monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (closed, live))
+    monkeypatch.setattr(mtf, "mtf_entry_midline_problem", lambda *_args: None)
     monkeypatch.setattr(
         "core.services.ma5_entry_slope.quote_adjusted_entry_mas",
         lambda _frame, _quote: mas,
@@ -106,6 +107,47 @@ def _stub_entry_math(
         ),
     )
     return closed, live
+
+
+@pytest.mark.parametrize(
+    ("timeframe_ms", "expected_reason"),
+    [
+        (60_000.0, "BLOCKED_LTF_KC_MIDLINE_FLAT"),
+        (900_000.0, "BLOCKED_HTF_KC_MIDLINE_FLAT"),
+    ],
+)
+def test_mtf_entry_rejects_flat_midline_on_either_timeframe(
+    monkeypatch, timeframe_ms, expected_reason,
+):
+    def frame_data(middles):
+        closed = pd.DataFrame({
+            "kc_middle": middles,
+            "atr": [1.0, 1.0, 1.0],
+        })
+        live = pd.Series({"timestamp": timeframe_ms * 3, "is_closed": False})
+        return closed, live
+
+    frames = {
+        60_000.0: frame_data(
+            [100.0, 100.001, 100.002]
+            if timeframe_ms == 60_000.0
+            else [100.0, 100.2, 100.4]
+        ),
+        900_000.0: frame_data(
+            [100.0, 100.2, 100.4]
+            if timeframe_ms == 60_000.0
+            else [100.0, 100.001, 100.002]
+        ),
+    }
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame", lambda _frame, interval: frames[interval],
+    )
+
+    reason = mtf.mtf_entry_midline_problem(
+        object(), object(), "LONG",
+    )
+
+    assert reason == expected_reason
 
 
 def test_htf_slope_threshold_is_strict(monkeypatch):
@@ -192,7 +234,7 @@ def test_htf_exit_direction_uses_closed_midline_during_live_pullback(monkeypatch
         ("SHORT", "UPTREND", "DOWNTREND"),
     ],
 )
-def test_mtf_position_holds_until_macro_and_midline_both_reverse(
+def test_mtf_position_closes_when_live_macro_state_opposes_position(
     monkeypatch, side, macro_state, closed_direction,
 ):
     from core.services.execution_manager import ExecutionManager
@@ -250,13 +292,12 @@ def test_mtf_position_holds_until_macro_and_midline_both_reverse(
         position=position,
     ))
 
-    assert result["status"] == "HOLD"
-    assert result["reason"] == (
-        "MTF_KC_CYCLE_CONTINUES"
-        if closed_direction == ("UPTREND" if side == "LONG" else "DOWNTREND")
-        else "MTF_KC_REVERSAL_NOT_CONFIRMED"
+    should_close = (
+        side == "LONG" and macro_state == "DOWNTREND"
+        or side == "SHORT" and macro_state == "UPTREND"
     )
-    assert close_calls == []
+    assert result["status"] == ("EXIT_EXECUTED" if should_close else "HOLD")
+    assert bool(close_calls) is should_close
 
 
 @pytest.mark.parametrize(
@@ -272,7 +313,7 @@ def test_mtf_position_holds_until_macro_and_midline_both_reverse(
         ),
     ],
 )
-def test_mtf_reversal_closes_and_opens_opposite_side_without_cooldown(
+def test_mtf_reversal_closes_without_same_bar_reentry(
     monkeypatch, source_side, target_side, trend, reason, quote,
 ):
     from core.services.execution_manager import ExecutionManager
@@ -327,7 +368,9 @@ def test_mtf_reversal_closes_and_opens_opposite_side_without_cooldown(
             "evidence": {"state": trend},
         },
     )
-    monkeypatch.setattr(mtf, "authorize_mtf_exit", lambda *_args: True)
+    monkeypatch.setattr(
+        mtf, "authorize_mtf_exit", lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(mtf, "close_in_current_live_1m_bar", lambda *_args: True)
     entry_evaluations = []
 
@@ -343,6 +386,14 @@ def test_mtf_reversal_closes_and_opens_opposite_side_without_cooldown(
     monkeypatch.setattr(mtf, "evaluate_mtf_entry", evaluate_entry)
     monkeypatch.setattr(ExecutionManager, "_last_trade_bar_time", {symbol: bar_id})
     monkeypatch.setattr(ExecutionManager, "_hourly_entry_records", {})
+    ltf_closed = pd.DataFrame([{"timestamp": bar_id - 60_000}])
+    ltf_live = pd.Series({"timestamp": bar_id, "is_closed": False})
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame", lambda *_args: (ltf_closed, ltf_live),
+    )
+    monkeypatch.setattr(
+        mtf, "_detect_ltf_outer_band_turn_state", lambda _closed: trend,
+    )
 
     async def close_position(_cls, current_account, closed_symbol, *_args, **_kwargs):
         current_account.positions.pop(closed_symbol)
@@ -374,12 +425,220 @@ def test_mtf_reversal_closes_and_opens_opposite_side_without_cooldown(
         position=position,
     ))
 
-    assert result["status"] == "ENTRY_EXECUTED"
-    assert opened[0][1] == target_side
-    assert opened[0][4]["mtf_cycle_reverse_after_close"] is True
-    assert entry_evaluations[0]["allow_colorless_reverse"] is True
-    assert opened[0][4]["mtf_colorless_reverse"] is True
-    assert symbol not in account.entry_filter_last["mtf_cycle_reverse_pending"]
+    assert result["status"] == "EXIT_EXECUTED"
+    assert opened == []
+    assert entry_evaluations == []
+    assert symbol not in account.entry_filter_last.get(
+        "mtf_cycle_reverse_pending", {},
+    )
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("macro_reversed, ltf_reversed", [(False, True), (True, False)])
+def test_mtf_exit_requires_macro_reversal_but_not_extra_ltf_turn(
+    monkeypatch, side, macro_reversed, ltf_reversed,
+):
+    from core.services.execution_manager import ExecutionManager
+
+    symbol = "1000PEPE/USDT"
+    aligned = "UPTREND" if side == "LONG" else "DOWNTREND"
+    reversed_trend = "DOWNTREND" if side == "LONG" else "UPTREND"
+    macro_direction = reversed_trend if macro_reversed else aligned
+    ltf_direction = reversed_trend if ltf_reversed else aligned
+    position = {
+        "side": side,
+        "entry_price": 100.0,
+        "amount": 1.0,
+        "open_timestamp": 1_700_000_000_000,
+        "entry_method_authority": mtf.MTF_KC_STATE_MACHINE,
+    }
+    metadata = {"entry_method_authority": mtf.MTF_KC_STATE_MACHINE}
+    account = type("Account", (), {
+        "positions": {symbol: position},
+        "position_meta": {symbol: metadata},
+        "save_state": lambda self, strict=False: None,
+    })()
+    close_calls = []
+    monkeypatch.setattr(
+        "core.services.exits.abnormal_candle_exit.live_adverse_waterfall_evidence",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
+        "valid": True,
+        "state": macro_direction,
+        "closed_trend": macro_direction,
+        "closed_midline_direction": macro_direction,
+        "normalized_slope": 0.03 if macro_direction == "UPTREND" else -0.03,
+        "kc_middle": 100.0,
+        "kc_upper": 110.0,
+        "kc_lower": 90.0,
+        "atr": 5.0,
+        "bar_timestamp": 1_700_000_180_000,
+    })
+    monkeypatch.setattr(
+        mtf, "update_mtf_position_protection", lambda *_args: None,
+    )
+    ltf_closed = pd.DataFrame([{"timestamp": 1_700_000_120_000}])
+    ltf_live = pd.Series({
+        "timestamp": 1_700_000_180_000,
+        "is_closed": False,
+    })
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame", lambda *_args: (ltf_closed, ltf_live),
+    )
+    monkeypatch.setattr(
+        mtf, "_detect_ltf_outer_band_turn_state",
+        lambda _closed: ltf_direction,
+    )
+    monkeypatch.setattr(mtf, "evaluate_mtf_exit_confirmation", lambda *_args: {
+        "allowed": True,
+        "waiting": False,
+        "changed": False,
+        "reason": f"{mtf.MTF_KC_EXIT_REASON_PREFIX}{reversed_trend}_REVERSAL_EXIT",
+        "evidence": {},
+    })
+    monkeypatch.setattr(
+        mtf, "authorize_mtf_exit", lambda *_args, **_kwargs: True,
+    )
+
+    async def close_position(_cls, _account, *_args, **_kwargs):
+        close_calls.append(side)
+        return False
+
+    monkeypatch.setattr(
+        ExecutionManager, "close_position", classmethod(close_position),
+    )
+    result = asyncio.run(ExecutionManager._process_mtf_kc_state_machine(
+        symbol=symbol,
+        account=account,
+        engine_or_account=account,
+        frame_1m=pd.DataFrame([{"timestamp": 1_700_000_180_000}]),
+        frame_15m=pd.DataFrame(),
+        quote=101.0 if side == "SHORT" else 99.0,
+        position=position,
+    ))
+
+    assert bool(close_calls) is macro_reversed
+    assert result["status"] == "HOLD"
+
+
+@pytest.mark.parametrize(
+    ("side", "state"),
+    [("SHORT", "UPTREND"), ("LONG", "DOWNTREND")],
+)
+def test_opposite_kc_state_forces_close_before_holding_protection(
+    monkeypatch, side, state,
+):
+    from core.services.execution_manager import ExecutionManager
+
+    symbol = "ETH/USDT"
+    position = {
+        "side": side,
+        "entry_price": 100.0,
+        "amount": 1.0,
+        "open_timestamp": 1_700_000_000.0,
+        "entry_method_authority": "OTHER_ENTRY",
+    }
+    account = type("Account", (), {
+        "positions": {symbol: position},
+        "position_meta": {symbol: {}},
+        "save_state": lambda self, strict=False: None,
+    })()
+    closed_reasons = []
+    monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
+        "valid": True,
+        "state": state,
+        "closed_trend": "DOWNTREND" if state == "UPTREND" else "UPTREND",
+        "closed_midline_direction": "FLAT",
+        "normalized_slope": 0.02 if state == "UPTREND" else -0.02,
+        "kc_middle": 100.0,
+        "kc_upper": 110.0,
+        "kc_lower": 90.0,
+        "atr": 5.0,
+        "bar_timestamp": 1_700_000_180_000,
+    })
+    monkeypatch.setattr(
+        "core.services.exits.abnormal_candle_exit.live_adverse_waterfall_evidence",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        mtf, "update_mtf_position_protection",
+        lambda *_args: (_ for _ in ()).throw(AssertionError(
+            "direction mismatch must close before normal holding checks"
+        )),
+    )
+
+    async def close_position(_cls, _account, _symbol, _price, reason, **_kwargs):
+        closed_reasons.append(reason)
+        return True
+
+    monkeypatch.setattr(
+        ExecutionManager, "close_position", classmethod(close_position),
+    )
+
+    result = asyncio.run(ExecutionManager._process_mtf_kc_state_machine(
+        symbol=symbol,
+        account=account,
+        engine_or_account=account,
+        frame_1m=pd.DataFrame(),
+        frame_15m=pd.DataFrame(),
+        quote=101.0 if side == "SHORT" else 99.0,
+        position=position,
+    ))
+
+    assert result["status"] == "EXIT_EXECUTED"
+    assert closed_reasons == [
+        "PRIORITY_EXIT_P1_MTF_KC_REVERSAL"
+    ]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_final_close_gate_does_not_let_ltf_turn_override_15m_trend(
+    monkeypatch, side,
+):
+    from types import SimpleNamespace
+
+    from core.services.execution_manager import ExecutionManager
+
+    symbol = "1000PEPE/USDT"
+    expected_exit = "DOWNTREND" if side == "LONG" else "UPTREND"
+    position = {"side": side, "entry_price": 100.0}
+    close_calls = []
+
+    async def account_close_position(**_kwargs):
+        close_calls.append(side)
+        return True
+
+    account = SimpleNamespace(
+        positions={symbol: position},
+        position_meta={symbol: {}},
+        closing_lock=set(),
+        close_position=account_close_position,
+    )
+    monkeypatch.setattr(mtf, "evaluate_closed_15m_kc_trend", lambda _frame: {
+        "valid": True,
+        "direction": "UPTREND" if side == "LONG" else "DOWNTREND",
+        "reason": "PASS",
+    })
+    monkeypatch.setattr(
+        mtf, "_valid_live_frame",
+        lambda *_args: (pd.DataFrame(), pd.Series({"is_closed": False})),
+    )
+    monkeypatch.setattr(
+        mtf, "_detect_ltf_outer_band_turn_state",
+        lambda _closed: expected_exit,
+    )
+
+    allowed = asyncio.run(ExecutionManager.close_position(
+        account,
+        symbol,
+        99.0 if side == "LONG" else 101.0,
+        "EXIT_BY_PULLBACK",
+        meta={"raw_df": pd.DataFrame(), "frame_15m": pd.DataFrame()},
+    ))
+
+    assert not allowed
+    assert close_calls == []
 
 
 def test_mtf_reverse_ticket_only_authorizes_opposite_side_in_close_bar(monkeypatch):
@@ -990,6 +1249,7 @@ def test_breakout_requires_a_closed_red_bar_for_short(monkeypatch):
     frame, closed, _live = _entry_frames(previous_close=100.0, open_price=101.0)
     closed["open"] = 100.2
     closed["close"] = 100.0
+    closed["kc_middle"] = [100.4 - index * 0.1 for index in range(len(closed))]
     monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
         "valid": True,
         "state": "DOWNTREND",
@@ -1051,6 +1311,7 @@ def test_breakout_cannot_bypass_live_candle_color(monkeypatch):
     frame, closed, _live = _entry_frames(previous_close=100.0, open_price=98.0)
     closed["open"] = 100.2
     closed["close"] = 100.0
+    closed["kc_middle"] = [100.4 - index * 0.1 for index in range(len(closed))]
     monkeypatch.setattr(mtf, "evaluate_htf_kc_state", lambda _frame: {
         "valid": True,
         "state": "DOWNTREND",
@@ -1217,8 +1478,48 @@ def test_flat_cycle_does_not_close_before_directional_reversal(monkeypatch):
     ))
 
     assert result["status"] == "HOLD"
-    assert result["reason"] == "MTF_KC_REVERSAL_NOT_CONFIRMED"
+    assert result["reason"] == "PRIORITY_EXIT_NO_TRIGGER"
     assert close_calls == []
+
+
+def test_authorized_live_state_mismatch_bypasses_closed_bar_close_veto():
+    from types import SimpleNamespace
+
+    from core.services.execution_manager import ExecutionManager
+
+    reason = "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT"
+    close_calls = []
+
+    async def account_close_position(**_kwargs):
+        close_calls.append(True)
+        return False
+
+    account = SimpleNamespace(
+        positions={"ETH/USDT": {"side": "SHORT", "entry_price": 100.0}},
+        position_meta={
+            "ETH/USDT": {
+                "mtf_kc_exit_authority": {
+                    "reason": reason,
+                    "side": "SHORT",
+                    "price": 101.0,
+                    "evidence": {"forced_state_mismatch": True},
+                },
+            },
+        },
+        closing_lock=set(),
+        close_position=account_close_position,
+    )
+
+    result = asyncio.run(ExecutionManager.close_position(
+        account,
+        "ETH/USDT",
+        101.0,
+        reason,
+        meta={"frame_15m": pd.DataFrame()},
+    ))
+
+    assert not result
+    assert close_calls == [True]
 
 
 @pytest.mark.parametrize(
@@ -1228,7 +1529,7 @@ def test_flat_cycle_does_not_close_before_directional_reversal(monkeypatch):
         ("SHORT", "UPTREND", "DOWNTREND"),
     ],
 )
-def test_mtf_position_holds_and_cancels_exit_during_favorable_closed_midline(
+def test_mtf_position_closes_on_live_state_opposite_even_if_closed_midline_aligned(
     monkeypatch, side, live_state, closed_direction,
 ):
     from core.services.execution_manager import ExecutionManager
@@ -1300,10 +1601,9 @@ def test_mtf_position_holds_and_cancels_exit_during_favorable_closed_midline(
         position=position,
     ))
 
-    assert result["status"] == "HOLD"
-    assert result["reason"] == "MTF_KC_CYCLE_CONTINUES"
+    assert result["status"] == "EXIT_EXECUTED"
     assert "mtf_pending_closed_bar_exit" not in metadata
-    assert close_calls == []
+    assert len(close_calls) == 1
 
 
 def test_invalid_htf_data_cannot_confirm_pending_cycle_exit(monkeypatch):
@@ -1657,6 +1957,10 @@ def test_final_open_gate_blocks_countertrend(monkeypatch, side, trend):
             "reason": "PASS",
         },
     )
+    monkeypatch.setattr(
+        "core.services.entry_contract.automatic_entry_kc_structure_problem",
+        lambda *_args, **_kwargs: None,
+    )
     account = type("Account", (), {
         "positions": {},
         "position_meta": {},
@@ -1810,6 +2114,47 @@ def test_account_hard_stop_bypasses_closed_bar_exit_confirmation():
     assert waterfall["reason"] == "EXIT_BY_EXTREME_WATERFALL"
 
 
+@pytest.mark.parametrize(
+    ("side", "reason", "closed_direction"),
+    [
+        (
+            "SHORT",
+            "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT",
+            "UPTREND",
+        ),
+        (
+            "LONG",
+            "MTF_KC_STATE_MACHINE_DOWNTREND_REVERSAL_EXIT",
+            "DOWNTREND",
+        ),
+    ],
+)
+def test_confirmed_15m_reversal_exits_without_waiting_for_1m_confirmation(
+    side, reason, closed_direction,
+):
+    position = {
+        "side": side,
+        "entry_price": 100.0,
+        "open_timestamp": 900_000,
+    }
+
+    result = mtf.evaluate_mtf_exit_confirmation(
+        frame_1m=None,
+        position=position,
+        metadata={},
+        reason=reason,
+        evidence={
+            "valid": True,
+            "closed_trend": closed_direction,
+            "closed_midline_direction": closed_direction,
+        },
+    )
+
+    assert result["allowed"]
+    assert not result["waiting"]
+    assert result["reason"] == reason
+
+
 def test_mtf_midcycle_exit_reasons_are_not_authorized():
     position = {
         "side": "LONG",
@@ -1904,6 +2249,10 @@ def test_final_mtf_open_preserves_htf_frame_and_pending_candidate(monkeypatch):
         lambda *_args, **_kwargs: (True, "MTF_KC_STATE_MACHINE"),
     )
     monkeypatch.setattr(
+        "core.services.entry_contract.automatic_entry_kc_structure_problem",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         mtf, "evaluate_closed_15m_kc_trend",
         lambda _frame: {
             "valid": True,
@@ -1911,6 +2260,7 @@ def test_final_mtf_open_preserves_htf_frame_and_pending_candidate(monkeypatch):
             "reason": "PASS",
         },
     )
+    monkeypatch.setattr(mtf, "mtf_entry_midline_problem", lambda *_args: None)
 
     opened = asyncio.run(
         ExecutionManager.open_position(

@@ -517,6 +517,7 @@ def _net_roe_pct(position: Mapping[str, Any], price: float, sign: int, fee: floa
 def is_emergency_exit(close_reason: Any) -> bool:
     reason = str(close_reason or "").upper().replace(" ", "_")
     return any(token in reason for token in (
+        "PRIORITY_EXIT_",
         "CIRCUIT_BREAKER", "HARD_STOP_LOSS", "HARD_STOP", "LIQUIDATION",
         "MARGIN_LOSS", "MAXIMUM_LOSS", "OPPOSITE_KC_BAND_BREACH", "EXTREME_WATERFALL",
         "TWO_CLOSED_ADVERSE_ABNORMAL", "ADVERSE_STOP_LOSS",
@@ -1492,6 +1493,17 @@ def validate_exit_at_execution(
     metadata = getattr(account, "position_meta", {}).get(symbol, {})
     if str(close_reason or "").strip() == "手動平倉":
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
+    if str(close_reason or "").upper().startswith("PRIORITY_EXIT_"):
+        from core.services.exits.priority_exit_manager import _valid_authorization
+
+        evidence = _valid_authorization(
+            position, metadata, close_reason, price,
+        )
+        if evidence is None:
+            return False, "BLOCKED_PRIORITY_EXIT_AUTHORITY", {
+                "exit_type": "BLOCKED",
+            }
+        return True, "PRIORITY_EXIT_AUTHORIZED", evidence
     from core.services.mtf_kc_state_machine import (
         MTF_KC_EXIT_REASON_PREFIX,
         is_mtf_managed_position,

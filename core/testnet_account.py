@@ -2827,6 +2827,37 @@ class BinanceTestnetAccount:
                 except Exception:
                     check_frame = None
 
+            from core.services.entry_contract import (
+                automatic_entry_kc_structure_problem,
+                post_close_reentry_problem,
+            )
+            structure_problem = automatic_entry_kc_structure_problem(
+                side, check_frame, entry_context, reason,
+                account=self, symbol=symbol,
+            )
+            if structure_problem:
+                self.log(
+                    f"[攔截開單] KC 整體處於水平箱體或三軌未同步，放棄進場 "
+                    f"{symbol} {side}: {structure_problem}",
+                    "WARNING",
+                )
+                return False
+            post_close_problem = post_close_reentry_problem(
+                self,
+                symbol,
+                side,
+                check_frame,
+                frame_15m=entry_context.get("frame_15m"),
+                entry_context=entry_context,
+                reason=reason,
+            )
+            if post_close_problem:
+                self.log(
+                    f"POST_CLOSE_REENTRY_BLOCK {symbol} {side}: {post_close_problem}",
+                    "WARNING",
+                )
+                return False
+
             if check_frame is not None:
                 from core.gates.direction_master_lock import extract_direction_metrics_from_frame
                 metrics = extract_direction_metrics_from_frame(check_frame)
@@ -3262,6 +3293,37 @@ class BinanceTestnetAccount:
             _guard_frame = entry_context.get("entry_gate_frame")
         if _guard_frame is None:
             _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+
+        from core.services.entry_contract import (
+            automatic_entry_kc_structure_problem,
+            post_close_reentry_problem,
+        )
+        structure_problem = automatic_entry_kc_structure_problem(
+            side, _guard_frame, entry_context, reason,
+            account=self, symbol=symbol,
+        )
+        if structure_problem:
+            self.log(
+                f"[攔截開單] KC 整體處於水平箱體或三軌未同步，放棄進場 "
+                f"{symbol} {side}: {structure_problem}",
+                "WARNING",
+            )
+            return False
+        post_close_problem = post_close_reentry_problem(
+            self,
+            symbol,
+            side,
+            _guard_frame,
+            frame_15m=(entry_context or {}).get("frame_15m"),
+            entry_context=entry_context,
+            reason=reason,
+        )
+        if post_close_problem:
+            self.log(
+                f"POST_CLOSE_REENTRY_BLOCK {symbol} {side}: {post_close_problem}",
+                "WARNING",
+            )
+            return False
 
         if _guard_frame is not None and isinstance(_guard_frame, pd.DataFrame) and len(_guard_frame) > 0:
             try:
@@ -3715,6 +3777,7 @@ class BinanceTestnetAccount:
         if is_entry_disabled(symbol):
             return False
 
+        entry_context = dict(entry_context or {})
         is_manual = entry_context is not None and entry_context.get("manual_entry") is True
 
         # DCA 分批掛單處理
@@ -3943,14 +4006,45 @@ class BinanceTestnetAccount:
             filled_qty = float(order_status.get("filled") or 0.0)
             close_side = "sell" if info["side"] == "LONG" else "buy"
 
+            pending_context = info.get("entry_context") or {}
+            current_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+            if current_frame is None:
+                current_frame = pending_context.get("entry_gate_frame")
+            if current_frame is None:
+                current_frame = pending_context.get("frame")
+            macro_frames = getattr(self, "_macro_trend_frame_15m", {})
+            current_15m = macro_frames.get(symbol) if isinstance(macro_frames, dict) else None
+            if current_15m is None:
+                current_15m = pending_context.get("frame_15m")
+            from core.services.entry_contract import (
+                automatic_entry_kc_structure_problem,
+                post_close_reentry_problem,
+            )
+            structure_problem = automatic_entry_kc_structure_problem(
+                info["side"], current_frame, pending_context, info.get("reason"),
+                account=self, symbol=symbol,
+            )
+            post_close_problem = structure_problem or post_close_reentry_problem(
+                self,
+                symbol,
+                info["side"],
+                current_frame,
+                frame_15m=current_15m,
+                entry_context=pending_context,
+                reason=info.get("reason"),
+            )
+
             # Recheck the current KC direction while an entry limit is resting.
             # If the setup has turned countertrend, cancel it; if the race already
             # filled any quantity, immediately reduce-only flatten that quantity.
             try:
-                from core.services.math_execution_gate import validate_entry_at_execution
-                gate_allowed, gate_reason = await validate_entry_at_execution(
-                    self, symbol, info["side"], info.get("entry_context"),
-                )
+                if post_close_problem:
+                    gate_allowed, gate_reason = False, post_close_problem
+                else:
+                    from core.services.math_execution_gate import validate_entry_at_execution
+                    gate_allowed, gate_reason = await validate_entry_at_execution(
+                        self, symbol, info["side"], info.get("entry_context"),
+                    )
             except Exception as exc:
                 gate_allowed, gate_reason = False, f"BLOCKED_ENTRY_MATH_RECHECK_ERROR:{type(exc).__name__}"
             if not gate_allowed:
@@ -4512,7 +4606,8 @@ class BinanceTestnetAccount:
         print(log_alarm, flush=True)
 
         # Mathematical exit authorization replaces the retired 5m MA wall.
-        if staged_enabled(position, meta):
+        priority_exit = str(close_reason or "").upper().startswith("PRIORITY_EXIT_")
+        if staged_enabled(position, meta) and not priority_exit:
             runtime = self.staged_risk_runtimes.get(symbol)
             if runtime is None or not is_manual or is_limit:
                 return False
@@ -4567,7 +4662,9 @@ class BinanceTestnetAccount:
         # ✅ 修正：HARD_STOP 具最高優先權，無條件跳過冷卻計時器；
         #          一般策略平倉仍受冷卻保護，手動平倉也跳過。
         _now = time.time()
-        is_hard_stop_close = "HARD_STOP" in str(close_reason)
+        is_hard_stop_close = (
+            "HARD_STOP" in str(close_reason) or priority_exit
+        )
         strategy_close = str(close_reason).strip() != "手動平倉"
         _retry_after = getattr(self, "_close_retry_after", {}).get(symbol, 0.0)
         if not is_hard_stop_close and (not is_manual or strategy_close) and _now < _retry_after:
@@ -4580,7 +4677,7 @@ class BinanceTestnetAccount:
         try:
             # ✅ A. 極速執行：HARD_STOP 優先送出市價平倉單，跳過撤單等待；一般平倉照舊先撤單
             close_side = "sell" if position["side"] == "LONG" else "buy"
-            is_hard_stop_now = "HARD_STOP" in str(close_reason)
+            is_hard_stop_now = "HARD_STOP" in str(close_reason) or priority_exit
             if not is_hard_stop_now:
                 if _is_trend_lock_managed(position, meta):
                     cleanup_ok = await self._cancel_trend_lock_native_profit_exits(
