@@ -128,6 +128,48 @@ def _closed_kc_direction(closed: pd.DataFrame) -> str:
     return "FLAT"
 
 
+def _ltf_kc_wave_trend_conflict(closed: pd.DataFrame, side: str) -> Optional[str]:
+    """Block entries that oppose the 1m KC middle wave trend (8-12 bar structure)."""
+    if (
+        not isinstance(closed, pd.DataFrame)
+        or len(closed) < 10
+        or not {"kc_upper", "kc_lower", "kc_middle"}.issubset(closed.columns)
+    ):
+        return None
+    curr_mid = _number(closed.iloc[-1], "kc_middle")
+    prev_mid = _number(closed.iloc[-2], "kc_middle")
+    mid_6_ago = _number(closed.iloc[-6], "kc_middle")
+    mid_10_ago = _number(closed.iloc[-10], "kc_middle")
+    if None in (curr_mid, prev_mid, mid_6_ago, mid_10_ago):
+        return None
+    curr_ma15 = _number(closed.iloc[-1], "ma15") if "ma15" in closed.columns else None
+    ma15_8_ago = _number(closed.iloc[-8], "ma15") if "ma15" in closed.columns and len(closed) >= 8 else None
+    curr_low_kc = _number(closed.iloc[-1], "kc_lower")
+    low_kc_8_ago = _number(closed.iloc[-8], "kc_lower") if len(closed) >= 8 else None
+    curr_up_kc = _number(closed.iloc[-1], "kc_upper")
+    up_kc_8_ago = _number(closed.iloc[-8], "kc_upper") if len(closed) >= 8 else None
+
+    if side == "SHORT":
+        # 若 1m KC 中軌較 10 根前上升，且 MA15 或 KC 下軌仍處於上升趨勢（代表只是多頭上升通道內的回踩），嚴禁開空！
+        wave_mid_up = curr_mid > mid_10_ago and (
+            curr_mid > mid_6_ago
+            or (curr_ma15 is not None and ma15_8_ago is not None and curr_ma15 >= ma15_8_ago)
+            or (curr_low_kc is not None and low_kc_8_ago is not None and curr_low_kc > low_kc_8_ago)
+        )
+        if wave_mid_up:
+            return "BLOCKED_SHORT_ON_UPWARD_LTF_KC_WAVE_TREND"
+    elif side == "LONG":
+        # 若 1m KC 中軌較 10 根前下降，且 MA15 與 KC 上軌仍處於下降趨勢（代表只是空頭下降通道內的反彈），嚴禁開多！
+        wave_mid_down = curr_mid < mid_10_ago and (
+            curr_mid < mid_6_ago
+            or (curr_ma15 is not None and ma15_8_ago is not None and curr_ma15 <= ma15_8_ago)
+            or (curr_up_kc is not None and up_kc_8_ago is not None and curr_up_kc < up_kc_8_ago)
+        )
+        if wave_mid_down:
+            return "BLOCKED_LONG_ON_DOWNWARD_LTF_KC_WAVE_TREND"
+    return None
+
+
 def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
     """Detect a confirmed 1m KC + MA5/MA15 trend state on full-indicator 1m frames."""
     if (
@@ -153,6 +195,7 @@ def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
         and curr_ma5 is not None
         and curr_ma15 is not None
         and curr_ma5 < curr_ma15
+        and _ltf_kc_wave_trend_conflict(closed, "SHORT") is None
     ):
         return "DOWNTREND"
     if (
@@ -162,6 +205,7 @@ def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
         and curr_ma5 is not None
         and curr_ma15 is not None
         and curr_ma5 > curr_ma15
+        and _ltf_kc_wave_trend_conflict(closed, "LONG") is None
     ):
         return "UPTREND"
     recent = closed.tail(25).reset_index(drop=True)
@@ -182,6 +226,7 @@ def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
         and (curr_mid > prev_mid or curr_mid > prev2_mid)
         and curr_close > curr_mid
         and (curr_ma5 is None or curr_ma15 is None or curr_ma5 >= curr_ma15)
+        and _ltf_kc_wave_trend_conflict(closed, "LONG") is None
     ):
         return "UPTREND"
     if (
@@ -190,6 +235,7 @@ def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
         and (curr_mid < prev_mid or curr_mid < prev2_mid)
         and curr_close < curr_mid
         and (curr_ma5 is None or curr_ma15 is None or curr_ma5 <= curr_ma15)
+        and _ltf_kc_wave_trend_conflict(closed, "SHORT") is None
     ):
         return "DOWNTREND"
     return None
@@ -720,6 +766,9 @@ def evaluate_mtf_entry(
         }
     if len(closed) < 15:
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_MA_HISTORY_INVALID"}
+    wave_conflict = _ltf_kc_wave_trend_conflict(closed, expected_side)
+    if wave_conflict is not None:
+        return {**htf, "allowed": False, "reason": wave_conflict}
     from core.services.market_consolidation_filter import evaluate_market_blacklist
 
     consolidation_blocked, consolidation_reason, consolidation_evidence = (
