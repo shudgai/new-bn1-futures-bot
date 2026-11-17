@@ -510,6 +510,117 @@ class ExecutionManager:
         return cls._save_dual_trend_reversal_ticket_state(account, symbol)
 
     @classmethod
+    async def _attempt_priority_exit_reversal(
+        cls,
+        *,
+        symbol: str,
+        account: Any,
+        engine_or_account: Any,
+        frame_1m: Any,
+        quote: float,
+        position: Dict[str, Any],
+        exit_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        reason = str(exit_result.get("reason") or "")
+        priority = exit_result.get("priority")
+        if not (
+            priority in (0, 2)
+            or reason == "PRIORITY_EXIT_P3_MA5_DIRECTION_REVERSAL"
+        ):
+            return {"status": "NOT_APPLICABLE"}
+
+        old_side = str(position.get("side") or "").upper()
+        target_side = "SHORT" if old_side == "LONG" else "LONG"
+        positions = getattr(account, "positions", None)
+        if not isinstance(positions, dict) or symbol in positions:
+            return {
+                "status": "BLOCKED",
+                "reason": "REVERSAL_REQUIRES_CONFIRMED_FLAT",
+            }
+
+        daily_loss_limit = getattr(account, "daily_loss_limit_hit", None)
+        daily_halt = False
+        if callable(daily_loss_limit):
+            try:
+                risk_result = daily_loss_limit()
+                daily_halt = bool(
+                    risk_result[0]
+                    if isinstance(risk_result, (tuple, list)) else risk_result
+                )
+            except Exception:
+                logger.exception(
+                    "PRIORITY_EXIT_REVERSAL_DAILY_RISK_CHECK_FAILED symbol=%s",
+                    symbol,
+                )
+                daily_halt = True
+        if daily_halt:
+            return {
+                "status": "BLOCKED",
+                "reason": "REVERSAL_BLOCKED_BY_DAILY_RISK",
+            }
+
+        from core.services.entry_contract import evaluate_entry_contract
+
+        diagnostics: Dict[str, Any] = {}
+        candidate = evaluate_entry_contract(
+            frame_1m,
+            quote,
+            account=account,
+            symbol=symbol,
+            diagnostics=diagnostics,
+        )
+        if not isinstance(candidate, dict) or candidate.get("side") != target_side:
+            return {
+                "status": "BLOCKED",
+                "reason": str(
+                    diagnostics.get("reason")
+                    or "NO_FRESH_OPPOSITE_ENTRY_AUTHORITY"
+                ),
+            }
+
+        execute_entry = getattr(
+            engine_or_account, "_execute_confirmed_channel_break", None,
+        )
+        if not callable(execute_entry):
+            logger.error(
+                "PRIORITY_EXIT_REVERSAL_ENTRY_EXECUTOR_UNAVAILABLE symbol=%s",
+                symbol,
+            )
+            return {
+                "status": "BLOCKED",
+                "reason": "REVERSAL_ENTRY_EXECUTOR_UNAVAILABLE",
+            }
+
+        opened = await execute_entry(
+            symbol,
+            frame_1m,
+            quote,
+            target_side,
+            daily_halt=daily_halt,
+            v8_reason=candidate.get("type"),
+            candidate_bar_id=candidate.get("confirmation_bar_id"),
+        )
+        if not opened:
+            return {
+                "status": "BLOCKED",
+                "reason": "REVERSAL_ENTRY_FINAL_GATE_VETO",
+            }
+        new_position = positions.get(symbol)
+        if (
+            not isinstance(new_position, dict)
+            or str(new_position.get("side") or "").upper() != target_side
+        ):
+            logger.critical(
+                "PRIORITY_EXIT_REVERSAL_OPEN_UNCONFIRMED symbol=%s target=%s",
+                symbol, target_side,
+            )
+            return {
+                "status": "UNKNOWN",
+                "reason": "REVERSAL_OPEN_REQUIRES_ACCOUNT_RECONCILIATION",
+            }
+        return {"status": "REVERSED", "side": target_side}
+
+    @classmethod
     def _confirmed_dual_trend_exit_candidate(
         cls,
         position: Dict[str, Any],
@@ -828,6 +939,20 @@ class ExecutionManager:
                 cls.close_position,
             )
             if priority_exit is not None:
+                if priority_exit.get("success"):
+                    reversal = await cls._attempt_priority_exit_reversal(
+                        symbol=symbol,
+                        account=account,
+                        engine_or_account=engine_or_account,
+                        frame_1m=frame_1m,
+                        quote=quote,
+                        position=position,
+                        exit_result=priority_exit,
+                    )
+                    priority_exit["reversal"] = reversal
+                    if reversal.get("status") == "REVERSED":
+                        priority_exit["status"] = "EXIT_AND_REVERSE_EXECUTED"
+                        priority_exit["reversed_side"] = reversal["side"]
                 return priority_exit
         managed_position = bool(
             position and is_mtf_managed_position(position, metadata)

@@ -106,48 +106,121 @@ def _position(side="LONG", *, entry=100.0, atr=1.0, opened=1_700_000_000.0):
 
 
 @pytest.mark.parametrize(
-    ("side", "live_open", "prior_open", "quote", "expected_trigger"),
+    ("side", "quote", "expected_trigger"),
     [
-        ("LONG", 100.0, 100.0, 98.5, "SINGLE_CANDLE_ATR"),
-        ("SHORT", 100.0, 100.0, 101.5, "SINGLE_CANDLE_ATR"),
-        ("LONG", 100.0, 100.0, 99.1, "SINGLE_CANDLE_PERCENT"),
-        ("SHORT", 100.0, 100.0, 100.9, "SINGLE_CANDLE_PERCENT"),
-        ("LONG", 100.0, 103.0, 100.0, "TWO_CANDLE_DISPLACEMENT"),
-        ("SHORT", 100.0, 97.0, 100.0, "TWO_CANDLE_DISPLACEMENT"),
+        ("LONG", 98.5, "SINGLE_CANDLE_ATR"),
+        ("SHORT", 101.5, "SINGLE_CANDLE_ATR"),
+        ("LONG", 99.1, "SINGLE_CANDLE_PERCENT"),
+        ("SHORT", 100.9, "SINGLE_CANDLE_PERCENT"),
     ],
 )
-def test_priority_zero_abnormal_rules_are_symmetric(
-    side, live_open, prior_open, quote, expected_trigger,
+def test_priority_zero_waits_for_a_second_consecutive_abnormal_candle(
+    side, quote, expected_trigger,
 ):
     now = time.time()
+    position = _position(side)
+    metadata = {}
     result = evaluate_priority_exit(
-        _position(side),
-        _ltf(
-            now, current_open=live_open, previous_open=prior_open, quote=quote,
-        ),
+        position,
+        _ltf(now, quote=quote),
         None,
         quote,
-        {},
+        metadata,
         now=now,
+    )
+
+    assert result["priority"] is None
+    assert result["hold_reason"] == "WAITING_FOR_SECOND_CONSECUTIVE_ABNORMAL_CANDLE"
+
+    live_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
+    next_now = (live_bar_ms + 61_000) / 1000.0
+    result = evaluate_priority_exit(
+        position,
+        _ltf(next_now, quote=quote),
+        None,
+        quote,
+        metadata,
+        now=next_now,
     )
 
     assert result["priority"] == 0
     assert result["cooldown"] is True
-    assert result["evidence"]["trigger"] == expected_trigger
+    assert result["evidence"]["trigger"] == "CONSECUTIVE_ABNORMAL_CANDLES"
+    assert (
+        result["evidence"]["second_abnormal_candle"]["trigger"]
+        == expected_trigger
+    )
+    third_bar_now = (live_bar_ms + 121_000) / 1000.0
+    retry = evaluate_priority_exit(
+        position,
+        _ltf(third_bar_now, quote=100.2 if side == "LONG" else 99.8),
+        None,
+        100.2 if side == "LONG" else 99.8,
+        metadata,
+        now=third_bar_now,
+    )
+    assert retry["priority"] == 0
+    assert retry["evidence"]["close_retry"] is True
 
 
 def test_priority_zero_precedes_higher_timeframe_reversal():
     now = time.time()
-    result = evaluate_priority_exit(
-        _position("LONG"),
+    position = _position("LONG")
+    metadata = {}
+    evaluate_priority_exit(
+        position,
         _ltf(now, quote=98.5),
+        None,
+        98.5,
+        metadata,
+        now=now,
+    )
+    live_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
+    next_now = (live_bar_ms + 61_000) / 1000.0
+    result = evaluate_priority_exit(
+        position,
+        _ltf(next_now, quote=98.5),
         _htf(now, slope=-0.1),
         98.5,
-        {},
-        now=now,
+        metadata,
+        now=next_now,
     )
 
     assert result["priority"] == 0
+
+
+@pytest.mark.parametrize(
+    ("side", "aligned_close"),
+    [("LONG", 100.5), ("SHORT", 99.5)],
+)
+def test_priority_zero_clears_after_the_next_candle_closes_without_anomaly(
+    side, aligned_close,
+):
+    now = time.time()
+    position = _position(side)
+    metadata = {}
+    evaluate_priority_exit(
+        position, _ltf(now, quote=98.5 if side == "LONG" else 101.5),
+        None, 98.5 if side == "LONG" else 101.5, metadata, now=now,
+    )
+    first_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
+    third_bar_now = (first_bar_ms + 121_000) / 1000.0
+    quote = 100.2 if side == "LONG" else 99.8
+    result = evaluate_priority_exit(
+        position,
+        _ltf(
+            third_bar_now,
+            quote=quote,
+            closed_close=aligned_close,
+        ),
+        None,
+        quote,
+        metadata,
+        now=third_bar_now,
+    )
+
+    assert result["priority"] is None
+    assert "abnormal_exit_pending" not in metadata["priority_exit_state"]
 
 
 @pytest.mark.parametrize(
@@ -158,8 +231,16 @@ def test_priority_zero_precedes_higher_timeframe_reversal():
     ],
 )
 def test_priority_one_closes_on_confirmed_ltf_and_macro_reversal(
-    side, slope, closed_middles,
+    side, slope, closed_middles, monkeypatch,
 ):
+    from core.gates import holding_protection_gate
+
+    pivot_type = "TRUE_PEAK_CONFIRMED" if side == "LONG" else "TRUE_VALLEY_CONFIRMED"
+    monkeypatch.setattr(
+        holding_protection_gate,
+        "has_confirmed_true_pivot",
+        lambda *_args: (True, pivot_type, {}),
+    )
     now = time.time()
     result = evaluate_priority_exit(
         _position(side),
@@ -171,7 +252,7 @@ def test_priority_one_closes_on_confirmed_ltf_and_macro_reversal(
     )
 
     assert result["priority"] == 1
-    assert result["reason"] == "PRIORITY_EXIT_P1_MTF_KC_REVERSAL"
+    assert result["reason"] == "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY"
 
 
 @pytest.mark.parametrize(
@@ -254,7 +335,7 @@ def test_priority_three_does_not_close_on_atr_pullback():
     )
 
     assert result["priority"] is None
-    assert result["hold_reason"] == "VETO_EXIT_BY_PULLBACK"
+    assert result["reason"] is None
 
 
 def test_priority_three_does_not_close_on_pullback_when_trend_is_aligned():
@@ -272,7 +353,7 @@ def test_priority_three_does_not_close_on_pullback_when_trend_is_aligned():
     )
 
     assert result["priority"] is None
-    assert result["hold_reason"] == "VETO_EXIT_BY_PULLBACK"
+    assert result["reason"] is None
 
 
 def test_priority_four_requires_flat_transition_and_closed_ltf_break():
@@ -298,16 +379,42 @@ def test_priority_four_requires_flat_transition_and_closed_ltf_break():
         metadata,
         now=now,
     )
-    assert result["priority"] == 4
-    assert result["evidence"]["threshold"] == pytest.approx(
-        100.0 - FLAT_EXIT_BUFFER_ATR
-    )
+    assert result["priority"] is None
+    assert result["hold_reason"] == "VETO_FLAT_EXIT_UNTIL_TRUE_PEAK"
+
+
+def test_true_pivot_closes_without_mtf_or_flat_condition(monkeypatch):
+    from core.gates import holding_protection_gate
+
+    for side, pivot_type in (
+        ("LONG", "TRUE_PEAK_CONFIRMED"),
+        ("SHORT", "TRUE_VALLEY_CONFIRMED"),
+    ):
+        monkeypatch.setattr(
+            holding_protection_gate,
+            "has_confirmed_true_pivot",
+            lambda *_args, result=pivot_type: (True, result, {}),
+        )
+        now = time.time()
+        result = evaluate_priority_exit(
+            _position(side),
+            _ltf(now, quote=100.0),
+            None,
+            100.0,
+            {},
+            now=now,
+        )
+        assert result["priority"] == 1
+        assert result["reason"] == "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY"
 
 
 def test_p0_execution_persists_cooldown_and_short_lived_close_authority():
     now = time.time()
+    live_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
+    next_now = (live_bar_ms + 61_000) / 1000.0
+    position = _position("LONG")
     account = type("Account", (), {
-        "positions": {"X/USDT": _position("LONG")},
+        "positions": {"X/USDT": position},
         "position_meta": {"X/USDT": {}},
         "entry_filter_last": {},
         "save_state": lambda self, **_kwargs: None,
@@ -318,32 +425,154 @@ def test_p0_execution_persists_cooldown_and_short_lived_close_authority():
         closed.append((args, kwargs))
         return False
 
-    result = asyncio.run(evaluate_and_execute_exit(
+    first_result = asyncio.run(evaluate_and_execute_exit(
         account,
         "X/USDT",
-        account.positions["X/USDT"],
+        position,
         _ltf(now, quote=98.5),
         None,
         98.5,
         close_position,
         now=now,
     ))
+    assert first_result["status"] == "HOLD"
+    assert not closed
+
+    result = asyncio.run(evaluate_and_execute_exit(
+        account,
+        "X/USDT",
+        position,
+        _ltf(next_now, quote=98.5),
+        None,
+        98.5,
+        close_position,
+        now=next_now,
+    ))
 
     assert result["priority"] == 0
     assert result["success"] is False
     assert entry_circuit_breaker_cooldown_problem(
-        account, "X/USDT", now=now + CIRCUIT_BREAKER_COOLDOWN_SEC - 1,
+        account, "X/USDT", now=next_now + CIRCUIT_BREAKER_COOLDOWN_SEC - 1,
     ) == "BLOCKED_CIRCUIT_BREAKER_COOLDOWN"
     auth = account.position_meta["X/USDT"]["priority_exit_authorization"]
     assert _valid_authorization(
         account.positions["X/USDT"], account.position_meta["X/USDT"],
-        auth["reason"], 98.5, now=now,
+        auth["reason"], 98.5, now=next_now,
     ) is not None
     assert _valid_authorization(
         account.positions["X/USDT"], account.position_meta["X/USDT"],
-        auth["reason"], 99.0, now=now,
+        auth["reason"], 99.0, now=next_now,
     ) is None
     assert len(closed) == 1
+
+
+@pytest.mark.parametrize(
+    ("side", "quotes"),
+    [
+        ("LONG", (100.1, 100.2, 100.0, 99.9)),
+        ("SHORT", (99.9, 99.8, 100.0, 100.1)),
+    ],
+)
+def test_ma5_reversal_requires_two_adverse_live_observations(side, quotes, monkeypatch):
+    from core.gates import holding_protection_gate
+
+    pivot_type = "TRUE_PEAK_CONFIRMED" if side == "LONG" else "TRUE_VALLEY_CONFIRMED"
+    pivot_enabled = [False]
+    monkeypatch.setattr(
+        holding_protection_gate,
+        "has_confirmed_true_pivot",
+        lambda *_args: (pivot_enabled[0], pivot_type, {}),
+    )
+    now = time.time()
+    position = _position(side)
+    metadata = {}
+
+    results = []
+    for index, quote in enumerate(quotes):
+        pivot_enabled[0] = index == len(quotes) - 1
+        live_frame = _ltf(
+            now, current_open=100.0, quote=quote, closed_close=100.0,
+        )
+        earlier_closed = live_frame.iloc[0].copy()
+        earlier_closed["timestamp"] = float(earlier_closed["timestamp"]) - 60_000
+        live_frame = pd.concat(
+            [earlier_closed.to_frame().T, live_frame], ignore_index=True,
+        )
+        live_frame.attrs.update(
+            timeframe_ms=60_000.0, snapshot_ms=now * 1000.0,
+        )
+        results.append(evaluate_priority_exit(
+            position, live_frame, None, quote, metadata, now=now,
+        ))
+
+    assert [result["priority"] for result in results] == [None, None, None, 3]
+    assert results[-1]["reason"] == "PRIORITY_EXIT_P3_MA5_DIRECTION_REVERSAL"
+    assert results[-1]["evidence"]["adverse_observations"] == 2
+
+
+def test_priority_exit_reversal_uses_entry_contract_and_reconciles_flat(monkeypatch):
+    from core.services import entry_contract
+    from core.services.execution_manager import ExecutionManager
+
+    account = type("Account", (), {
+        "positions": {},
+        "daily_loss_limit_hit": lambda self: (False, 0.0),
+    })()
+    engine = type("Engine", (), {})()
+    opened = []
+
+    async def execute(*args, **kwargs):
+        opened.append((args, kwargs))
+        account.positions["X/USDT"] = {"side": "SHORT"}
+        return True
+
+    engine._execute_confirmed_channel_break = execute
+    monkeypatch.setattr(
+        entry_contract,
+        "evaluate_entry_contract",
+        lambda *_args, **_kwargs: {
+            "side": "SHORT",
+            "type": "AUTHORIZED_REALTIME_BREAKOUT",
+            "confirmation_bar_id": 123,
+        },
+    )
+    result = asyncio.run(ExecutionManager._attempt_priority_exit_reversal(
+        symbol="X/USDT",
+        account=account,
+        engine_or_account=engine,
+        frame_1m=pd.DataFrame(),
+        quote=99.0,
+        position=_position("LONG"),
+        exit_result={
+            "priority": 3,
+            "reason": "PRIORITY_EXIT_P3_MA5_DIRECTION_REVERSAL",
+        },
+    ))
+
+    assert result == {"status": "REVERSED", "side": "SHORT"}
+    assert opened
+
+
+def test_priority_exit_reversal_fails_closed_when_not_flat():
+    from core.services.execution_manager import ExecutionManager
+
+    account = type("Account", (), {
+        "positions": {"X/USDT": _position("LONG")},
+    })()
+    result = asyncio.run(ExecutionManager._attempt_priority_exit_reversal(
+        symbol="X/USDT",
+        account=account,
+        engine_or_account=object(),
+        frame_1m=pd.DataFrame(),
+        quote=99.0,
+        position=_position("LONG"),
+        exit_result={
+            "priority": 2,
+            "reason": "PRIORITY_EXIT_P2_ENTRY_HARD_STOP",
+        },
+    ))
+
+    assert result["reason"] == "REVERSAL_REQUIRES_CONFIRMED_FLAT"
 
 
 @pytest.mark.parametrize(

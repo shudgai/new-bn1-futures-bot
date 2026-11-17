@@ -95,6 +95,166 @@ def _closed_ltf_last(frame: Any) -> pd.Series | None:
     return closed.iloc[-1] if not closed.empty else None
 
 
+def _confirmed_true_pivot(
+    position: Mapping[str, Any], frame: Any, quote: float,
+) -> tuple[bool, dict[str, Any]]:
+    side = str(position.get("side") or "").upper()
+    expected_prefix = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
+    try:
+        from core.gates.holding_protection_gate import has_confirmed_true_pivot
+
+        confirmed, pivot_type, evidence = has_confirmed_true_pivot(
+            position, frame, quote,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False, {}
+    if not confirmed or not str(pivot_type or "").upper().startswith(expected_prefix):
+        return False, {}
+    return True, {"true_pivot_type": pivot_type, **dict(evidence or {})}
+
+
+def _abnormal_adverse_candle(
+    side: str,
+    candle: Mapping[str, Any] | pd.Series,
+    *,
+    quote: float | None = None,
+    atr: float | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    opening = _number(candle, "open")
+    close = float(quote) if quote is not None else _number(candle, "close")
+    atr_value = atr if atr is not None else _number(candle, "atr")
+    if (
+        opening is None or opening <= 0 or close is None
+        or not math.isfinite(close) or atr_value is None
+        or not math.isfinite(atr_value) or atr_value <= 0
+    ):
+        return None, {}
+    adverse_body = opening - close if side == "LONG" else close - opening
+    if adverse_body <= 0:
+        return None, {}
+    adverse_pct = adverse_body / opening
+    trigger = None
+    if adverse_body >= ABNORMAL_SINGLE_ATR_MULT * atr_value:
+        trigger = "SINGLE_CANDLE_ATR"
+    elif adverse_pct >= ABNORMAL_PCT_THRESHOLD:
+        trigger = "SINGLE_CANDLE_PERCENT"
+    return trigger, {
+        "side": side,
+        "candle_open": opening,
+        "candle_close": close,
+        "adverse_body": adverse_body,
+        "adverse_pct": adverse_pct,
+        "atr": atr_value,
+        "bar_timestamp": candle.get("timestamp"),
+    }
+
+
+def _update_ma5_turn_state(
+    position: Mapping[str, Any],
+    frame: Any,
+    quote: float,
+    state: dict[str, Any],
+) -> tuple[dict[str, Any] | None, bool]:
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return None, False
+    try:
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(frame)
+        if len(closed) < 4:
+            return None, False
+        closes = pd.to_numeric(closed["close"].tail(4), errors="coerce").to_numpy(
+            dtype=float,
+        )
+        values = [*closes, float(quote)]
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return None, False
+        ma5 = sum(values) / 5.0
+        opening = _timestamp_ms(
+            position.get("open_timestamp") or position.get("entry_timestamp")
+        )
+        live_bar_ms = _timestamp_ms(frame.iloc[-1].get("timestamp"))
+        side = str(position.get("side") or "").upper()
+        if opening is None or live_bar_ms is None or side not in ("LONG", "SHORT"):
+            return None, False
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None, False
+
+    key = "ma5_turn_state"
+    turn_state = state.get(key)
+    if not isinstance(turn_state, dict):
+        turn_state = {}
+        state[key] = turn_state
+    identity_matches = (
+        turn_state.get("side") == side
+        and turn_state.get("position_open_ms") == opening
+    )
+    try:
+        previous_ma5 = float(turn_state["last_ma5"]) if identity_matches else math.nan
+        previous_bar_ms = float(turn_state["bar_ms"]) if identity_matches else math.nan
+    except (KeyError, TypeError, ValueError, OverflowError):
+        previous_ma5 = previous_bar_ms = math.nan
+
+    durable_before = (
+        turn_state.get("side"),
+        turn_state.get("position_open_ms"),
+        turn_state.get("bar_ms"),
+        turn_state.get("favorable_seen"),
+        turn_state.get("adverse_ticks"),
+    )
+    if not identity_matches or previous_bar_ms != live_bar_ms:
+        turn_state.update({
+            "side": side,
+            "position_open_ms": opening,
+            "bar_ms": live_bar_ms,
+            "last_ma5": ma5,
+            "favorable_seen": (
+                bool(turn_state.get("favorable_seen")) if identity_matches else False
+            ),
+            "adverse_ticks": 0,
+        })
+        return None, durable_before != (
+            turn_state.get("side"),
+            turn_state.get("position_open_ms"),
+            turn_state.get("bar_ms"),
+            turn_state.get("favorable_seen"),
+            turn_state.get("adverse_ticks"),
+        )
+
+    epsilon = max(abs(ma5), abs(previous_ma5), 1.0) * 1e-12
+    delta = ma5 - previous_ma5
+    favorable = delta > epsilon if side == "LONG" else delta < -epsilon
+    adverse = delta < -epsilon if side == "LONG" else delta > epsilon
+    if favorable:
+        turn_state["favorable_seen"] = True
+        turn_state["adverse_ticks"] = 0
+    elif adverse and turn_state.get("favorable_seen") is True:
+        turn_state["adverse_ticks"] = int(turn_state.get("adverse_ticks") or 0) + 1
+    else:
+        turn_state["adverse_ticks"] = 0
+    turn_state["last_ma5"] = ma5
+    durable_after = (
+        turn_state.get("side"),
+        turn_state.get("position_open_ms"),
+        turn_state.get("bar_ms"),
+        turn_state.get("favorable_seen"),
+        turn_state.get("adverse_ticks"),
+    )
+    changed = durable_before != durable_after
+    if turn_state["adverse_ticks"] < 2:
+        return None, changed
+    return {
+        "trigger": "TWO_CONSECUTIVE_LIVE_MA5_COUNTERTREND_OBSERVATIONS",
+        "side": side,
+        "quote": float(quote),
+        "ma5": ma5,
+        "previous_ma5": previous_ma5,
+        "ma5_delta": delta,
+        "adverse_observations": turn_state["adverse_ticks"],
+        "bar_timestamp": live_bar_ms,
+    }, changed
+
+
 def _valid_authorization(
     position: Mapping[str, Any],
     metadata: Mapping[str, Any] | None,
@@ -228,48 +388,123 @@ def evaluate_priority_exit(
         if ltf_midline.get("valid") else "UNKNOWN"
     )
     trend_hold_reason = None
+    abnormal_hold_reason = None
+    pivot_confirmed, pivot_evidence = _confirmed_true_pivot(
+        position, frame_1m, price,
+    )
 
     if live is not None and live_atr is not None and live_atr > 0:
-        opening = _number(live, "open")
-        previous_open = _number(previous, "open")
-        if opening is not None and opening > 0:
-            adverse_body = opening - price if side == "LONG" else price - opening
-            adverse_pct = adverse_body / opening
-            cumulative = (
-                previous_open - price if side == "LONG"
-                else price - previous_open
-            ) if previous_open is not None else None
-            single_hit = adverse_body >= ABNORMAL_SINGLE_ATR_MULT * live_atr
-            percent_hit = adverse_pct >= ABNORMAL_PCT_THRESHOLD
-            multi_hit = (
-                cumulative is not None
-                and cumulative >= ABNORMAL_MULTI_ATR_MULT * live_atr
-            )
-            if single_hit or percent_hit or multi_hit:
-                reason = "PRIORITY_EXIT_P0_CIRCUIT_BREAKER"
-                return {
-                    "priority": 0,
-                    "reason": reason,
-                    "cooldown": True,
-                    "state_changed": state_changed,
-                    "evidence": {
-                        "trigger": (
-                            "SINGLE_CANDLE_ATR" if single_hit
-                            else "SINGLE_CANDLE_PERCENT" if percent_hit
-                            else "TWO_CANDLE_DISPLACEMENT"
-                        ),
-                        "side": side,
-                        "quote": price,
-                        "candle_open": opening,
-                        "adverse_body": adverse_body,
-                        "adverse_pct": adverse_pct,
-                        "cumulative_adverse": cumulative,
-                        "atr": live_atr,
-                        "single_threshold": ABNORMAL_SINGLE_ATR_MULT * live_atr,
-                        "multi_threshold": ABNORMAL_MULTI_ATR_MULT * live_atr,
-                        "bar_timestamp": live.get("timestamp"),
-                    },
+        interval_ms = 60_000.0
+        live_bar_ms = _timestamp_ms(live.get("timestamp"))
+        previous_bar_ms = _timestamp_ms(previous.get("timestamp"))
+        pending = state.get("abnormal_exit_pending")
+        if not isinstance(pending, dict):
+            pending = None
+        position_open_ms = _timestamp_ms(
+            position.get("open_timestamp") or position.get("entry_timestamp")
+        )
+        if pending is not None and (
+            pending.get("side") != side
+            or _timestamp_ms(pending.get("bar_timestamp")) is None
+            or pending.get("position_open_ms") != position_open_ms
+        ):
+            state.pop("abnormal_exit_pending", None)
+            pending = None
+            state_changed = True
+
+        pending_bar_ms = (
+            _timestamp_ms(pending.get("bar_timestamp"))
+            if pending is not None else None
+        )
+        if pending is not None and pending.get("confirmed") is True:
+            return {
+                "priority": 0,
+                "reason": "PRIORITY_EXIT_P0_CIRCUIT_BREAKER",
+                "cooldown": True,
+                "state_changed": state_changed,
+                "evidence": {
+                    **dict(pending.get("confirmed_evidence") or {}),
+                    "trigger": "CONSECUTIVE_ABNORMAL_CANDLES",
+                    "side": side,
+                    "quote": price,
+                    "close_retry": True,
+                },
+            }
+        current_trigger, current_evidence = _abnormal_adverse_candle(
+            side, live, quote=price, atr=live_atr,
+        )
+        second_trigger = None
+        second_evidence: dict[str, Any] = {}
+        if pending is not None and pending_bar_ms is not None:
+            if live_bar_ms == pending_bar_ms + interval_ms and current_trigger:
+                second_trigger = current_trigger
+                second_evidence = current_evidence
+            elif (
+                previous_bar_ms == pending_bar_ms + interval_ms
+                and previous is not None
+            ):
+                second_trigger, second_evidence = _abnormal_adverse_candle(
+                    side, previous,
+                )
+                if second_trigger is None:
+                    state.pop("abnormal_exit_pending", None)
+                    pending = None
+                    pending_bar_ms = None
+                    state_changed = True
+            elif (
+                live_bar_ms is not None
+                and live_bar_ms > pending_bar_ms + interval_ms
+            ):
+                state.pop("abnormal_exit_pending", None)
+                pending = None
+                pending_bar_ms = None
+                state_changed = True
+
+        if second_trigger:
+            first_evidence = pending.get("evidence", {})
+            second_candle_evidence = {
+                **second_evidence,
+                "trigger": second_trigger,
+                "quote": price if live_bar_ms == pending_bar_ms + interval_ms
+                else second_evidence.get("candle_close"),
+            }
+            pending["confirmed"] = True
+            pending["confirmed_evidence"] = {
+                "first_abnormal_candle": first_evidence,
+                "second_abnormal_candle": second_candle_evidence,
+            }
+            state_changed = True
+            return {
+                "priority": 0,
+                "reason": "PRIORITY_EXIT_P0_CIRCUIT_BREAKER",
+                "cooldown": True,
+                "state_changed": state_changed,
+                "evidence": {
+                    **pending["confirmed_evidence"],
+                    "trigger": "CONSECUTIVE_ABNORMAL_CANDLES",
+                    "side": side,
+                    "quote": price,
+                },
+            }
+
+        if pending is not None:
+            abnormal_hold_reason = "WAITING_FOR_SECOND_CONSECUTIVE_ABNORMAL_CANDLE"
+
+        if current_trigger:
+            if pending is None:
+                state["abnormal_exit_pending"] = {
+                    "side": side,
+                    "bar_timestamp": live_bar_ms,
+                    "position_open_ms": position_open_ms,
+                    "trigger": current_trigger,
+                    "evidence": {**current_evidence, "trigger": current_trigger},
                 }
+                state_changed = True
+                abnormal_hold_reason = (
+                    "WAITING_FOR_SECOND_CONSECUTIVE_ABNORMAL_CANDLE"
+                )
+        elif pending is None:
+            abnormal_hold_reason = None
 
     if htf.get("valid"):
         if htf_state != previous_htf_state:
@@ -277,28 +512,14 @@ def evaluate_priority_exit(
             state_changed = True
         if side == "LONG" and htf_state == "DOWNTREND":
             if ltf_direction == "DOWNTREND":
-                return {
-                    "priority": 1,
-                    "reason": "PRIORITY_EXIT_P1_MTF_KC_REVERSAL",
-                    "state_changed": state_changed,
-                    "evidence": {
-                        **htf, "side": side, "quote": price,
-                        "ltf_closed_midline_direction": ltf_direction,
-                    },
-                }
-            trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
+                trend_hold_reason = "VETO_MTF_EXIT_UNTIL_TRUE_PEAK"
+            else:
+                trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
         if side == "SHORT" and htf_state == "UPTREND":
             if ltf_direction == "UPTREND":
-                return {
-                    "priority": 1,
-                    "reason": "PRIORITY_EXIT_P1_MTF_KC_REVERSAL",
-                    "state_changed": state_changed,
-                    "evidence": {
-                        **htf, "side": side, "quote": price,
-                        "ltf_closed_midline_direction": ltf_direction,
-                    },
-                }
-            trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
+                trend_hold_reason = "VETO_MTF_EXIT_UNTIL_TRUE_VALLEY"
+            else:
+                trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
     if entry is not None and entry > 0 and entry_atr is not None and entry_atr > 0:
         stop = (
@@ -340,25 +561,29 @@ def evaluate_priority_exit(
                 },
             }
 
-    if live_atr is not None and live_atr > 0:
-        favorable_key = "favorable_extreme"
-        old_extreme = _number(state, favorable_key)
-        if old_extreme is None:
-            old_extreme = entry if entry is not None and entry > 0 else price
-        extreme = max(old_extreme, price) if side == "LONG" else min(old_extreme, price)
-        if not math.isclose(extreme, old_extreme, rel_tol=1e-12, abs_tol=1e-12):
-            state[favorable_key] = extreme
-            state_changed = True
-        favorable_move = (
-            extreme - entry if side == "LONG" else entry - extreme
-        ) if entry is not None else 0.0
-        retracement = extreme - price if side == "LONG" else price - extreme
-        if (
-            entry is not None and entry > 0
-            and favorable_move >= TRAILING_START_ATR * live_atr
-            and retracement >= TRAILING_DIST_ATR * live_atr
-        ):
-            trend_hold_reason = "VETO_EXIT_BY_PULLBACK"
+    ma5_turn_evidence, ma5_state_changed = _update_ma5_turn_state(
+        position, frame_1m, price, state,
+    )
+    state_changed = state_changed or ma5_state_changed
+    if ma5_turn_evidence is not None:
+        return {
+            "priority": 3,
+            "reason": "PRIORITY_EXIT_P3_MA5_DIRECTION_REVERSAL",
+            "state_changed": state_changed,
+            "evidence": ma5_turn_evidence,
+        }
+
+    if pivot_confirmed:
+        return {
+            "priority": 1,
+            "reason": "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY",
+            "state_changed": state_changed,
+            "evidence": {
+                **pivot_evidence,
+                "side": side,
+                "quote": price,
+            },
+        }
 
     if htf.get("valid"):
         flat_key = "flat_exit_armed_side"
@@ -383,22 +608,10 @@ def evaluate_priority_exit(
                 threshold = middle - FLAT_EXIT_BUFFER_ATR * atr if side == "LONG" else middle + FLAT_EXIT_BUFFER_ATR * atr
                 flat_exit_hit = close < threshold if side == "LONG" else close > threshold
                 if flat_exit_hit:
-                    return {
-                        "priority": 4,
-                        "reason": "PRIORITY_EXIT_P4_FLAT_MIDLINE_BUFFER",
-                        "state_changed": state_changed,
-                        "evidence": {
-                            "trigger": "HTF_FLAT_CLOSED_LTF_BUFFER_BREAK",
-                            "side": side,
-                            "quote": price,
-                            "closed_ltf_close": close,
-                            "closed_ltf_kc_middle": middle,
-                            "closed_ltf_atr": atr,
-                            "buffer_atr": FLAT_EXIT_BUFFER_ATR,
-                            "threshold": threshold,
-                            "htf_state": htf_state,
-                        },
-                    }
+                    trend_hold_reason = (
+                        "VETO_FLAT_EXIT_UNTIL_TRUE_PEAK"
+                        if side == "LONG" else "VETO_FLAT_EXIT_UNTIL_TRUE_VALLEY"
+                    )
 
     return {
         "priority": None,
@@ -406,7 +619,7 @@ def evaluate_priority_exit(
         "state_changed": state_changed,
         "htf_valid": bool(htf.get("valid")),
         "htf_reason": htf.get("reason"),
-        "hold_reason": trend_hold_reason,
+        "hold_reason": trend_hold_reason or abnormal_hold_reason,
         "evidence": {"htf_state": htf_state or None},
     }
 
@@ -538,7 +751,7 @@ async def evaluate_and_execute_exit(
         priority_label = {
             1: "大週期方向反轉強制清倉",
             2: "硬止損或反向軌道破壞",
-            3: "棘輪移動鎖利觸發",
+            3: "MA5 即時轉向確認",
             4: "大週期走平緩衝出場",
         }.get(priority, "未分類")
         logger.warning(
