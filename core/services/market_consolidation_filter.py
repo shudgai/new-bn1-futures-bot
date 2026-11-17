@@ -199,7 +199,11 @@ def evaluate_market_blacklist(
         prior_width = width.iloc[:-1].tail(LOOKBACK)
         big_mouth_ratio = float(width.iloc[-1] / prior_width.mean()) if len(prior_width) else math.inf
         checks["kc_big_mouth_ratio"] = big_mouth_ratio
-        if not is_breakout and (not math.isfinite(big_mouth_ratio) or big_mouth_ratio >= KC_BIG_MOUTH_RATIO):
+        if (
+            not is_breakout
+            and not (meme_policy and meme_structural_entry)
+            and (not math.isfinite(big_mouth_ratio) or big_mouth_ratio >= KC_BIG_MOUTH_RATIO)
+        ):
             return True, "VETO_KC_BIG_MOUTH_EXPANSION", checks
 
         # Box/range with weak ADX or low normalized ATR.
