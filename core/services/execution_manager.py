@@ -840,6 +840,34 @@ class ExecutionManager:
                     waterfall_reason,
                     meta={"raw_df": frame_1m, "is_bar_closed": False},
                 )
+                if closed:
+                    entry_state = getattr(account, "entry_filter_last", None)
+                    if not isinstance(entry_state, dict):
+                        entry_state = {}
+                        account.entry_filter_last = entry_state
+                    reverse_tickets = entry_state.setdefault(
+                        "mtf_cycle_reverse_pending", {},
+                    )
+                    if isinstance(reverse_tickets, dict):
+                        target_side = "SHORT" if side == "LONG" else "LONG"
+                        bar_id = None
+                        try:
+                            bar_id = int(float(frame_1m.iloc[-1]["timestamp"]))
+                        except Exception:
+                            pass
+                        reverse_tickets[symbol] = {
+                            "source_side": side,
+                            "target_side": target_side,
+                            "reason": waterfall_reason,
+                            "close_timestamp": getattr(account, "last_closed_at", {}).get(symbol),
+                            "bar_id": bar_id,
+                        }
+                        save_state = getattr(account, "save_state", None)
+                        if callable(save_state):
+                            try:
+                                save_state()
+                            except Exception:
+                                pass
                 return {
                     "status": "EXIT_EXECUTED" if closed else "HOLD",
                     "symbol": symbol,
@@ -1207,6 +1235,13 @@ class ExecutionManager:
         same_bar_close = close_in_current_live_1m_bar(
             frame_1m, getattr(account, "last_closed_at", {}).get(symbol),
         )
+        if not allow_immediate_mtf_reverse and preferred_side:
+            allow_immediate_mtf_reverse = mtf_cycle_reverse_reentry_ticket_valid(
+                account,
+                symbol,
+                preferred_side,
+                frame_1m,
+            )
         if same_bar_close is None:
             return {
                 "status": "VETO",

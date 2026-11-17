@@ -434,11 +434,12 @@ def mtf_cycle_reverse_reentry_ticket_valid(
     ).upper()
     actual_close = getattr(account, "last_closed_at", {}).get(symbol)
     expected_target = "SHORT" if source_side == "LONG" else "LONG"
-    expected_reason = (
+    expected_reasons = {
         "MTF_KC_STATE_MACHINE_DOWNTREND_REVERSAL_EXIT"
         if source_side == "LONG"
-        else "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT"
-    )
+        else "MTF_KC_STATE_MACHINE_UPTREND_REVERSAL_EXIT",
+        "EXIT_BY_EXTREME_WATERFALL",
+    }
     try:
         actual_close_value = float(actual_close)
         ticket_close_value = float(ticket.get("close_timestamp"))
@@ -451,7 +452,7 @@ def mtf_cycle_reverse_reentry_ticket_valid(
         or side != expected_target
         or str(ticket.get("source_side") or "").upper() != source_side
         or str(ticket.get("target_side") or "").upper() != side
-        or ticket.get("reason") != expected_reason
+        or ticket.get("reason") not in expected_reasons
         or not math.isfinite(actual_close_value)
         or not math.isfinite(ticket_close_value)
         or not math.isclose(

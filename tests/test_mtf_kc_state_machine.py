@@ -1934,3 +1934,35 @@ def test_final_mtf_open_preserves_htf_frame_and_pending_candidate(monkeypatch):
     assert opened
     assert captured["entry_context"]["frame_15m"] is htf_frame
     assert captured["entry_context"]["mtf_pending_candidate"] is pending_candidate
+
+
+def test_extreme_waterfall_exit_reverse_ticket_valid(monkeypatch):
+    symbol = "龙虾/USDT"
+    bar_id = 180_000
+    close_timestamp = 180_015.0
+    account = type("Account", (), {
+        "positions": {},
+        "last_closed_side": {symbol: "SHORT"},
+        "last_closed_at": {symbol: close_timestamp},
+        "entry_filter_last": {
+            "mtf_cycle_reverse_pending": {
+                symbol: {
+                    "source_side": "SHORT",
+                    "target_side": "LONG",
+                    "reason": "EXIT_BY_EXTREME_WATERFALL",
+                    "close_timestamp": close_timestamp,
+                    "bar_id": bar_id,
+                },
+            },
+        },
+    })()
+    frame = pd.DataFrame([{"timestamp": bar_id}])
+    monkeypatch.setattr(mtf, "close_in_current_live_1m_bar", lambda *_args: True)
+
+    assert mtf.mtf_cycle_reverse_reentry_ticket_valid(
+        account, symbol, "LONG", frame,
+    )
+    assert not mtf.mtf_cycle_reverse_reentry_ticket_valid(
+        account, symbol, "SHORT", frame,
+    )
+
