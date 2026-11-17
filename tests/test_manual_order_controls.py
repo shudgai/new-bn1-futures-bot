@@ -65,6 +65,21 @@ def test_manual_order_submits_directly_to_account_without_blocking(
     assert context["managed_by_bot"] is True
 
 
+def test_manual_fill_is_immediately_adopted_by_bot(manual_service):
+    service, engine, _ = manual_service
+    position = {
+        "side": "LONG", "entry_mode": "CHANNEL_SWING",
+        "manual_entry": True, "managed_by_bot": True,
+    }
+    engine.account.positions["龙虾/USDT"] = position
+
+    result = asyncio.run(service.process_manual_order("龙虾/USDT", "LONG"))
+
+    assert result["success"]
+    engine._take_over_manual_position.assert_called_once_with("龙虾/USDT", position)
+    engine.release_manual_close_state.assert_called_once_with("龙虾/USDT")
+
+
 def test_manual_order_final_rejection_is_not_reported_as_a_fill(
     manual_service, monkeypatch,
 ):

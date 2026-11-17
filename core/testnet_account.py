@@ -3176,29 +3176,9 @@ class BinanceTestnetAccount:
 
 
         if is_manual:
-            from core.services.entry_firewall import require_ma5_ma15_entry_gates
-
-            gate_frame = entry_context.get("entry_gate_frame")
-            if gate_frame is None:
-                provider = getattr(self, "entry_frame_provider", None)
-                if callable(provider):
-                    try:
-                        gate_frame = provider(symbol)
-                        if hasattr(gate_frame, "__await__"):
-                            gate_frame = await gate_frame
-                        if gate_frame is not None:
-                            entry_context["entry_gate_frame"] = gate_frame
-                    except Exception:
-                        gate_frame = None
-
-            require_ma5_ma15_entry_gates(
-                entry_context.get("entry_gate_frame"),
-                side,
-                quote=entry_context.get("entry_gate_quote", price),
-                is_manual=True,
-            )
-            # Manual orders skip strategy-signal validation but still require
-            # the hard MA entry gates and normal account/exchange checks.
+            # Manual orders are explicit user-directed entries. They skip
+            # strategy timing/MA gates, while retaining balance, symbol,
+            # duplicate-position, account and exchange safety checks.
             entry_decision = {}
         else:
             from core.services.entry_firewall import validate_account_entry

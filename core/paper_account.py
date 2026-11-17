@@ -645,8 +645,12 @@ class PaperAccount:
             return False
 
         # ──【全鏈路審計階段 2：中央 EntryGate 硬性條件審查】──
-        # Manual callers use the same structural gate; this flag cannot bypass it.
-        is_ui_force_manual = False
+        # Explicit manual orders do not require strategy timing signals. Account
+        # and balance checks above and execution/risk checks below still apply.
+        is_ui_force_manual = bool(
+            entry_context.get("manual_entry") is True
+            or entry_context.get("source") == "MANUAL"
+        )
         if not is_ui_force_manual:
             eval_frame = entry_context.get("frame")
             if eval_frame is None:
@@ -1041,33 +1045,8 @@ class PaperAccount:
 
 
         if is_manual:
-            from core.services.entry_firewall import require_ma5_ma15_entry_gates
-
-            gate_frame = entry_context.get("entry_gate_frame")
-            if gate_frame is None:
-                provider = getattr(self, "entry_frame_provider", None)
-                if callable(provider):
-                    try:
-                        gate_frame = provider(symbol)
-                        if hasattr(gate_frame, "__await__"):
-                            gate_frame = await gate_frame
-                        if gate_frame is not None:
-                            entry_context["entry_gate_frame"] = gate_frame
-                    except Exception:
-                        gate_frame = None
-
-            if (
-                entry_context.get("entry_method_authority") != "MTF_KC_STATE_MACHINE"
-                and entry_context.get("manual_entry") is not True
-            ):
-                require_ma5_ma15_entry_gates(
-                    entry_context.get("entry_gate_frame"),
-                    side,
-                    quote=entry_context.get("entry_gate_quote", price),
-                    is_manual=True,
-                )
-            # Manual orders skip strategy-signal validation but still require
-            # the hard MA entry gates and the normal account safety checks.
+            # Manual orders skip strategy timing gates, but still pass the
+            # account, balance, symbol and exchange safety checks.
             entry_decision = {}
         from core.services.entry_methods import (
             KC_EARLY_MIDLINE_BREAK,
