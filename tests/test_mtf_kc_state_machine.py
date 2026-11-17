@@ -272,6 +272,13 @@ def test_mtf_position_closes_when_live_macro_state_opposes_position(
         "bar_timestamp": 1_700_000_180_000,
     })
     monkeypatch.setattr(
+        mtf, "evaluate_ltf_kc_midline_direction",
+        lambda *_args: {
+            "valid": True,
+            "direction": "DOWNTREND" if side == "LONG" else "UPTREND",
+        },
+    )
+    monkeypatch.setattr(
         mtf, "update_mtf_position_protection", lambda *_args: None,
     )
 
@@ -356,6 +363,10 @@ def test_mtf_reversal_closes_without_same_bar_reentry(
         "bar_timestamp": bar_id,
     })
     monkeypatch.setattr(
+        mtf, "evaluate_ltf_kc_midline_direction",
+        lambda *_args: {"valid": True, "direction": trend},
+    )
+    monkeypatch.setattr(
         mtf, "update_mtf_position_protection", lambda *_args: None,
     )
     monkeypatch.setattr(
@@ -435,7 +446,7 @@ def test_mtf_reversal_closes_without_same_bar_reentry(
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("macro_reversed, ltf_reversed", [(False, True), (True, False)])
-def test_mtf_exit_requires_macro_reversal_but_not_extra_ltf_turn(
+def test_mtf_exit_requires_both_macro_and_ltf_reversal(
     monkeypatch, side, macro_reversed, ltf_reversed,
 ):
     from core.services.execution_manager import ExecutionManager
@@ -475,6 +486,10 @@ def test_mtf_exit_requires_macro_reversal_but_not_extra_ltf_turn(
         "atr": 5.0,
         "bar_timestamp": 1_700_000_180_000,
     })
+    monkeypatch.setattr(
+        mtf, "evaluate_ltf_kc_midline_direction",
+        lambda *_args: {"valid": True, "direction": ltf_direction},
+    )
     monkeypatch.setattr(
         mtf, "update_mtf_position_protection", lambda *_args: None,
     )
@@ -518,7 +533,7 @@ def test_mtf_exit_requires_macro_reversal_but_not_extra_ltf_turn(
         position=position,
     ))
 
-    assert bool(close_calls) is macro_reversed
+    assert bool(close_calls) is (macro_reversed and ltf_reversed)
     assert result["status"] == "HOLD"
 
 
@@ -557,6 +572,13 @@ def test_opposite_kc_state_forces_close_before_holding_protection(
         "atr": 5.0,
         "bar_timestamp": 1_700_000_180_000,
     })
+    monkeypatch.setattr(
+        mtf, "evaluate_ltf_kc_midline_direction",
+        lambda *_args: {
+            "valid": True,
+            "direction": "DOWNTREND" if side == "LONG" else "UPTREND",
+        },
+    )
     monkeypatch.setattr(
         "core.services.exits.abnormal_candle_exit.live_adverse_waterfall_evidence",
         lambda *_args: None,
@@ -1577,6 +1599,13 @@ def test_mtf_position_closes_on_live_state_opposite_even_if_closed_midline_align
         "bar_timestamp": 900_000,
     })
     monkeypatch.setattr(
+        mtf, "evaluate_ltf_kc_midline_direction",
+        lambda *_args: {
+            "valid": True,
+            "direction": "DOWNTREND" if side == "LONG" else "UPTREND",
+        },
+    )
+    monkeypatch.setattr(
         mtf, "update_mtf_position_protection", lambda *_args: None,
     )
     monkeypatch.setattr(
@@ -1691,6 +1720,13 @@ def test_favorable_closed_bar_cancels_pending_mtf_exit(monkeypatch):
             "open_timestamp": 900_000,
         }
         metadata = {}
+        monkeypatch.setattr(
+            mtf, "evaluate_ltf_kc_midline_direction",
+            lambda *_args, side=side: {
+                "valid": True,
+                "direction": "DOWNTREND" if side == "LONG" else "UPTREND",
+            },
+        )
         armed = mtf.evaluate_mtf_exit_confirmation(
             pd.DataFrame(), position, metadata,
             (
@@ -1714,6 +1750,55 @@ def test_favorable_closed_bar_cancels_pending_mtf_exit(monkeypatch):
         assert not confirmed["allowed"]
         assert confirmed["changed"]
         assert "mtf_pending_closed_bar_exit" not in metadata
+
+
+@pytest.mark.parametrize(
+    ("side", "ltf_middles", "expected_direction", "should_allow"),
+    [
+        ("LONG", (99.8, 99.9, 100.0), "DOWNTREND", False),
+        ("LONG", (100.2, 100.1, 100.0), "DOWNTREND", True),
+        ("SHORT", (100.2, 100.1, 100.0), "UPTREND", False),
+        ("SHORT", (99.8, 99.9, 100.0), "UPTREND", True),
+    ],
+)
+def test_mtf_reversal_requires_confirmed_ltf_midline_direction(
+    monkeypatch, side, ltf_middles, expected_direction, should_allow,
+):
+    closed = pd.DataFrame([
+        {
+            "timestamp": 60_000 * (index + 1),
+            "is_closed": True,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "kc_middle": middle,
+            "atr": 1.0,
+        }
+        for index, middle in enumerate(ltf_middles)
+    ])
+    live = pd.Series({"timestamp": 240_000, "is_closed": False})
+    monkeypatch.setattr(mtf, "_valid_live_frame", lambda *_args: (closed, live))
+    reversal = "DOWNTREND" if side == "LONG" else "UPTREND"
+    result = mtf.evaluate_mtf_exit_confirmation(
+        pd.DataFrame(),
+        {
+            "side": side,
+            "entry_price": 100.0,
+            "open_timestamp": 30_000,
+        },
+        {},
+        f"MTF_KC_STATE_MACHINE_{reversal}_REVERSAL_EXIT",
+        {
+            "valid": True,
+            "closed_trend": reversal,
+            "closed_midline_direction": reversal,
+        },
+    )
+
+    assert result["allowed"] is should_allow
+    if not should_allow:
+        assert result["reason"] == "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
 
 def test_close_in_current_live_bar_fails_closed_for_stale_or_invalid_identity(monkeypatch):
@@ -2129,7 +2214,7 @@ def test_account_hard_stop_bypasses_closed_bar_exit_confirmation():
         ),
     ],
 )
-def test_confirmed_15m_reversal_exits_without_waiting_for_1m_confirmation(
+def test_confirmed_15m_reversal_waits_for_valid_1m_midline_confirmation(
     side, reason, closed_direction,
 ):
     position = {
@@ -2150,9 +2235,9 @@ def test_confirmed_15m_reversal_exits_without_waiting_for_1m_confirmation(
         },
     )
 
-    assert result["allowed"]
-    assert not result["waiting"]
-    assert result["reason"] == reason
+    assert not result["allowed"]
+    assert result["waiting"]
+    assert result["reason"] == "BLOCKED_LTF_KC_DIRECTION_DATA_INVALID"
 
 
 def test_mtf_midcycle_exit_reasons_are_not_authorized():

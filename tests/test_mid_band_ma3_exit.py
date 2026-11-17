@@ -8,6 +8,9 @@ tests/test_mid_band_ma3_exit.py
 - 僅使用已收線 K 棒；盤中棒不觸發
 - ExitGate 整合：優先於 VETO_HOLD；安全出口仍最優先
 """
+import math
+import time
+
 import pandas as pd
 import pytest
 
@@ -50,11 +53,11 @@ def test_long_breakdown_bar_itself_does_not_trigger_bounce_resistance():
     assert (action, reason) == (ACTION_HOLD_WAIT, LONG_HOLD_WAIT)
 
 
-def test_long_bounce_touches_mid_and_fails_exits():
+def test_long_bounce_to_mid_is_a_pullback_and_holds():
     df = frame(bar(97, 97.5, 96.8, 97.2), bar(97.2, 98.0, 97.0, 97.8),
                bar(97.8, 99.0, 97.7, 98.8), bar(98.8, 100.2, 98.7, 99.6))
     action, reason, _ = evaluate_mid_band_ma3_exit("LONG", df)
-    assert (action, reason) == (ACTION_EXIT, LONG_BOUNCE_RESISTANCE)
+    assert (action, reason) == (ACTION_HOLD_WAIT, LONG_HOLD_WAIT)
 
 
 def test_long_hard_stop_on_close_below_lower_band_while_ma3_up():
@@ -116,11 +119,11 @@ def test_short_breakout_bar_itself_holds_when_ma3_down():
     assert (action, reason) == (ACTION_HOLD_WAIT, SHORT_HOLD_WAIT)
 
 
-def test_short_pullback_holds_mid_support_exits():
+def test_short_pullback_to_mid_support_holds():
     df = frame(bar(103, 103.2, 102.5, 102.8), bar(102.8, 103.0, 102.0, 102.2),
                bar(102.2, 102.3, 101.0, 101.2), bar(101.2, 101.3, 99.8, 100.4))
     action, reason, _ = evaluate_mid_band_ma3_exit("SHORT", df)
-    assert (action, reason) == (ACTION_EXIT, SHORT_PULLBACK_SUPPORT)
+    assert (action, reason) == (ACTION_HOLD_WAIT, SHORT_HOLD_WAIT)
 
 
 def test_short_hard_stop_on_close_above_upper_band_while_ma3_down():
@@ -133,35 +136,44 @@ def test_short_hard_stop_on_close_above_upper_band_while_ma3_down():
 # ── ExitGate 整合 ─────────────────────────────────────
 
 def _snapshot(df, quote):
+    now_ms = time.time() * 1000.0
+    live_stamp = math.floor(now_ms / 60_000.0) * 60_000.0
+    df = df.copy()
+    df["timestamp"] = [
+        live_stamp - (len(df) - index - 1) * 60_000.0
+        for index in range(len(df))
+    ]
+    df.attrs.update(snapshot_ms=now_ms, timeframe_ms=60_000.0)
     return {"current_price": quote, "atr": 1.0, "kc_upper": UP, "kc_middle": MID,
             "kc_lower": LOW, "kc_middle_slope": 0.0, "ema_fast": 100.0,
             "ema_slow": 100.0, "raw_df": df, "macro_trend": "NEUTRAL"}
 
 
-def test_exit_gate_mid_band_exit_overrides_veto_hold():
+def test_exit_gate_does_not_close_without_confirmed_macro_reversal():
     df = frame(bar(101, 101.5, 100.5, 101.2), bar(101.2, 101.4, 100.8, 101.0),
                bar(101.0, 101.2, 100.6, 100.8), bar(100.8, 100.9, 99.0, 99.2))
-    pos = {"side": "LONG", "entry_price": 99.0, "qty": 1.0, "leverage": 5.0}
-    should_exit, reason, meta = ExitGate.evaluate(pos, _snapshot(df, 99.1))
-    assert should_exit is True
-    assert reason in (LONG_TREND_BROKEN, "CLOSE_LONG_AT_TOP")
-    assert ("mid_band_ma3" in meta) or ("top_bottom_reversal" in meta)
+    pos = {"side": "LONG", "entry_price": 99.0, "qty": 1.0, "leverage": 5.0,
+           "open_timestamp": time.time() - 600}
+    should_exit, _, _ = ExitGate.evaluate(pos, _snapshot(df, 99.1))
+    assert should_exit is False
 
 
 def test_exit_gate_hold_wait_suppresses_ordinary_exits():
     df = frame(bar(97, 98, 96.8, 97.5), bar(97.5, 98.2, 97.4, 98.0),
                bar(98.0, 101.5, 97.9, 101.0), bar(101.0, 101.2, 99.5, 99.8))
-    pos = {"side": "LONG", "entry_price": 99.0, "qty": 1.0, "leverage": 5.0}
+    pos = {"side": "LONG", "entry_price": 99.0, "qty": 1.0, "leverage": 5.0,
+           "open_timestamp": time.time() - 600}
     should_exit, reason, _ = ExitGate.evaluate(pos, _snapshot(df, 99.5))
-    assert should_exit is False and reason == LONG_HOLD_WAIT
+    assert should_exit is False and reason == "VETO_HOLD"
 
 
-def test_exit_gate_hard_stop_still_has_priority():
+def test_exit_gate_does_not_authorize_unconfirmed_drawdown_as_pullback_exit():
     df = frame(bar(97, 98, 96.8, 97.5), bar(97.5, 98.2, 97.4, 98.0),
                bar(98.0, 101.5, 97.9, 101.0), bar(101.0, 101.2, 99.5, 99.8))
-    pos = {"side": "LONG", "entry_price": 120.0, "qty": 1.0, "leverage": 5.0}
+    pos = {"side": "LONG", "entry_price": 120.0, "qty": 1.0, "leverage": 5.0,
+           "open_timestamp": time.time() - 600}
     should_exit, reason, _ = ExitGate.evaluate(pos, _snapshot(df, 99.5))
-    assert should_exit is True and reason == "CIRCUIT_BREAKER_HARD_SL"
+    assert should_exit is False and reason == "VETO_HOLD"
 
 
 @pytest.mark.parametrize("reason", [LONG_TREND_BROKEN, LONG_BOUNCE_RESISTANCE,

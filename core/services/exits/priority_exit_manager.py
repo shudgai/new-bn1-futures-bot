@@ -210,11 +210,24 @@ def evaluate_priority_exit(
 
     htf: dict[str, Any] = {"valid": False}
     if frame_15m is not None:
-        from core.services.mtf_kc_state_machine import evaluate_htf_kc_state
+        from core.services.mtf_kc_state_machine import (
+            evaluate_htf_kc_state,
+            evaluate_ltf_kc_midline_direction,
+        )
 
         htf = evaluate_htf_kc_state(frame_15m)
+        ltf_midline = evaluate_ltf_kc_midline_direction(frame_1m)
+    else:
+        from core.services.mtf_kc_state_machine import evaluate_ltf_kc_midline_direction
+
+        ltf_midline = evaluate_ltf_kc_midline_direction(frame_1m)
     htf_state = str(htf.get("state") or "").upper() if htf.get("valid") else ""
     previous_htf_state = str(state.get("htf_state") or "").upper()
+    ltf_direction = (
+        str(ltf_midline.get("direction") or "").upper()
+        if ltf_midline.get("valid") else "UNKNOWN"
+    )
+    trend_hold_reason = None
 
     if live is not None and live_atr is not None and live_atr > 0:
         opening = _number(live, "open")
@@ -263,19 +276,29 @@ def evaluate_priority_exit(
             state["htf_state"] = htf_state
             state_changed = True
         if side == "LONG" and htf_state == "DOWNTREND":
-            return {
-                "priority": 1,
-                "reason": "PRIORITY_EXIT_P1_MTF_KC_REVERSAL",
-                "state_changed": state_changed,
-                "evidence": {**htf, "side": side, "quote": price},
-            }
+            if ltf_direction == "DOWNTREND":
+                return {
+                    "priority": 1,
+                    "reason": "PRIORITY_EXIT_P1_MTF_KC_REVERSAL",
+                    "state_changed": state_changed,
+                    "evidence": {
+                        **htf, "side": side, "quote": price,
+                        "ltf_closed_midline_direction": ltf_direction,
+                    },
+                }
+            trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
         if side == "SHORT" and htf_state == "UPTREND":
-            return {
-                "priority": 1,
-                "reason": "PRIORITY_EXIT_P1_MTF_KC_REVERSAL",
-                "state_changed": state_changed,
-                "evidence": {**htf, "side": side, "quote": price},
-            }
+            if ltf_direction == "UPTREND":
+                return {
+                    "priority": 1,
+                    "reason": "PRIORITY_EXIT_P1_MTF_KC_REVERSAL",
+                    "state_changed": state_changed,
+                    "evidence": {
+                        **htf, "side": side, "quote": price,
+                        "ltf_closed_midline_direction": ltf_direction,
+                    },
+                }
+            trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
     if entry is not None and entry > 0 and entry_atr is not None and entry_atr > 0:
         stop = (
@@ -335,22 +358,7 @@ def evaluate_priority_exit(
             and favorable_move >= TRAILING_START_ATR * live_atr
             and retracement >= TRAILING_DIST_ATR * live_atr
         ):
-            return {
-                "priority": 3,
-                "reason": "PRIORITY_EXIT_P3_TRAILING_LOCK",
-                "state_changed": state_changed,
-                "evidence": {
-                    "trigger": "ATR_TRAILING_RETRACEMENT",
-                    "side": side,
-                    "quote": price,
-                    "favorable_extreme": extreme,
-                    "favorable_move": favorable_move,
-                    "retracement": retracement,
-                    "atr": live_atr,
-                    "start_threshold": TRAILING_START_ATR * live_atr,
-                    "distance_threshold": TRAILING_DIST_ATR * live_atr,
-                },
-            }
+            trend_hold_reason = "VETO_EXIT_BY_PULLBACK"
 
     if htf.get("valid"):
         flat_key = "flat_exit_armed_side"
@@ -398,6 +406,7 @@ def evaluate_priority_exit(
         "state_changed": state_changed,
         "htf_valid": bool(htf.get("valid")),
         "htf_reason": htf.get("reason"),
+        "hold_reason": trend_hold_reason,
         "evidence": {"htf_state": htf_state or None},
     }
 
@@ -441,8 +450,13 @@ async def evaluate_and_execute_exit(
             "status": "HOLD",
             "symbol": symbol,
             "reason": (
-                str(decision.get("htf_reason") or "BLOCKED_HTF_KC_LIVE_DATA_INVALID")
-                if frame_15m is not None and not decision.get("htf_valid")
+                str(decision.get("hold_reason")
+                    or decision.get("htf_reason")
+                    or "BLOCKED_HTF_KC_LIVE_DATA_INVALID")
+                if (
+                    decision.get("hold_reason")
+                    or (frame_15m is not None and not decision.get("htf_valid"))
+                )
                 else "PRIORITY_EXIT_NO_TRIGGER"
             ),
             "priority": None,

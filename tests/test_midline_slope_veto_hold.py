@@ -39,8 +39,17 @@ def _make_frame(
       - attrs 含 snapshot_ms, timeframe_ms, entry_finality_verified
       - live_bar['timestamp'] 與最後一根 closed_bar 相差恰好 60_000ms
     """
+    completed_bars = [dict(bar) for bar in closed_bars]
+    if len(completed_bars) == 2:
+        first_middle = float(completed_bars[0]["kc_middle"])
+        second_middle = float(completed_bars[1]["kc_middle"])
+        first = dict(completed_bars[0])
+        first["timestamp"] = int(first["timestamp"]) - 60_000
+        first["kc_middle"] = first_middle - (second_middle - first_middle)
+        completed_bars.insert(0, first)
+
     rows = []
-    for b in closed_bars:
+    for b in completed_bars:
         row = dict(b)
         row["is_closed"] = True
         rows.append(row)
@@ -153,7 +162,8 @@ class TestShortHoldWhenAboveMidlineButMidlineFlat:
             reason=_reversal_reason("SHORT"),
         )
 
-        assert result["allowed"] is True, f"Expected close confirmation, got: {result}"
+        assert not result["allowed"], f"Expected hold, got: {result}"
+        assert result["reason"] == "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
     def test_veto_when_midline_still_going_down(self):
         """中軌仍向下（斜率 >= 0.05）→ 不允許 UPTREND_REVERSAL_EXIT"""
@@ -178,7 +188,8 @@ class TestShortHoldWhenAboveMidlineButMidlineFlat:
             reason=_reversal_reason("SHORT"),
         )
 
-        assert result["allowed"] is True, f"Expected close confirmation, got: {result}"
+        assert not result["allowed"], f"Expected hold, got: {result}"
+        assert result["reason"] == "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -208,7 +219,8 @@ class TestLongHoldWhenBelowMidlineButMidlineFlat:
             reason=_reversal_reason("LONG"),
         )
 
-        assert result["allowed"] is True, f"Expected close confirmation, got: {result}"
+        assert not result["allowed"], f"Expected hold, got: {result}"
+        assert result["reason"] == "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
     def test_veto_when_midline_still_going_up(self):
         """中軌仍向上 → 不允許 DOWNTREND_REVERSAL_EXIT"""
@@ -233,7 +245,8 @@ class TestLongHoldWhenBelowMidlineButMidlineFlat:
             reason=_reversal_reason("LONG"),
         )
 
-        assert result["allowed"] is True, f"Expected close confirmation, got: {result}"
+        assert not result["allowed"], f"Expected hold, got: {result}"
+        assert result["reason"] == "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
 
 # ───────────────────────────────────────────────────────────────────────────

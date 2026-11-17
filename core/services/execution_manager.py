@@ -797,6 +797,7 @@ class ExecutionManager:
             authorize_mtf_exit,
             close_in_current_live_1m_bar,
             evaluate_htf_kc_state,
+            evaluate_ltf_kc_midline_direction,
             evaluate_mtf_exit_confirmation,
             evaluate_mtf_entry,
             is_mtf_managed_position,
@@ -922,6 +923,26 @@ class ExecutionManager:
                 or side == "LONG" and state == "DOWNTREND"
             )
             if opposite_state:
+                expected_ltf_reversal = (
+                    "DOWNTREND" if side == "LONG" else "UPTREND"
+                )
+                ltf_direction = evaluate_ltf_kc_midline_direction(frame_1m)
+                if (
+                    not ltf_direction.get("valid")
+                    or ltf_direction.get("direction") != expected_ltf_reversal
+                ):
+                    logger.info(
+                        "MTF_EXIT_HELD_LTF_MIDLINE_UNCONFIRMED symbol=%s side=%s "
+                        "htf_state=%s ltf_direction=%s required=%s",
+                        symbol, side, state, ltf_direction.get("direction"),
+                        expected_ltf_reversal,
+                    )
+                    return {
+                        "status": "HOLD",
+                        "symbol": symbol,
+                        "reason": "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED",
+                        "success": False,
+                    }
                 exit_reason = (
                     f"{MTF_KC_EXIT_REASON_PREFIX}{state}_REVERSAL_EXIT"
                 )
@@ -1101,6 +1122,23 @@ class ExecutionManager:
                 closed_direction = htf.get("closed_trend")
                 reversed_direction = "DOWNTREND" if side == "LONG" else "UPTREND"
                 if closed_direction == reversed_direction:
+                    ltf_direction = evaluate_ltf_kc_midline_direction(frame_1m)
+                    if (
+                        not ltf_direction.get("valid")
+                        or ltf_direction.get("direction") != reversed_direction
+                    ):
+                        logger.info(
+                            "MTF_EXIT_HELD_LTF_MIDLINE_UNCONFIRMED symbol=%s "
+                            "side=%s htf_closed_direction=%s ltf_direction=%s",
+                            symbol, side, closed_direction,
+                            ltf_direction.get("direction"),
+                        )
+                        return {
+                            "status": "HOLD",
+                            "symbol": symbol,
+                            "reason": "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED",
+                            "success": False,
+                        }
                     exit_reason = (
                         f"{MTF_KC_EXIT_REASON_PREFIX}"
                         f"{reversed_direction}_REVERSAL_EXIT"

@@ -133,6 +133,22 @@ def _closed_kc_direction(closed: pd.DataFrame) -> str:
     return "FLAT"
 
 
+def evaluate_ltf_kc_midline_direction(frame_1m: Any) -> dict[str, Any]:
+    """Return the confirmed 1m KC midline direction from fresh closed candles."""
+    data = _valid_live_frame(frame_1m, 60_000.0)
+    if data is None:
+        return {
+            "valid": False,
+            "direction": "UNKNOWN",
+            "reason": "BLOCKED_LTF_KC_DIRECTION_DATA_INVALID",
+        }
+    closed, _ = data
+    return {
+        "valid": True,
+        "direction": _closed_kc_direction(closed),
+    }
+
+
 def _ltf_kc_wave_trend_conflict(closed: pd.DataFrame, side: str) -> Optional[str]:
     """Block entries that oppose the 1m KC middle wave trend (8-12 bar structure)."""
     if (
@@ -682,6 +698,31 @@ def evaluate_mtf_exit_confirmation(
             metadata.pop(pending_key, None)
             pending = None
             changed = True
+
+    pending_reason = pending.get("reason") if isinstance(pending, Mapping) else None
+    cycle_reason = reason if _is_mtf_cycle_exit(reason) else pending_reason
+    if _is_mtf_cycle_exit(cycle_reason):
+        ltf_direction = evaluate_ltf_kc_midline_direction(frame_1m)
+        if not ltf_direction.get("valid"):
+            return {
+                "allowed": False,
+                "waiting": True,
+                "changed": changed,
+                "reason": ltf_direction["reason"],
+            }
+        expected_reversal = "DOWNTREND" if side == "LONG" else "UPTREND"
+        if ltf_direction.get("direction") != expected_reversal:
+            changed = metadata.pop(pending_key, None) is not None or changed
+            return {
+                "allowed": False,
+                "waiting": False,
+                "changed": changed,
+                "reason": "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED",
+                "evidence": {
+                    "ltf_closed_midline_direction": ltf_direction.get("direction"),
+                    "required_direction": expected_reversal,
+                },
+            }
 
     if _is_mtf_cycle_exit(reason):
         expected_reversal = "DOWNTREND" if side == "LONG" else "UPTREND"

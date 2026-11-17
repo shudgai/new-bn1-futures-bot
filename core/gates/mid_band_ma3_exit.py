@@ -3,8 +3,8 @@ core/gates/mid_band_ma3_exit.py
 ===============================
 KC 中軌 + MA3 方向之多空對稱平倉規則（2026-10-23 最新授權）。
 
-核心原則：破中軌後，若短均線 MA3 方向對部位有利，允許暫緩平倉爭取更好出場點；
-反彈／回測受阻或收盤擊穿反側外軌時，必須強制平倉。
+核心原則：破中軌後，若短均線 MA3 方向對部位有利，允許暫緩平倉；
+單純反彈／回測中軌受阻不構成平倉，只有方向轉弱或硬止損才可出場。
 
 判定一律只使用「已收線」K 棒（盤中毛刺不觸發）：
 - raw_df 含 `is_closed` 欄位時，取 is_closed=True 的列；
@@ -14,13 +14,11 @@ KC 中軌 + MA3 方向之多空對稱平倉規則（2026-10-23 最新授權）�
 1. MA3 下彎 (ma3 < ma3_prev)               -> LONG_MID_BAND_EXIT_TREND_BROKEN
 2. MA3 上彎或走平 (ma3 >= ma3_prev)：
    B. close <= kc_lower                     -> CLOSE_LONG_HARD_STOP_LOSS（優先於 A）
-   A. 前一根已收線亦收在中軌下方，且當根 high >= kc_middle 但 close < kc_middle
-                                            -> LONG_MID_BAND_EXIT_BOUNCE_RESISTANCE
+   A. 回踩中軌受阻                         -> HOLD_LONG_MID_BAND_WAIT_BOUNCE
    其餘                                      -> HOLD_LONG_MID_BAND_WAIT_BOUNCE
 空單完全鏡像。
 
-出場 A 之所以要求「前一根已收線也在中軌另一側」：跌破中軌的那根 K 棒本身是從中軌上方
-跌下來，high >= mid 幾乎必然成立；若不排除，暫緩分支永遠不會發生。
+回踩中軌受阻時續抱，避免把正常反彈／回測誤判為趨勢反轉。
 """
 from __future__ import annotations
 
@@ -136,8 +134,8 @@ def evaluate_mid_band_ma3_exit(
             meta["cause"] = f"多單暫緩期間收線擊穿 KC 下軌 (close={close:.6f} <= lower={lower:.6f})，強制平多"
             return ACTION_EXIT, LONG_HARD_STOP, meta
         if prev_close < prev_mid and high >= mid:
-            meta["cause"] = f"多單反彈觸碰中軌未能站回 (high={high:.6f} >= mid={mid:.6f}, close={close:.6f} < mid)，中軌轉壓力，平多"
-            return ACTION_EXIT, LONG_BOUNCE_RESISTANCE, meta
+            meta["cause"] = f"多單反彈回踩中軌但 MA3 尚未轉弱 (high={high:.6f} >= mid={mid:.6f}, close={close:.6f} < mid)，視為正常回踩，續抱"
+            return ACTION_HOLD_WAIT, LONG_HOLD_WAIT, meta
         meta["cause"] = f"多單跌破中軌但 MA3 上彎 (ma3={ma3:.6f} >= {ma3_prev:.6f})，暫緩平倉等待反彈"
         return ACTION_HOLD_WAIT, LONG_HOLD_WAIT, meta
 
@@ -151,7 +149,7 @@ def evaluate_mid_band_ma3_exit(
         meta["cause"] = f"空單暫緩期間收線擊穿 KC 上軌 (close={close:.6f} >= upper={upper:.6f})，強制平空"
         return ACTION_EXIT, SHORT_HARD_STOP, meta
     if prev_close > prev_mid and low <= mid:
-        meta["cause"] = f"空單回測中軌跌不回去 (low={low:.6f} <= mid={mid:.6f}, close={close:.6f} > mid)，中軌轉支撐，平空"
-        return ACTION_EXIT, SHORT_PULLBACK_SUPPORT, meta
+        meta["cause"] = f"空單回踩中軌但 MA3 尚未轉強 (low={low:.6f} <= mid={mid:.6f}, close={close:.6f} > mid)，視為正常回踩，續抱"
+        return ACTION_HOLD_WAIT, SHORT_HOLD_WAIT, meta
     meta["cause"] = f"空單突破中軌但 MA3 下彎 (ma3={ma3:.6f} <= {ma3_prev:.6f})，暫緩平倉等待回測"
     return ACTION_HOLD_WAIT, SHORT_HOLD_WAIT, meta

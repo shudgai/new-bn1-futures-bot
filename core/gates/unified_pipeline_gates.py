@@ -604,10 +604,9 @@ class ExitGate:
             elif raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) > 0 and entry_p > 0:
                 highest_p = max(highest_p, float(pos.get("highest_price") or entry_p))
             pullback_dist = highest_p - ref_c
-            is_trailing_stop_triggered = (atr_val > 0 and pullback_dist >= 1.5 * atr_val)
 
-            # 只要收盤與報價均在 KC 中軌之上，且中軌斜率向上，未達 1.5 ATR 高點回撤前，一票否決任何平多！
-            if (ref_c >= kc_mid_val or latest_close >= kc_mid_val) and kc_slope_val > 0 and not is_trailing_stop_triggered:
+            # 順向中軌仍守住時，回撤大小不會把一般回踩升級為平倉訊號。
+            if (ref_c >= kc_mid_val or latest_close >= kc_mid_val) and kc_slope_val > 0:
                 return False, "VETO_HOLD", {
                     **(meta or {}),
                     "hold_rule": "VETO_EXIT_HOLD_ABOVE_KC_MIDDLE",
@@ -625,10 +624,9 @@ class ExitGate:
             elif raw_df is not None and isinstance(raw_df, pd.DataFrame) and len(raw_df) > 0 and entry_p > 0:
                 lowest_p = min(lowest_p, float(pos.get("lowest_price") or entry_p))
             bounce_dist = ref_c - lowest_p
-            is_trailing_stop_triggered_s = (atr_val > 0 and bounce_dist >= 1.5 * atr_val)
 
-            # 只要收盤與報價均在 KC 中軌之下，且中軌斜率向下，未達 1.5 ATR 低點反抽前，一票否決任何平空！
-            if (ref_c <= kc_mid_val or latest_close <= kc_mid_val) and kc_slope_val < 0 and not is_trailing_stop_triggered_s:
+            # 順向中軌仍守住時，反彈大小不會把一般回踩升級為平倉訊號。
+            if (ref_c <= kc_mid_val or latest_close <= kc_mid_val) and kc_slope_val < 0:
                 return False, "VETO_HOLD", {
                     **(meta or {}),
                     "hold_rule": "VETO_EXIT_HOLD_BELOW_KC_MIDDLE",

@@ -19,21 +19,30 @@ from core.services.exits.priority_exit_manager import (
 
 
 def _ltf(now, *, current_open=100.0, quote=100.0, previous_open=100.0,
-         atr=1.0, closed_close=99.5, closed_mid=100.0, closed_atr=1.0):
+         atr=1.0, closed_close=99.5, closed_mid=100.0, closed_atr=1.0,
+         closed_middles=None):
     now_ms = now * 1000.0
     live_stamp = math.floor(now_ms / 60_000) * 60_000
-    frame = pd.DataFrame([
+    if closed_middles is None:
+        closed_middles = (
+            closed_mid - 0.2 * closed_atr,
+            closed_mid - 0.1 * closed_atr,
+            closed_mid,
+        )
+    closed_bars = [
         {
-            "timestamp": live_stamp - 60_000,
+            "timestamp": live_stamp - (3 - index) * 60_000,
             "is_closed": True,
             "open": previous_open,
             "high": max(previous_open, closed_close) + 0.5,
             "low": min(previous_open, closed_close) - 0.5,
-            "close": closed_close,
-            "kc_middle": closed_mid,
+            "close": closed_close if index == 2 else middle,
+            "kc_middle": middle,
             "atr": closed_atr,
-        },
-        {
+        }
+        for index, middle in enumerate(closed_middles)
+    ]
+    frame = pd.DataFrame(closed_bars + [{
             "timestamp": live_stamp,
             "is_closed": False,
             "open": current_open,
@@ -42,8 +51,7 @@ def _ltf(now, *, current_open=100.0, quote=100.0, previous_open=100.0,
             "close": quote,
             "kc_middle": 100.0,
             "atr": atr,
-        },
-    ])
+        }])
     frame.attrs.update(
         timeframe_ms=60_000.0,
         snapshot_ms=now_ms,
@@ -143,14 +151,19 @@ def test_priority_zero_precedes_higher_timeframe_reversal():
 
 
 @pytest.mark.parametrize(
-    ("side", "slope"),
-    [("LONG", -0.1), ("SHORT", 0.1)],
+    ("side", "slope", "closed_middles"),
+    [
+        ("LONG", -0.1, (100.2, 100.1, 100.0)),
+        ("SHORT", 0.1, (99.8, 99.9, 100.0)),
+    ],
 )
-def test_priority_one_closes_on_live_macro_direction_reversal(side, slope):
+def test_priority_one_closes_on_confirmed_ltf_and_macro_reversal(
+    side, slope, closed_middles,
+):
     now = time.time()
     result = evaluate_priority_exit(
         _position(side),
-        _ltf(now),
+        _ltf(now, closed_middles=closed_middles),
         _htf(now, slope=slope),
         100.0,
         {},
@@ -159,6 +172,45 @@ def test_priority_one_closes_on_live_macro_direction_reversal(side, slope):
 
     assert result["priority"] == 1
     assert result["reason"] == "PRIORITY_EXIT_P1_MTF_KC_REVERSAL"
+
+
+@pytest.mark.parametrize(
+    ("side", "slope", "closed_middles"),
+    [
+        ("LONG", -0.1, (99.8, 99.9, 100.0)),
+        ("SHORT", 0.1, (100.2, 100.1, 100.0)),
+    ],
+)
+def test_priority_one_holds_until_ltf_midline_confirms_macro_reversal(
+    side, slope, closed_middles,
+):
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position(side),
+        _ltf(now, closed_middles=closed_middles),
+        _htf(now, slope=slope),
+        100.0,
+        {},
+        now=now,
+    )
+
+    assert result["priority"] is None
+    assert result["hold_reason"] == "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
+
+
+def test_priority_two_hard_stop_remains_active_when_ltf_reversal_is_unconfirmed():
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position("LONG", entry=100.0, atr=1.0),
+        None,
+        _htf(now, slope=-0.1),
+        98.0,
+        {},
+        now=now,
+    )
+
+    assert result["priority"] == 2
+    assert result["evidence"]["trigger"] == "ENTRY_ATR_HARD_STOP"
 
 
 def test_priority_two_applies_entry_atr_stop_and_macro_outer_band():
@@ -186,7 +238,7 @@ def test_priority_two_applies_entry_atr_stop_and_macro_outer_band():
     assert band_result["evidence"]["trigger"] == "OPPOSITE_HTF_KC_BAND"
 
 
-def test_priority_three_trails_only_after_atr_activation():
+def test_priority_three_does_not_close_on_atr_pullback():
     now = time.time()
     metadata = {"priority_exit_state": {"favorable_extreme": 1004.0}}
     result = evaluate_priority_exit(
@@ -201,9 +253,26 @@ def test_priority_three_trails_only_after_atr_activation():
         now=now,
     )
 
-    assert result["priority"] == 3
-    assert result["evidence"]["favorable_move"] >= TRAILING_START_ATR * 2.0
-    assert result["evidence"]["retracement"] >= TRAILING_DIST_ATR * 2.0
+    assert result["priority"] is None
+    assert result["hold_reason"] == "VETO_EXIT_BY_PULLBACK"
+
+
+def test_priority_three_does_not_close_on_pullback_when_trend_is_aligned():
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position("LONG", entry=1000.0),
+        _ltf(
+            now, current_open=1003.5, previous_open=1003.5,
+            quote=1001.5, atr=2.0, closed_middles=(99.8, 99.9, 100.0),
+        ),
+        _htf(now, slope=0.1),
+        1001.5,
+        {"priority_exit_state": {"favorable_extreme": 1004.0}},
+        now=now,
+    )
+
+    assert result["priority"] is None
+    assert result["hold_reason"] == "VETO_EXIT_BY_PULLBACK"
 
 
 def test_priority_four_requires_flat_transition_and_closed_ltf_break():
