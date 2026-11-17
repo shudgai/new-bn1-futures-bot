@@ -3213,6 +3213,10 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
                     account, symbol, side, frame,
                 )
             )
+            colorless_reverse = (
+                same_bar_reverse
+                and entry_context.get("mtf_colorless_reverse") is True
+            )
             if same_bar_close and not same_bar_reverse:
                 veto("BLOCKED_MTF_REENTRY_AFTER_CLOSE_SAME_1M_BAR", bar_id=bar_id)
             completed = closed.iloc[-1]
@@ -3226,10 +3230,10 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
                 not all(math.isfinite(value) and value > 0 for value in (
                     completed_open, completed_close, live_quote,
                 ))
-                or (side == "LONG" and (
+                or (side == "LONG" and not colorless_reverse and (
                     completed_close <= completed_open or live_quote <= opening
                 ))
-                or (side == "SHORT" and (
+                or (side == "SHORT" and not colorless_reverse and (
                     completed_close >= completed_open or live_quote >= opening
                 ))
             ):

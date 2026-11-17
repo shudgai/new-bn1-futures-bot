@@ -438,6 +438,7 @@ def evaluate_mtf_entry(
     quote: float,
     side: str | None = None,
     pending_candidate: Mapping[str, Any] | None = None,
+    allow_colorless_reverse: bool = False,
 ) -> dict[str, Any]:
     """Evaluate an entry inside a directional HTF KC cycle without side effects."""
     from core.services.ma5_entry_slope import quote_adjusted_entry_mas
@@ -462,11 +463,22 @@ def evaluate_mtf_entry(
     closed_open = _number(closed.iloc[-1], "open")
     closed_close = _number(closed.iloc[-1], "close")
     expected_closed_color = "LONG" if htf["state"] == "UPTREND" else "SHORT"
+    colorless_reverse = (
+        allow_colorless_reverse and str(side or "").upper() in ("LONG", "SHORT")
+    )
     if (
         closed_open is None or closed_close is None
         or closed_open <= 0 or closed_close <= 0
-        or (expected_closed_color == "LONG" and closed_close <= closed_open)
-        or (expected_closed_color == "SHORT" and closed_close >= closed_open)
+        or (
+            not colorless_reverse
+            and expected_closed_color == "LONG"
+            and closed_close <= closed_open
+        )
+        or (
+            not colorless_reverse
+            and expected_closed_color == "SHORT"
+            and closed_close >= closed_open
+        )
     ):
         return {
             **htf,
@@ -474,6 +486,8 @@ def evaluate_mtf_entry(
             "reason": "BLOCKED_MTF_LTF_CLOSED_BAR_COLOR",
             "closed_bar_id": _number(closed.iloc[-1], "timestamp"),
         }
+    if colorless_reverse:
+        pending_candidate = None
     if len(closed) < 15:
         return {**htf, "allowed": False, "reason": "BLOCKED_LTF_MA_HISTORY_INVALID"}
     from core.services.market_consolidation_filter import evaluate_market_blacklist
@@ -579,7 +593,7 @@ def evaluate_mtf_entry(
 
         if is_long:
             ma_slope_aligned = ma5_current > ma5_previous
-            candle_aligned = quote_value > open_price
+            candle_aligned = colorless_reverse or quote_value > open_price
             breakout_edge_offset = quote_value - upper if quote_value > upper else 0.0
             breakout_allowed = (
                 quote_value > upper
@@ -588,7 +602,7 @@ def evaluate_mtf_entry(
             )
         else:
             ma_slope_aligned = ma5_current < ma5_previous
-            candle_aligned = quote_value < open_price
+            candle_aligned = colorless_reverse or quote_value < open_price
             breakout_edge_offset = lower - quote_value if quote_value < lower else 0.0
             breakout_allowed = (
                 quote_value < lower
@@ -700,6 +714,9 @@ def evaluate_mtf_entry(
             **htf,
             "allowed": True,
             "reason": (
+                "MTF_KC_IMMEDIATE_REVERSE_ENTRY"
+                if colorless_reverse
+                else
                 "MTF_KC_BREAKOUT_ENTRY"
                 if breakout_allowed
                 else "MTF_KC_TREND_ENTRY"

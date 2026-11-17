@@ -1206,7 +1206,8 @@ class ExecutionManager:
             frame_15m,
             quote=quote,
             side=preferred_side,
-            pending_candidate=pending_candidate,
+            pending_candidate=None if allow_immediate_mtf_reverse else pending_candidate,
+            allow_colorless_reverse=allow_immediate_mtf_reverse,
         )
         decision = "OPEN" if entry.get("allowed") else str(entry.get("reason"))
         logger.info(
@@ -1395,6 +1396,10 @@ class ExecutionManager:
             "entry_method_authority": MTF_KC_STATE_MACHINE,
             "entry_method_allow_same_bar_after_close": allow_immediate_mtf_reverse,
             "mtf_cycle_reverse_after_close": allow_immediate_mtf_reverse,
+            "mtf_colorless_reverse": (
+                allow_immediate_mtf_reverse
+                and entry.get("side") == preferred_side
+            ),
             "entry_method_signal": {
                 "method": MTF_KC_STATE_MACHINE,
                 "side": entry["side"],
@@ -6991,6 +6996,9 @@ class ExecutionManager:
                 ),
                 "mtf_cycle_reverse_after_close": bool(
                     (meta or {}).get("mtf_cycle_reverse_after_close")
+                ),
+                "mtf_colorless_reverse": bool(
+                    (meta or {}).get("mtf_colorless_reverse")
                 ),
                 "entry_method_signal": (meta or {}).get("entry_method_signal"),
                 "entry_method_bar_id": (meta or {}).get("entry_method_bar_id"),

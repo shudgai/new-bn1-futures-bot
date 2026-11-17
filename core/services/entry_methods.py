@@ -849,12 +849,22 @@ def revalidate_entry_method(
     if method == MTF_KC_STATE_MACHINE:
         from core.services.mtf_kc_state_machine import evaluate_mtf_entry
 
+        allow_colorless_reverse = (
+            context.get("entry_method_allow_same_bar_after_close") is True
+            and context.get("mtf_cycle_reverse_after_close") is True
+            and context.get("mtf_colorless_reverse") is True
+        )
         evaluation = evaluate_mtf_entry(
             frame,
             context.get("frame_15m"),
             quote=quote,
             side=side,
-            pending_candidate=context.get("mtf_pending_candidate"),
+            pending_candidate=(
+                None
+                if allow_colorless_reverse
+                else context.get("mtf_pending_candidate")
+            ),
+            allow_colorless_reverse=allow_colorless_reverse,
         )
         if not evaluation.get("allowed"):
             return False, str(evaluation.get("reason") or "BLOCKED_MTF_KC_ENTRY")

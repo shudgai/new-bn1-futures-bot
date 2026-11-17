@@ -32,3 +32,9 @@
 - **Change**: MTF entries now run the existing closed-candle consolidation blacklist in strict mode before authorization. It blocks range/chop conditions such as flat KC midlines, repeated MA/KC crossings, low-trend Donchian ranges, and invalid or insufficient history. This applies to normal and immediate reverse entries.
 - **Cooldown**: The blacklist is called with `cooldown_bars=0`; same-bar reverse eligibility remains governed by the persisted close ticket and all other entry/risk gates.
 - **Regression coverage**: Added an MTF entry test asserting that the consolidation veto blocks a short candidate without introducing a cooldown.
+
+## 2026-11-17 — Allow colorless immediate MTF reversals
+
+- **Change**: A validated same-bar reversal from SHORT to LONG or LONG to SHORT no longer requires the previous completed 1m candle or current live candle to match the entry direction. The rule is limited to the persisted MTF reversal ticket; ordinary entries keep their candle-color requirements.
+- **Safety**: HTF/LTF direction, MA/KC alignment, strict consolidation filtering, quote validity, account checks, and final same-bar ticket validation remain required. Stale deferred candidates are not reused for this reversal.
+- **Regression coverage**: Added colorless evaluator and final-gate checks for both reversal directions, plus entry-method flag validation.
