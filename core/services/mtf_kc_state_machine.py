@@ -138,10 +138,13 @@ def _ltf_kc_wave_trend_conflict(closed: pd.DataFrame, side: str) -> Optional[str
         return None
     curr_mid = _number(closed.iloc[-1], "kc_middle")
     prev_mid = _number(closed.iloc[-2], "kc_middle")
+    prev2_mid = _number(closed.iloc[-3], "kc_middle")
     mid_6_ago = _number(closed.iloc[-6], "kc_middle")
     mid_10_ago = _number(closed.iloc[-10], "kc_middle")
-    if None in (curr_mid, prev_mid, mid_6_ago, mid_10_ago):
+    curr_close = _number(closed.iloc[-1], "close")
+    if None in (curr_mid, prev_mid, prev2_mid, mid_6_ago, mid_10_ago, curr_close):
         return None
+    curr_ma5 = _number(closed.iloc[-1], "ma5") if "ma5" in closed.columns else None
     curr_ma15 = _number(closed.iloc[-1], "ma15") if "ma15" in closed.columns else None
     ma15_8_ago = _number(closed.iloc[-8], "ma15") if "ma15" in closed.columns and len(closed) >= 8 else None
     curr_low_kc = _number(closed.iloc[-1], "kc_lower")
@@ -150,6 +153,16 @@ def _ltf_kc_wave_trend_conflict(closed: pd.DataFrame, side: str) -> Optional[str
     up_kc_8_ago = _number(closed.iloc[-8], "kc_upper") if len(closed) >= 8 else None
 
     if side == "SHORT":
+        confirmed_1m_reversal_down = (
+            curr_mid < prev_mid < prev2_mid
+            and curr_close < curr_mid
+            and curr_ma5 is not None
+            and curr_ma15 is not None
+            and curr_ma5 < curr_ma15
+            and curr_close < curr_ma15
+        )
+        if confirmed_1m_reversal_down:
+            return None
         # 若 1m KC 中軌較 10 根前上升，且 MA15 或 KC 下軌仍處於上升趨勢（代表只是多頭上升通道內的回踩），嚴禁開空！
         wave_mid_up = curr_mid > mid_10_ago and (
             curr_mid > mid_6_ago
@@ -159,6 +172,16 @@ def _ltf_kc_wave_trend_conflict(closed: pd.DataFrame, side: str) -> Optional[str
         if wave_mid_up:
             return "BLOCKED_SHORT_ON_UPWARD_LTF_KC_WAVE_TREND"
     elif side == "LONG":
+        confirmed_1m_reversal_up = (
+            curr_mid > prev_mid > prev2_mid
+            and curr_close > curr_mid
+            and curr_ma5 is not None
+            and curr_ma15 is not None
+            and curr_ma5 > curr_ma15
+            and curr_close > curr_ma15
+        )
+        if confirmed_1m_reversal_up:
+            return None
         # 若 1m KC 中軌較 10 根前下降，且 MA15 與 KC 上軌仍處於下降趨勢（代表只是空頭下降通道內的反彈），嚴禁開多！
         wave_mid_down = curr_mid < mid_10_ago and (
             curr_mid < mid_6_ago
