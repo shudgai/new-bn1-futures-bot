@@ -212,6 +212,14 @@
         }
         .chart-entry-notice strong { display: block; font-size: 13.5px; font-weight: 800; color: #b45309; }
         .chart-pane.has-entry-notice .chart-entry-notice { height: 58px; overflow: auto; }
+        .entry-condition-panel {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 5px 12px;
+            padding: 7px 10px; background: #f8fafc; border-bottom: 1px solid var(--border);
+            color: #475569; font-size: 11px; line-height: 1.5; flex-shrink: 0;
+        }
+        .entry-condition-panel strong { color: #0f172a; font-size: 12px; }
+        .entry-condition-status { color: #92400e; font-weight: 700; }
+        .entry-condition-status.blocked { color: #b91c1c; }
         .chart-pos-info-bar {
             display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
             font-size: 13px; line-height: 1.4; color: #64748b;
@@ -664,6 +672,15 @@
                                     <span v-if="isLockedProfitArmed(getPos(symbol))" style="font-size: 11px; opacity: 0.95; margin-left: 3px;">🛡️已保本</span>
                                     <span v-else style="font-size: 11px; opacity: 0.75; margin-left: 3px;">(待啟動)</span>
                                 </span>
+                            </span>
+                        </div>
+                        <div v-else class="entry-condition-panel" aria-live="polite">
+                            <strong>開倉條件</strong>
+                            <span>方向：{{ { bull: 'KC 向上，只評估多單', bear: 'KC 向下，只評估空單', range: 'KC 持平，暫不開倉', wait: '等待有效行情資料' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}</span>
+                            <span>訊號：須通過共用進場條件與最新報價重驗</span>
+                            <span>風控：須有可用槽位、預算與有效行情</span>
+                            <span :class="['entry-condition-status', (chartModal.states[symbol] || {}).entryBlock ? 'blocked' : '']">
+                                {{ (chartModal.states[symbol] || {}).entryBlock ? `目前攔截：${(chartModal.states[symbol] || {}).entryBlock.label || (chartModal.states[symbol] || {}).entryBlock.detail || (chartModal.states[symbol] || {}).entryBlock.reason}` : '目前狀態：等待訊號或條件成立' }}
                             </span>
                         </div>
                     </div>

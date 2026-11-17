@@ -1164,7 +1164,8 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 short_r, full_r = parse_intercept_info(latest_reason)
                 entry_block = {
                     "message": "🚫",
-                    "detail": "",
+                    "label": short_r,
+                    "detail": full_r,
                     "reason": latest_reason,
                     "side": latest_side,
                 }
