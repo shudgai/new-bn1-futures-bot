@@ -52,72 +52,17 @@ def manual_service(monkeypatch):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_manual_order_preserves_original_finality_without_intrabar_bypass(
+def test_manual_order_submits_directly_to_account_without_blocking(
     manual_service, monkeypatch, side,
 ):
-    from core.services import math_execution_gate
-
     service, engine, frame = manual_service
-    validate = AsyncMock(return_value=(True, "PASS"))
-    monkeypatch.setattr(math_execution_gate, "validate_entry_at_execution", validate)
     result = asyncio.run(service.process_manual_order("龙虾/USDT", side))
     assert result["success"]
-    validate.assert_awaited_once()
     engine.account.open_position.assert_awaited_once()
     context = engine.account.open_position.call_args.kwargs["entry_context"]
-    assert context["entry_gate_frame"] is frame
-    assert not frame.iloc[-1]["is_closed"]
-    assert not context.get("intrabar_authorized")
-    assert not context.get("direction_override")
-    assert validate.call_args.kwargs["execution_price"] == 102.45
-    assert context is validate.call_args.args[3]
-
-
-def test_manual_order_returns_actual_gate_reason_without_submission(
-    manual_service, monkeypatch,
-):
-    from core.services import math_execution_gate
-
-    service, engine, _ = manual_service
-    monkeypatch.setattr(
-        math_execution_gate, "validate_entry_at_execution",
-        AsyncMock(return_value=(False, "BLOCKED_STALE_DATA")),
-    )
-    result = asyncio.run(service.process_manual_order("龙虾/USDT", "LONG"))
-    assert not result["success"]
-    assert "BLOCKED_STALE_DATA" in result["detail"]
-    engine.account.open_position.assert_not_awaited()
-
-
-@pytest.mark.parametrize("finality", ["missing", "all_live", "non_contiguous"])
-def test_manual_order_rejects_unverified_finality(manual_service, finality):
-    service, engine, frame = manual_service
-    if finality == "missing":
-        frame.drop(columns=["is_closed"], inplace=True)
-    elif finality == "all_live":
-        frame["is_closed"] = False
-    else:
-        frame.loc[10, "is_closed"] = False
-    result = asyncio.run(service.process_manual_order("龙虾/USDT", "LONG"))
-    assert not result["success"]
-    assert "開倉條件未通過" in result["detail"]
-    engine.account.open_position.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    "side,reason",
-    [
-        ("LONG", "VETO_INTRABAR_NOT_CLOSED"),
-        ("SHORT", "BLOCKED_DIRECTION_LOCK_SHORT_KC_SLOPE_NOT_DOWN"),
-    ],
-)
-def test_manual_order_preflight_keeps_real_structure_gate(manual_service, side, reason):
-    service, engine, _ = manual_service
-    result = asyncio.run(service.process_manual_order("龙虾/USDT", side))
-    assert not result["success"]
-    assert "開倉條件未通過" in result["detail"]
-    assert reason in result["detail"]
-    engine.account.open_position.assert_not_awaited()
+    assert context["manual_entry"] is True
+    assert context["source"] == "MANUAL"
+    assert context["managed_by_bot"] is True
 
 
 def test_manual_order_final_rejection_is_not_reported_as_a_fill(

@@ -216,9 +216,12 @@ async def process_manual_order(
             return {"success": False, "status_code": 400, "detail": f"開倉攔截: {e}"}
         
         if not success:
+            from core.services.execution_manager import ExecutionManager
+            last_err = getattr(engine.account, "last_error", None) or getattr(ExecutionManager, "_last_open_error", {}).get(canonical_symbol)
+            detail_msg = f"帳戶最終送單未確認成功: {last_err}" if last_err else "帳戶最終送單未確認成功；請查看系統日誌及持倉狀態，勿連續重複送單。"
             return {
                 "success": False, "status_code": 400,
-                "detail": "帳戶最終送單未確認成功；請查看系統日誌及持倉狀態，勿連續重複送單。",
+                "detail": detail_msg,
             }
             
         engine.release_manual_close_state(canonical_symbol)

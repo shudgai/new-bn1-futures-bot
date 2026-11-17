@@ -311,6 +311,96 @@ def _is_ltf_wave_tail_end(
     return False
 
 
+def _is_giant_or_exhausted_candle(
+    closed: pd.DataFrame,
+    side: str,
+    quote_value: float,
+    open_price: float,
+    live_high: float,
+    live_low: float,
+    middle: float,
+    half_width: float,
+    ma15_current: float,
+    previous_atr: float,
+) -> tuple[bool, str]:
+    """Symmetric filter preventing floor-chasing shorts and ceiling-chasing longs."""
+    if previous_atr <= 0:
+        return False, ""
+
+    prev_bar = closed.iloc[-1] if isinstance(closed, pd.DataFrame) and len(closed) >= 1 else None
+    prev_open = float(prev_bar["open"]) if prev_bar is not None and "open" in prev_bar else open_price
+    prev_close = float(prev_bar["close"]) if prev_bar is not None and "close" in prev_bar else open_price
+    prev_high = float(prev_bar["high"]) if prev_bar is not None and "high" in prev_bar else max(prev_open, prev_close)
+    prev_low = float(prev_bar["low"]) if prev_bar is not None and "low" in prev_bar else min(prev_open, prev_close)
+    prev_body = abs(prev_close - prev_open)
+
+    if side == "SHORT":
+        # ── 開空審查（防大長K、價格過低、地板追空）──
+        # 1. 順向暴走大長陰棒（當根跌幅過大，價格已經砸到地板）
+        live_drop = open_price - quote_value
+        if live_drop >= 1.5 * previous_atr:
+            return True, f"BLOCKED_GIANT_CANDLE_SHORT_PRICE_TOO_LOW: 當根跌幅({live_drop:.6f}) >= 1.5 ATR({previous_atr:.6f})，價格過低嚴禁地板追空"
+
+        # 前根已收線陰棒實體過大且價格繼續破底
+        prev_drop = prev_open - prev_close
+        if prev_drop >= 1.2 * previous_atr and quote_value <= prev_close:
+            return True, f"BLOCKED_PREV_GIANT_DROP_SHORT_PRICE_TOO_LOW: 前根實體跌幅({prev_drop:.6f}) >= 1.2 ATR，價格過低嚴禁地板追空"
+
+        # 2. 反向強動能大長紅/陽K（多頭暴衝，嚴禁逆勢摸頂開空）
+        live_surge = quote_value - open_price
+        if live_surge >= 0.5 * previous_atr:
+            return True, f"BLOCKED_COUNTER_BULL_CANDLE_SHORT: 當根大長紅陽K拉升({live_surge:.6f}) >= 0.5 ATR，嚴禁逆勢開空"
+
+        prev_surge = prev_close - prev_open
+        if prev_surge >= 0.8 * previous_atr:
+            return True, f"BLOCKED_PREV_BULL_SURGE_SHORT: 前根大長紅陽K拉升({prev_surge:.6f}) >= 0.8 ATR，嚴禁逆勢開空"
+
+        # 3. 底部長下影線衰竭托底（買盤強烈抵抗，見底訊號）
+        prev_lower_wick = min(prev_open, prev_close) - prev_low
+        if prev_lower_wick >= 0.6 * previous_atr and prev_lower_wick > prev_body:
+            return True, f"BLOCKED_LOWER_WICK_EXHAUSTION_SHORT: 底部長下影線托底({prev_lower_wick:.6f}) > 實體，嚴禁地板追空"
+
+        # 4. 均線與通道極度乖離（超跌過度延伸，隨時劇烈回抽）
+        bias_ma15 = (ma15_current - quote_value) / previous_atr
+        bias_kc_mid = (middle - quote_value) / half_width if half_width > 0 else 0.0
+        if bias_ma15 > 2.5 or bias_kc_mid > 1.5:
+            return True, f"BLOCKED_SHORT_BIAS_TOO_FAR_BELOW: 均線乖離({bias_ma15:.2f} ATR)過大，價格過低嚴禁地板追空"
+
+    elif side == "LONG":
+        # ── 開多審查（防大長K、價格過高、天花板追多）──
+        # 1. 順向暴走大長陽棒（當根漲幅過大，價格已經拉到天花板）
+        live_surge = quote_value - open_price
+        if live_surge >= 1.5 * previous_atr:
+            return True, f"BLOCKED_GIANT_CANDLE_LONG_PRICE_TOO_HIGH: 當根漲幅({live_surge:.6f}) >= 1.5 ATR({previous_atr:.6f})，價格過高嚴禁天花板追多"
+
+        # 前根已收線陽棒實體過大且價格繼續創高
+        prev_surge = prev_close - prev_open
+        if prev_surge >= 1.2 * previous_atr and quote_value >= prev_close:
+            return True, f"BLOCKED_PREV_GIANT_SURGE_LONG_PRICE_TOO_HIGH: 前根實體漲幅({prev_surge:.6f}) >= 1.2 ATR，價格過高嚴禁天花板追多"
+
+        # 2. 反向強動能大長黑/陰K（空頭暴跌下殺，嚴禁接飛刀開多）
+        live_drop = open_price - quote_value
+        if live_drop >= 0.5 * previous_atr:
+            return True, f"BLOCKED_COUNTER_BEAR_CANDLE_LONG: 當根大長黑陰K下殺({live_drop:.6f}) >= 0.5 ATR，嚴禁接飛刀開多"
+
+        prev_drop = prev_open - prev_close
+        if prev_drop >= 0.8 * previous_atr:
+            return True, f"BLOCKED_PREV_BEAR_PLUNGE_LONG: 前根大長黑陰K下殺({prev_drop:.6f}) >= 0.8 ATR，嚴禁接飛刀開多"
+
+        # 3. 頂部長上影線衰竭受阻（賣壓強烈壓制，見頂訊號）
+        prev_upper_wick = prev_high - max(prev_open, prev_close)
+        if prev_upper_wick >= 0.6 * previous_atr and prev_upper_wick > prev_body:
+            return True, f"BLOCKED_UPPER_WICK_EXHAUSTION_LONG: 頂部長上影線受阻({prev_upper_wick:.6f}) > 實體，嚴禁天花板追多"
+
+        # 4. 均線與通道極度乖離（超買過度延伸，隨時劇烈回調）
+        bias_ma15 = (quote_value - ma15_current) / previous_atr
+        bias_kc_mid = (quote_value - middle) / half_width if half_width > 0 else 0.0
+        if bias_ma15 > 2.5 or bias_kc_mid > 1.5:
+            return True, f"BLOCKED_LONG_BIAS_TOO_FAR_ABOVE: 均線乖離({bias_ma15:.2f} ATR)過大，價格過高嚴禁天花板追多"
+
+    return False, ""
+
+
 def _has_ltf_outer_band_valley_or_peak_turn(
     closed: pd.DataFrame, htf_state: str,
 ) -> bool:
@@ -1009,6 +1099,17 @@ def evaluate_mtf_entry(
                 and ma_slope_aligned
             ):
                 if candle_aligned:
+                    giant_blocked, giant_reason = _is_giant_or_exhausted_candle(
+                        closed, candidate_side, quote_value, open_price,
+                        live_high, live_low, middle, half_width, ma15_current, previous_atr,
+                    )
+                    if giant_blocked:
+                        return {
+                            **htf,
+                            "allowed": False,
+                            "reason": giant_reason,
+                            "side": candidate_side,
+                        }
                     return {
                         **htf,
                         "allowed": True,
@@ -1074,15 +1175,27 @@ def evaluate_mtf_entry(
             }
             continue
 
-        if not colorless_reverse and _is_ltf_wave_tail_end(
-            closed, candidate_side, quote_value, open_price, upper, lower,
-        ):
-            return {
-                **htf,
-                "allowed": False,
-                "reason": "BLOCKED_MTF_WAVE_TAIL_END_AFTER_OUTER_BAND",
-                "side": candidate_side,
-            }
+        if not colorless_reverse:
+            if _is_ltf_wave_tail_end(
+                closed, candidate_side, quote_value, open_price, upper, lower,
+            ):
+                return {
+                    **htf,
+                    "allowed": False,
+                    "reason": "BLOCKED_MTF_WAVE_TAIL_END_AFTER_OUTER_BAND",
+                    "side": candidate_side,
+                }
+            giant_blocked, giant_reason = _is_giant_or_exhausted_candle(
+                closed, candidate_side, quote_value, open_price,
+                live_high, live_low, middle, half_width, ma15_current, previous_atr,
+            )
+            if giant_blocked:
+                return {
+                    **htf,
+                    "allowed": False,
+                    "reason": giant_reason,
+                    "side": candidate_side,
+                }
 
         return {
             **htf,

@@ -3105,6 +3105,11 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
     """Hard-stop entries at the account boundary when the latest candle has a large adverse wick."""
     side = str(side or "").upper()
     if isinstance(entry_context, dict):
+        if (
+            entry_context.get("manual_entry") is True
+            or str(entry_context.get("source") or "").upper() == "MANUAL"
+        ):
+            return
         source_name = str(entry_context.get("source") or "").upper()
         if (
             not entry_context.get("entry_method_authority")

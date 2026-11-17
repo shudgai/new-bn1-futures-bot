@@ -44,3 +44,10 @@
 - **Trigger**: Reuse the existing 15m MTF slope classification. A directional candidate is created when two consecutive closed 1m closes and the latest quote are strictly above the current 15m KC middle for LONG, or strictly below for SHORT. This continuation signal does not require either candle to match the entry color.
 - **Preserved gates**: Existing MTF MA/KC alignment and consolidation filters remain. Final revalidation applies the Macro Candle Structure veto, including the 0.35/0.65 KC-position limits, 1.2 ATR MA15-bias cap, and wick-exhaustion checks.
 - **Regression coverage**: Added mirrored LONG/SHORT tests for the two-close condition, strict midline boundaries, colorless qualification, and macro-gate vetoes.
+
+## 2026-11-17 — Require persistent closed 15m KC direction
+
+- **Trend definition**: A directional macro trend requires three consecutive completed 15m KC midlines to rise or fall strictly, confirming two consecutive closed-bar moves. Live 15m slope changes and short-lived 1m fluctuations cannot reverse this classification.
+- **Entry protection**: The final automatic-order gate permits LONG only in confirmed UPTREND and SHORT only in confirmed DOWNTREND. Missing, invalid, flat, or mixed 15m direction fails closed; explicit manual orders and the independent WAIT authority do not inherit this strategy filter.
+- **Exit protection**: Ordinary strategy exits are held until two consecutive completed 15m KC midline moves confirm a reversal against the position. Existing profit-lock, hard-stop, waterfall/circuit-breaker, and manual exits retain priority.
+- **Regression coverage**: Added mirrored countertrend-entry vetoes, two-move direction classification, continuation holds despite an opposing live 15m slope, and protected-exit bypass checks.

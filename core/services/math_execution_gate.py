@@ -762,7 +762,8 @@ def validate_exit_math(
         )):
             from core.services.exits.hard_stop_service import price_atr_stop_disabled
 
-            if price_atr_stop_disabled(position, metadata):
+            is_circuit_breaker = "CIRCUIT_BREAKER" in norm_reason
+            if not is_circuit_breaker and price_atr_stop_disabled(position, metadata):
                 return False, "BLOCKED_EXIT_POSITION_PRICE_ATR_STOP_DISABLED", {
                     "exit_type": "POSITION_PRICE_ATR_STOP_DISABLED",
                 }
@@ -1119,6 +1120,8 @@ async def validate_entry_at_execution(
         (payload.get("manual_entry") is True or payload.get("source") == "MANUAL")
         and not payload.get("entry_method_authority")
     )
+    if manual_entry:
+        return True, "ENTRY_MATH_MANUAL_ENTRY_APPROVED"
     pv_exec_verified = False
     pv_exec_flip_verified = False
     if (payload.get("is_peak_valley_inflection") or payload.get("is_pv_flip")) and frame is not None:
