@@ -1204,8 +1204,14 @@ async def validate_entry_at_execution(
         two_bar_breakout_authorized = entry_method_authority == KC_TWO_BAR_BREAKOUT
         mtf_state_machine_authorized = entry_method_authority == MTF_KC_STATE_MACHINE
         if mtf_state_machine_authorized and hasattr(frame, "attrs"):
+            from core.services.low_latency_exit import wrap_frame_ref as _wrap_frame_ref
+
             frame.attrs["entry_method_context"] = {
-                key: payload.get(key)
+                key: (
+                    _wrap_frame_ref(payload.get(key))
+                    if key == "frame_15m"
+                    else payload.get(key)
+                )
                 for key in (
                     "entry_method_authority",
                     "entry_method_signal",

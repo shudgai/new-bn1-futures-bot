@@ -137,26 +137,43 @@ class MacroCandleStructureGate:
             and confirmation == MTF_KC_DIRECTIONAL_ENTRY
             and structure_confirmed
         ):
-            if bias_atr > self.max_bias_atr:
+            max_bias = (
+                max(self.max_bias_atr, self.MEME_CROSSOVER_BREAKOUT_MAX_BIAS_ATR)
+                if relaxed
+                else self.max_bias_atr
+            )
+            if bias_atr > max_bias:
                 return False, (
                     f"VETO_MTF_MIDLINE_HOLD: Bias {bias_atr:.2f}x ATR exceeds "
-                    f"{self.max_bias_atr:.2f}x ATR"
+                    f"{max_bias:.2f}x ATR"
                 )
             if side == "LONG":
-                if kc_pos > 0.35:
+                max_long_kc_pos = 1.45 if relaxed else 0.35
+                if kc_pos > max_long_kc_pos:
                     return False, (
-                        f"VETO_MTF_MIDLINE_HOLD_LONG: KC_Pos {kc_pos:.2f} > 0.35"
+                        f"VETO_MTF_MIDLINE_HOLD_LONG: KC_Pos {kc_pos:.2f} > {max_long_kc_pos:.2f}"
                     )
-                if upper_wick > body and close < high:
+                wick_exhausted = (
+                    is_exhausted_wick(upper_wick, body, candle_range)
+                    if relaxed
+                    else (upper_wick > body and close < high)
+                )
+                if wick_exhausted:
                     return False, (
                         "VETO_MTF_MIDLINE_HOLD_LONG: upper-wick exhaustion"
                     )
             else:
-                if kc_pos < 0.65:
+                min_short_kc_pos = -0.45 if relaxed else 0.65
+                if kc_pos < min_short_kc_pos:
                     return False, (
-                        f"VETO_MTF_MIDLINE_HOLD_SHORT: KC_Pos {kc_pos:.2f} < 0.65"
+                        f"VETO_MTF_MIDLINE_HOLD_SHORT: KC_Pos {kc_pos:.2f} < {min_short_kc_pos:.2f}"
                     )
-                if lower_wick > body and close > low:
+                wick_exhausted = (
+                    is_exhausted_wick(lower_wick, body, candle_range)
+                    if relaxed
+                    else (lower_wick > body and close > low)
+                )
+                if wick_exhausted:
                     return False, (
                         "VETO_MTF_MIDLINE_HOLD_SHORT: lower-wick exhaustion"
                     )

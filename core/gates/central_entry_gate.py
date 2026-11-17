@@ -430,7 +430,11 @@ class CentralEntryGate:
         c_open = float(parsed.get("open", curr_price))
         ma15_bias_atr = abs(curr_price - ma15_c) / atr
         max_ma15_bias_atr = (
-            cls.MEME_MAX_MA15_BIAS_ATR if meme_symbol else cls.MAX_MA15_BIAS_ATR
+            3.5
+            if (mtf_state_machine_authorized and meme_symbol)
+            else cls.MEME_MAX_MA15_BIAS_ATR
+            if meme_symbol
+            else cls.MAX_MA15_BIAS_ATR
         )
         confirmed_short_continuation = cls._has_confirmed_meme_short_continuation(
             symbol, side, entry_method_context, klines_or_snapshot,
@@ -478,9 +482,13 @@ class CentralEntryGate:
                     signal_id=sig_id,
                     checks=checks,
                 )
-            if not all(
-                math.isfinite(value) and value > 0
-                for value in (candle_open, candle_high, candle_low, candle_body)
+            if (
+                not all(
+                    math.isfinite(value) and value > 0
+                    for value in (candle_open, candle_high, candle_low)
+                )
+                or not math.isfinite(candle_body)
+                or candle_body < 0
             ):
                 return GateCheckResult(
                     passed=False,
@@ -488,12 +496,27 @@ class CentralEntryGate:
                     signal_id=sig_id,
                     checks=checks,
                 )
+            from core.gates.meme_entry_policy import (
+                is_exhausted_wick,
+                uses_relaxed_entry_limits,
+            )
+
+            candle_range = max(candle_high - candle_low, 0.0)
+            relaxed_meme = uses_relaxed_entry_limits(symbol)
             if side == "LONG":
                 upper_wick = candle_high - max(candle_open, curr_price)
-                exhausted = upper_wick > candle_body and curr_price < candle_high
+                exhausted = (
+                    is_exhausted_wick(upper_wick, candle_body, candle_range)
+                    if relaxed_meme
+                    else (upper_wick > candle_body and curr_price < candle_high)
+                )
             else:
                 lower_wick = min(candle_open, curr_price) - candle_low
-                exhausted = lower_wick > candle_body and curr_price > candle_low
+                exhausted = (
+                    is_exhausted_wick(lower_wick, candle_body, candle_range)
+                    if relaxed_meme
+                    else (lower_wick > candle_body and curr_price > candle_low)
+                )
             if exhausted:
                 return GateCheckResult(
                     passed=False,

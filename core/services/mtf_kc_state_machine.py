@@ -68,7 +68,10 @@ def _snapshot_is_fresh(frame: pd.DataFrame, interval_ms: float) -> bool:
 
 def _valid_live_frame(frame: Any, interval_ms: float) -> tuple[pd.DataFrame, pd.Series] | None:
     from core.services.candle_data import closed_entry_candles
+    from core.services.low_latency_exit import unwrap_frame_ref
 
+    if not isinstance(frame, pd.DataFrame):
+        frame = unwrap_frame_ref(frame)
     if not isinstance(frame, pd.DataFrame) or len(frame) < 2:
         return None
     attrs = getattr(frame, "attrs", {})
@@ -109,6 +112,205 @@ def _timestamp_ms(value: Any) -> Optional[float]:
     if not math.isfinite(timestamp) or timestamp <= 0:
         return None
     return timestamp if timestamp >= 1e11 else timestamp * 1000.0
+
+
+def _closed_kc_direction(closed: pd.DataFrame) -> str:
+    if not isinstance(closed, pd.DataFrame) or len(closed) < 3:
+        return "FLAT"
+    values = [_number(row, "kc_middle") for _, row in closed.iloc[-3:].iterrows()]
+    if any(value is None or value <= 0 for value in values):
+        return "FLAT"
+    first, second, third = values
+    if first < second < third:
+        return "UPTREND"
+    if first > second > third:
+        return "DOWNTREND"
+    return "FLAT"
+
+
+def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
+    """Detect a confirmed 1m KC + MA5/MA15 trend state on full-indicator 1m frames."""
+    if (
+        not isinstance(closed, pd.DataFrame)
+        or len(closed) < 3
+        or not {"low", "high", "close", "kc_lower", "kc_upper", "kc_middle"}.issubset(
+            closed.columns
+        )
+    ):
+        return None
+    curr_mid = _number(closed.iloc[-1], "kc_middle")
+    prev_mid = _number(closed.iloc[-2], "kc_middle")
+    prev2_mid = _number(closed.iloc[-3], "kc_middle") if len(closed) >= 3 else prev_mid
+    curr_close = _number(closed.iloc[-1], "close")
+    if None in (curr_mid, prev_mid, prev2_mid, curr_close):
+        return None
+    curr_ma5 = _number(closed.iloc[-1], "ma5") if "ma5" in closed.columns else None
+    curr_ma15 = _number(closed.iloc[-1], "ma15") if "ma15" in closed.columns else None
+    if (
+        curr_mid <= prev_mid
+        and curr_mid < prev2_mid
+        and curr_close < curr_mid
+        and curr_ma5 is not None
+        and curr_ma15 is not None
+        and curr_ma5 < curr_ma15
+    ):
+        return "DOWNTREND"
+    if (
+        curr_mid >= prev_mid
+        and curr_mid > prev2_mid
+        and curr_close > curr_mid
+        and curr_ma5 is not None
+        and curr_ma15 is not None
+        and curr_ma5 > curr_ma15
+    ):
+        return "UPTREND"
+    recent = closed.tail(25).reset_index(drop=True)
+    last_lower_idx = None
+    last_upper_idx = None
+    for idx, row in recent.iterrows():
+        low_v = _number(row, "low")
+        kc_low_v = _number(row, "kc_lower")
+        high_v = _number(row, "high")
+        kc_up_v = _number(row, "kc_upper")
+        if low_v is not None and kc_low_v is not None and float(low_v) <= float(kc_low_v) * 1.0005:
+            last_lower_idx = int(idx)
+        if high_v is not None and kc_up_v is not None and float(high_v) >= float(kc_up_v) * 0.9995:
+            last_upper_idx = int(idx)
+    if (
+        last_lower_idx is not None
+        and (last_upper_idx is None or last_lower_idx > last_upper_idx)
+        and (curr_mid > prev_mid or curr_mid > prev2_mid)
+        and curr_close > curr_mid
+        and (curr_ma5 is None or curr_ma15 is None or curr_ma5 >= curr_ma15)
+    ):
+        return "UPTREND"
+    if (
+        last_upper_idx is not None
+        and (last_lower_idx is None or last_upper_idx > last_lower_idx)
+        and (curr_mid < prev_mid or curr_mid < prev2_mid)
+        and curr_close < curr_mid
+        and (curr_ma5 is None or curr_ma15 is None or curr_ma5 <= curr_ma15)
+    ):
+        return "DOWNTREND"
+    return None
+
+
+def _is_ltf_wave_tail_end(
+    closed: pd.DataFrame,
+    side: str,
+    quote_value: float,
+    open_price: float,
+    upper: float,
+    lower: float,
+) -> bool:
+    """Return True if the 1m wave already hit its outer KC band and is rebounding in tail-end exhaustion."""
+    if (
+        not isinstance(closed, pd.DataFrame)
+        or len(closed) < 4
+        or not {"low", "high", "close", "open", "kc_lower", "kc_upper", "kc_middle"}.issubset(
+            closed.columns
+        )
+    ):
+        return False
+    recent = closed.tail(4)
+    closed_open = _number(closed.iloc[-1], "open")
+    closed_close = _number(closed.iloc[-1], "close")
+    if closed_open is None or closed_close is None:
+        return False
+    if side == "LONG":
+        touched_upper = any(
+            (
+                _number(row, "high") is not None
+                and _number(row, "kc_upper") is not None
+                and float(_number(row, "high")) >= float(_number(row, "kc_upper")) * 0.9995
+            )
+            for _, row in recent.iterrows()
+        )
+        rebounding_down = closed_close <= closed_open or quote_value <= open_price
+        return bool(touched_upper and rebounding_down)
+    if side == "SHORT":
+        touched_lower = any(
+            (
+                _number(row, "low") is not None
+                and _number(row, "kc_lower") is not None
+                and float(_number(row, "low")) <= float(_number(row, "kc_lower")) * 1.0005
+            )
+            for _, row in recent.iterrows()
+        )
+        rebounding_up = closed_close >= closed_open or quote_value >= open_price
+        return bool(touched_lower and rebounding_up)
+    return False
+
+
+def _has_ltf_outer_band_valley_or_peak_turn(
+    closed: pd.DataFrame, htf_state: str,
+) -> bool:
+    """Return whether 1m recently rebounded from an outer-band valley/peak into trend."""
+    detected = _detect_ltf_outer_band_turn_state(closed)
+    if detected is not None:
+        return detected == htf_state
+    if (
+        not isinstance(closed, pd.DataFrame)
+        or len(closed) < 3
+        or not {"low", "high", "close", "kc_lower", "kc_upper", "kc_middle"}.issubset(
+            closed.columns
+        )
+    ):
+        return False
+    recent = closed.tail(12)
+    curr_mid = _number(closed.iloc[-1], "kc_middle")
+    prev_mid = _number(closed.iloc[-2], "kc_middle")
+    curr_close = _number(closed.iloc[-1], "close")
+    if None in (curr_mid, prev_mid, curr_close):
+        return False
+    if htf_state == "UPTREND":
+        touched_lower = any(
+            (
+                _number(row, "low") is not None
+                and _number(row, "kc_lower") is not None
+                and float(_number(row, "low")) <= float(_number(row, "kc_lower")) * 1.0005
+            )
+            for _, row in recent.iterrows()
+        )
+        return bool(touched_lower and curr_mid > prev_mid and curr_close > curr_mid)
+    if htf_state == "DOWNTREND":
+        touched_upper = any(
+            (
+                _number(row, "high") is not None
+                and _number(row, "kc_upper") is not None
+                and float(_number(row, "high")) >= float(_number(row, "kc_upper")) * 0.9995
+            )
+            for _, row in recent.iterrows()
+        )
+        return bool(touched_upper and curr_mid < prev_mid and curr_close < curr_mid)
+    return False
+
+
+def evaluate_closed_15m_kc_trend(frame_15m: Any) -> dict[str, Any]:
+    data = _valid_live_frame(frame_15m, 900_000.0)
+    if data is None:
+        return {
+            "valid": False,
+            "direction": "UNKNOWN",
+            "reason": "BLOCKED_15M_KC_CLOSED_TREND_DATA_INVALID",
+        }
+    closed, _ = data
+    direction = _closed_kc_direction(closed)
+    if direction == "FLAT":
+        htf = evaluate_htf_kc_state(frame_15m)
+        if (
+            htf.get("valid")
+            and htf.get("state") in ("UPTREND", "DOWNTREND")
+            and htf.get("closed_midline_direction") == htf.get("state")
+        ):
+            direction = str(htf["state"])
+    if direction == "FLAT":
+        return {
+            "valid": True,
+            "direction": direction,
+            "reason": "WAIT_15M_KC_TWO_CLOSED_DIRECTIONS",
+        }
+    return {"valid": True, "direction": direction, "reason": "PASS"}
 
 
 def close_in_current_live_1m_bar(frame: Any, closed_at: Any) -> Optional[bool]:
@@ -367,11 +569,15 @@ def evaluate_mtf_exit_confirmation(
 
 def evaluate_htf_kc_state(frame_15m: Any) -> dict[str, Any]:
     """Classify 15m KC direction from the current, still-forming candle."""
+    from core.services.low_latency_exit import unwrap_frame_ref
+
+    if not isinstance(frame_15m, pd.DataFrame):
+        frame_15m = unwrap_frame_ref(frame_15m)
     data = _valid_live_frame(frame_15m, 900_000.0)
     if data is None:
         return {"valid": False, "reason": "BLOCKED_HTF_KC_LIVE_DATA_INVALID"}
     closed, current = data
-    previous = frame_15m.iloc[-2]
+    previous = frame_15m.iloc[-2] if isinstance(frame_15m, pd.DataFrame) and len(frame_15m) >= 2 else closed.iloc[-1]
     live_ohlc = tuple(_number(current, key) for key in ("open", "high", "low", "close"))
     middle_current = _number(current, "kc_middle")
     middle_previous = _number(previous, "kc_middle")
@@ -416,9 +622,17 @@ def evaluate_htf_kc_state(frame_15m: Any) -> dict[str, Any]:
                     if closed_middle > previous_closed_middle
                     else "DOWNTREND"
                 )
+    closed_trend = _closed_kc_direction(closed)
+    if (
+        closed_trend == "FLAT"
+        and state in ("UPTREND", "DOWNTREND")
+        and closed_midline_direction == state
+    ):
+        closed_trend = state
     return {
         "valid": True,
         "state": state,
+        "closed_trend": closed_trend,
         "closed_midline_direction": closed_midline_direction,
         "closed_kc_middle": closed_middle,
         "previous_closed_kc_middle": previous_closed_middle,
@@ -446,13 +660,41 @@ def evaluate_mtf_entry(
     htf = evaluate_htf_kc_state(frame_15m)
     if not htf.get("valid"):
         return {**htf, "allowed": False, "reason": htf["reason"]}
-    if htf["state"] == "FLAT":
+    data = _valid_live_frame(frame_1m, 60_000.0)
+    closed_trend = htf.get("closed_trend")
+    ltf_turn_state = (
+        _detect_ltf_outer_band_turn_state(data[0]) if data is not None else None
+    )
+    ltf_turn_override = False
+    if ltf_turn_state in ("UPTREND", "DOWNTREND"):
+        closed_trend = ltf_turn_state
+        htf = {**htf, "state": ltf_turn_state, "closed_trend": ltf_turn_state}
+        ltf_turn_override = True
+    elif (
+        closed_trend not in ("UPTREND", "DOWNTREND")
+        and htf.get("state") in ("UPTREND", "DOWNTREND")
+    ):
+        if htf.get("closed_midline_direction") == htf.get("state") or (
+            data is not None
+            and _has_ltf_outer_band_valley_or_peak_turn(
+                data[0], str(htf["state"]),
+            )
+        ):
+            closed_trend = str(htf["state"])
+            htf = {**htf, "closed_trend": closed_trend}
+    if closed_trend not in ("UPTREND", "DOWNTREND"):
         return {
             **htf,
             "allowed": False,
-            "reason": "BLOCKED_MTF_KC_CYCLE_NOT_DIRECTIONAL",
+            "reason": "BLOCKED_MTF_KC_TWO_CLOSED_DIRECTIONS_NOT_CONFIRMED",
         }
-    data = _valid_live_frame(frame_1m, 60_000.0)
+    expected_side = "LONG" if closed_trend == "UPTREND" else "SHORT"
+    if str(side or "").upper() in ("LONG", "SHORT") and str(side).upper() != expected_side:
+        return {
+            **htf,
+            "allowed": False,
+            "reason": f"BLOCKED_MTF_KC_COUNTERTREND_{str(side).upper()}",
+        }
     if data is None or getattr(frame_1m, "attrs", {}).get("entry_finality_verified") is not True:
         return {
             **htf,
@@ -462,7 +704,7 @@ def evaluate_mtf_entry(
     closed, live = data
     closed_open = _number(closed.iloc[-1], "open")
     closed_close = _number(closed.iloc[-1], "close")
-    expected_closed_color = "LONG" if htf["state"] == "UPTREND" else "SHORT"
+    expected_closed_color = expected_side
     colorless_reverse = (
         allow_colorless_reverse and str(side or "").upper() in ("LONG", "SHORT")
     )
@@ -486,7 +728,11 @@ def evaluate_mtf_entry(
             side=expected_closed_color,
             cooldown_bars=0,
             independent_kc_direction=True,
+            meme_policy=True,
+            meme_low_trend_override=True,
+            meme_structural_entry=True,
             strict_consolidation=True,
+            confirmed_flat_kc_structure=True,
         )
     )
     if consolidation_blocked:
@@ -504,19 +750,31 @@ def evaluate_mtf_entry(
         return {**htf, "allowed": False, "reason": "BLOCKED_LIVE_QUOTE_INVALID"}
 
     normalized_side = str(side or "").upper()
-    expected_side = "LONG" if htf["state"] == "UPTREND" else "SHORT"
-    midline = float(htf["kc_middle"])
+    has_ltf_kc_bands = {"kc_upper", "kc_lower", "kc_middle"}.issubset(closed.columns)
+    midline = (
+        float(_number(closed.iloc[-1], "kc_middle") or htf["kc_middle"])
+        if ltf_turn_override
+        else float(htf["kc_middle"])
+    )
     midline_hold_signal = False
     if normalized_side == expected_side and len(closed) >= 2:
         previous_close = _number(closed.iloc[-2], "close")
         latest_close = _number(closed.iloc[-1], "close")
+        live_open_check = _number(live, "open")
         if (
             previous_close is not None
             and latest_close is not None
             and previous_close > 0
             and latest_close > 0
         ):
-            midline_hold_signal = (
+            color_ok_for_hold = True
+            if has_ltf_kc_bands and live_open_check is not None:
+                color_ok_for_hold = (
+                    quote_value > live_open_check
+                    if expected_side == "LONG"
+                    else quote_value < live_open_check
+                )
+            midline_hold_signal = color_ok_for_hold and (
                 previous_close > midline
                 and latest_close > midline
                 and quote_value > midline
@@ -611,7 +869,7 @@ def evaluate_mtf_entry(
     for candidate_side in sides:
         is_long = candidate_side == "LONG"
         expected_state = "UPTREND" if is_long else "DOWNTREND"
-        if htf["state"] != expected_state:
+        if closed_trend != expected_state:
             continue
         distance = quote_value - middle if is_long else middle - quote_value
         ratio = distance / half_width
@@ -639,7 +897,9 @@ def evaluate_mtf_entry(
                 and ma_slope_aligned
             )
 
-        location_allowed = -1.0 < ratio < MAX_ENTRY_BAND_RATIO
+        location_allowed = -1.0 < ratio < (
+            1.05 if has_ltf_kc_bands else MAX_ENTRY_BAND_RATIO
+        )
 
         pending_matches_next_bar = False
         pending_source_state = ""
@@ -665,7 +925,7 @@ def evaluate_mtf_entry(
 
         if pending_matches_next_bar and not breakout_allowed:
             state_still_valid = (
-                htf["state"] == expected_state
+                closed_trend == expected_state
                 and pending_source_state == expected_state
             )
             if (
@@ -733,11 +993,21 @@ def evaluate_mtf_entry(
                 "deferred_candidate": {
                     "side": candidate_side,
                     "source_bar_id": live_bar_id,
-                    "state": htf["state"],
+                    "state": closed_trend,
                     "reason": "MTF_KC_TREND_ENTRY",
                 },
             }
             continue
+
+        if not colorless_reverse and _is_ltf_wave_tail_end(
+            closed, candidate_side, quote_value, open_price, upper, lower,
+        ):
+            return {
+                **htf,
+                "allowed": False,
+                "reason": "BLOCKED_MTF_WAVE_TAIL_END_AFTER_OUTER_BAND",
+                "side": candidate_side,
+            }
 
         return {
             **htf,

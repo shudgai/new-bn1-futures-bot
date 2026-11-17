@@ -161,7 +161,6 @@ def test_breakout_bias_limit_is_two_atr(side):
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
-
 def test_breakout_short_bias_above_relaxed_atr_is_still_vetoed():
     allowed, reason = MacroCandleStructureGate().can_open(
         "SHORT",
@@ -260,7 +259,6 @@ def test_mtf_directional_gate_allows_colorless_candles_when_structure_is_valid(
 
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
-
 
 @pytest.mark.parametrize(
     ("side", "bar", "indicators", "expected_reason"),
@@ -368,7 +366,6 @@ def test_numeric_kc_entries_allow_valid_outer_rail_location(
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
-
 def test_outside_continuation_still_requires_directional_ma5():
     allowed, reason = MacroCandleStructureGate().can_open(
         "SHORT",
@@ -427,7 +424,6 @@ def test_confirmed_two_bar_breakout_does_not_require_ma_or_kc_slope(
 
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
-
 def test_unknown_side():
     gate = MacroCandleStructureGate()
     bar = {'open': 100, 'close': 100, 'high': 101, 'low': 99}
@@ -501,7 +497,6 @@ def test_each_entry_mode_uses_its_structure_gate(side, mode, bar, indicators, ex
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
-
 @pytest.mark.parametrize(
     "mode,extra,reason",
     [
@@ -545,7 +540,6 @@ def test_continuation_mode_allows_strong_outer_band_zone(side, bar, ma15):
 
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
-
 
 def test_crossover_gate_accepts_confirmed_five_minute_ma_convergence():
     bar = {"open": 99.0, "high": 100.1, "low": 98.9, "close": 100.0}
@@ -671,7 +665,6 @@ def test_outer_pivot_then_ma_cross_reversal_gate_accepts_aligned_ma5(
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
-
 @pytest.mark.parametrize(
     "side,bar,ma5_current,ma5_previous",
     [
@@ -707,7 +700,6 @@ def test_ma5_ma15_cross_gate_accepts_without_outer_pivot_structure(
 
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
-
 
 def test_top_pivot_crossover_passes_outside_mid_channel_and_two_atr_bias():
     allowed, reason = MacroCandleStructureGate().can_open(
@@ -855,7 +847,6 @@ def test_profit_lock_continuation_gate_requires_outer_location_and_aligned_trend
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
 
-
 @pytest.mark.parametrize(
     "side,bar",
     [
@@ -880,7 +871,6 @@ def test_reversal_gate_requires_directional_exhaustion_pinbar(side, bar):
 
     assert allowed is True
     assert reason == f"PASSED_MACRO_{side}_GATE"
-
 
 def test_gate_fails_closed_for_missing_or_non_finite_structure_values():
     gate = MacroCandleStructureGate()
@@ -919,3 +909,43 @@ def test_gate_rejects_missing_or_conflicting_entry_pattern():
         "LONG", bar, indicators, entry_pattern="BREAKOUT",
         entry_signal_mode="CONTINUATION",
     ) == (False, "REJECT_UNAUTHORIZED_ENTRY_PATTERN")
+
+
+@pytest.mark.parametrize(
+    ("symbol", "side", "bar", "indicators"),
+    [
+        (
+            "1000PEPE/USDT",
+            "LONG",
+            {"open": 100.5, "close": 100.8, "high": 101.0, "low": 100.4},
+            {
+                "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0,
+                "ma15": 99.3, "atr": 1.0,
+            },
+        ),
+        (
+            "龙虾/USDT",
+            "SHORT",
+            {"open": 99.5, "close": 99.2, "high": 99.6, "low": 99.0},
+            {
+                "kc_upper": 102.0, "kc_lower": 98.0, "kc_middle": 100.0,
+                "ma15": 100.7, "atr": 1.0,
+            },
+        ),
+    ],
+)
+def test_mtf_directional_gate_allows_meme_trend_side_of_midline(
+    symbol, side, bar, indicators,
+):
+    allowed, reason = MacroCandleStructureGate(max_bias_atr=1.2).can_open(
+        side,
+        bar,
+        indicators,
+        symbol=symbol,
+        entry_pattern="CONTINUATION",
+        structure_confirmation=MTF_KC_DIRECTIONAL_ENTRY,
+        structure_confirmed=True,
+    )
+
+    assert allowed is True
+    assert reason == f"PASSED_MACRO_{side}_GATE"

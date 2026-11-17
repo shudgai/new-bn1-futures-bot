@@ -662,9 +662,19 @@ class PaperAccount:
                         eval_frame = None
 
             if eval_frame is not None:
+                if isinstance(eval_frame, pd.DataFrame):
+                    from core.services.low_latency_exit import wrap_frame_ref as _wrap_frame_ref
+                    for k in ("direction_override", "intrabar_authorized", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_v_shape_recovery", "is_v_shape_breakdown", "is_peak_valley_inflection", "is_pv_flip", "pv_flip_bar_id", "pv_flip_origin_exit_reason", "pv_flip_watch_state", "frame_5m"):
+                        if k in entry_context:
+                            eval_frame.attrs[k] = _wrap_frame_ref(entry_context[k]) if k == "frame_5m" else entry_context[k]
+
+                is_mtf_validated = (
+                    entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE"
+                    and bool(entry_context.get("_entry_method_validated"))
+                )
                 # ──【方向總開關物理硬核驗 (Direction Master Lock)】──
                 from core.gates.direction_master_lock import extract_direction_metrics_from_frame
-                dir_metrics = extract_direction_metrics_from_frame(eval_frame)
+                dir_metrics = None if is_mtf_validated else extract_direction_metrics_from_frame(eval_frame)
                 if dir_metrics:
                     m5_c = dir_metrics["ma5_curr"]
                     m5_p = dir_metrics["ma5_prev"]
@@ -1040,12 +1050,13 @@ class PaperAccount:
                     except Exception:
                         gate_frame = None
 
-            require_ma5_ma15_entry_gates(
-                entry_context.get("entry_gate_frame"),
-                side,
-                quote=entry_context.get("entry_gate_quote", price),
-                is_manual=True,
-            )
+            if entry_context.get("entry_method_authority") != "MTF_KC_STATE_MACHINE":
+                require_ma5_ma15_entry_gates(
+                    entry_context.get("entry_gate_frame"),
+                    side,
+                    quote=entry_context.get("entry_gate_quote", price),
+                    is_manual=True,
+                )
             # Manual orders skip strategy-signal validation but still require
             # the hard MA entry gates and the normal account safety checks.
             entry_decision = {}
@@ -1196,12 +1207,22 @@ class PaperAccount:
             final_frame = entry_context.get("entry_gate_frame")
             frame_15m = entry_context.get("frame_15m")
             from core.services.mtf_kc_state_machine import evaluate_mtf_entry
+            allow_colorless_reverse = (
+                entry_context.get("entry_method_allow_same_bar_after_close") is True
+                and entry_context.get("mtf_cycle_reverse_after_close") is True
+                and entry_context.get("mtf_colorless_reverse") is True
+            )
             final_evaluation = evaluate_mtf_entry(
                 final_frame,
                 frame_15m,
                 quote=latest_quote,
                 side=side,
-                pending_candidate=entry_context.get("mtf_pending_candidate"),
+                pending_candidate=(
+                    None
+                    if allow_colorless_reverse
+                    else entry_context.get("mtf_pending_candidate")
+                ),
+                allow_colorless_reverse=allow_colorless_reverse,
             )
             if not final_evaluation.get("allowed"):
                 self.log(
@@ -1227,14 +1248,18 @@ class PaperAccount:
         if _guard_frame is None:
             _guard_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
 
-        mtf_breakout_entry = (
+        mtf_colorless_entry = (
             entry_context.get("entry_method_authority") == "MTF_KC_STATE_MACHINE"
             and isinstance(entry_context.get("mtf_final_evaluation"), dict)
             and entry_context["mtf_final_evaluation"].get("reason")
-            == "MTF_KC_BREAKOUT_ENTRY"
+            in {
+                "MTF_KC_BREAKOUT_ENTRY",
+                "MTF_KC_MIDLINE_HOLD_ENTRY",
+                "MTF_KC_IMMEDIATE_REVERSE_ENTRY",
+            }
         )
         if (
-            not mtf_breakout_entry
+            not mtf_colorless_entry
             and _guard_frame is not None
             and isinstance(_guard_frame, pd.DataFrame)
             and len(_guard_frame) > 0

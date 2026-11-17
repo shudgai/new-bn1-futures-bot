@@ -78,12 +78,14 @@ def evaluate_market_blacklist(
         if positions.size == 0 or positions[0] < 0:
             return True, empty["reason"], empty
         end = int(positions[0]) + 1
-        bars = closed.iloc[:end]
+        bars = closed.iloc[:end].copy()
+        bars.attrs = {}
         required_bars = max(LOOKBACK + 1, MIDLINE_LOOKBACK + 1)
         if len(bars) < required_bars:
             return True, "VETO_CONSOLIDATION_INSUFFICIENT_CLOSED_HISTORY", {"closed_bars": len(bars)}
         current = bars.iloc[-1]
-        recent = bars.tail(LOOKBACK)
+        recent = bars.tail(LOOKBACK).copy()
+        recent.attrs = {}
         needed = ("open", "high", "low", "close", "ma5", "ma15", "atr",
                   "kc_upper", "kc_middle", "kc_lower", "volume")
         if not all(key in bars.columns for key in needed):
@@ -171,7 +173,7 @@ def evaluate_market_blacklist(
         checks["ma3_ma15_recent_crossings"] = recent_crossings_ma3
         checks["ma5_ma15_crossings"] = total_crossings
         checks["ma5_ma15_recent_crossings"] = recent_crossings
-        if strict_consolidation and (
+        if strict_consolidation and not confirmed_flat_kc_structure and (
             recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4
         ):
             return True, "VETO_MA5_MA15_CHOP", {
@@ -188,7 +190,10 @@ def evaluate_market_blacklist(
         ) or (
             not meme_policy and not is_breakout and (recent_crossings >= MAX_MA_CROSSINGS or total_crossings >= 4)
         ):
-            return True, "VETO_MA5_MA15_CHOP", checks
+            return True, "VETO_MA5_MA15_CHOP", {
+                **checks,
+                **({"strict_consolidation": True} if strict_consolidation else {}),
+            }
 
         # Sudden KC expansion (current width versus prior mean, excluding current bar).
         prior_width = width.iloc[:-1].tail(LOOKBACK)
@@ -223,7 +228,8 @@ def evaluate_market_blacklist(
             low_trend_range and (meme_policy or meme_low_trend_override)
         )
         if low_trend_range and (
-            strict_consolidation or not (meme_policy or meme_low_trend_override)
+            (strict_consolidation and not confirmed_flat_kc_structure)
+            or not (meme_policy or meme_low_trend_override)
         ):
             checks["strict_consolidation"] = strict_consolidation
             return True, "VETO_DONCHIAN_RANGE_LOW_TREND", checks
@@ -241,7 +247,10 @@ def evaluate_market_blacklist(
         )
         if vol_ratio < MIN_VOLUME_RATIO and not meme_structural_trigger:
             return True, "VETO_VOLUME_CONTRACTION", checks
-        if wick_total > MAX_WICK_BODY_RATIO * body:
+        if wick_total > MAX_WICK_BODY_RATIO * body and (
+            not (confirmed_flat_kc_structure and meme_policy)
+            or (wick_total + body) >= 0.8 * float(atr.iloc[-1])
+        ):
             return True, "VETO_LONG_WICK_DOJI", checks
 
         # Rule G: Caller-supplied HTF KC slope or completed KC direction.

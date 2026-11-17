@@ -977,7 +977,8 @@ class ExecutionManager:
             except (KeyError, TypeError, ValueError, OverflowError):
                 current_bar_id = None
         if managed_position:
-            metadata["mtf_kc_state"] = htf["state"]
+            metadata["mtf_kc_state"] = htf.get("closed_trend", "FLAT")
+            metadata["mtf_kc_live_state"] = htf["state"]
             metadata["mtf_normalized_slope"] = htf["normalized_slope"]
             metadata["mtf_kc_lower_15m"] = htf["kc_lower"]
             metadata["mtf_kc_upper_15m"] = htf["kc_upper"]
@@ -996,12 +997,19 @@ class ExecutionManager:
                     "success": False,
                 }
             if not exit_reason:
-                closed_direction = htf.get("closed_midline_direction")
+                from core.services.mtf_kc_state_machine import (
+                    _detect_ltf_outer_band_turn_state,
+                    _valid_live_frame,
+                )
+                ltf_pair = _valid_live_frame(frame_1m, 60_000.0)
+                ltf_turn = (
+                    _detect_ltf_outer_band_turn_state(ltf_pair[0])
+                    if ltf_pair is not None
+                    else None
+                )
+                closed_direction = ltf_turn or htf.get("closed_trend")
                 reversed_direction = "DOWNTREND" if side == "LONG" else "UPTREND"
-                if (
-                    htf["state"] == reversed_direction
-                    and closed_direction == reversed_direction
-                ):
+                if closed_direction == reversed_direction:
                     exit_reason = (
                         f"{MTF_KC_EXIT_REASON_PREFIX}"
                         f"{reversed_direction}_REVERSAL_EXIT"
@@ -1027,10 +1035,7 @@ class ExecutionManager:
                             "reason": "BLOCKED_MTF_EXIT_CONFIRMATION_PERSISTENCE",
                             "success": False,
                         }
-                    if (
-                        htf["state"] == ("UPTREND" if side == "LONG" else "DOWNTREND")
-                        and closed_direction == ("UPTREND" if side == "LONG" else "DOWNTREND")
-                    ):
+                    if closed_direction == ("UPTREND" if side == "LONG" else "DOWNTREND"):
                         hold_reason = "MTF_KC_CYCLE_CONTINUES"
                     else:
                         hold_reason = "MTF_KC_REVERSAL_NOT_CONFIRMED"
@@ -1168,10 +1173,25 @@ class ExecutionManager:
                     "success": True,
                 }
 
-        preferred_side = (
-            "LONG" if htf["state"] == "UPTREND"
-            else "SHORT" if htf["state"] == "DOWNTREND"
+        from core.services.mtf_kc_state_machine import (
+            _detect_ltf_outer_band_turn_state,
+            _valid_live_frame,
+        )
+        ltf_entry_pair = _valid_live_frame(frame_1m, 60_000.0)
+        ltf_entry_turn = (
+            _detect_ltf_outer_band_turn_state(ltf_entry_pair[0])
+            if ltf_entry_pair is not None
             else None
+        )
+        confirmed_trend = ltf_entry_turn or htf.get("closed_trend")
+        preferred_side = (
+            "LONG" if confirmed_trend == "UPTREND"
+            else "SHORT" if confirmed_trend == "DOWNTREND"
+            else (
+                "LONG" if htf.get("state") == "UPTREND"
+                else "SHORT" if htf.get("state") == "DOWNTREND"
+                else None
+            )
         )
         account_entry_state = getattr(account, "entry_filter_last", None)
         if not isinstance(account_entry_state, dict):
@@ -1266,7 +1286,8 @@ class ExecutionManager:
                         "success": False,
                     }
             elif pending_candidate is not None and (
-                htf["state"] == "FLAT" or current_bar_id is not None
+                confirmed_trend not in ("UPTREND", "DOWNTREND")
+                or current_bar_id is not None
             ):
                 try:
                     source_bar_id = int(float(pending_candidate["source_bar_id"]))
@@ -1277,7 +1298,7 @@ class ExecutionManager:
                         else 0
                     )
                 if (
-                    htf["state"] == "FLAT"
+                    confirmed_trend not in ("UPTREND", "DOWNTREND")
                     or current_bar_id is not None
                     and current_bar_id > source_bar_id + 60_000
                 ):
@@ -1431,7 +1452,8 @@ class ExecutionManager:
             "mtf_ltf_atr": entry["ltf_atr"],
             "mtf_kc_lower_15m": htf["kc_lower"],
             "mtf_kc_upper_15m": htf["kc_upper"],
-            "mtf_kc_state": htf["state"],
+            "mtf_kc_state": confirmed_trend,
+            "mtf_kc_live_state": htf["state"],
             "mtf_normalized_slope": htf["normalized_slope"],
             "mtf_pending_candidate": entry.get("deferred_candidate"),
             "source": "UNIFIED_PIPELINE|MTF_KC_STATE_MACHINE",
@@ -1568,6 +1590,11 @@ class ExecutionManager:
 
         curr_quote = float(quote if quote is not None else market_data.current_price)
         raw_df = getattr(market_data, "raw_df", None)
+        if isinstance(frame_15m, pd.DataFrame):
+            macro_frames = getattr(account, "_macro_trend_frame_15m", None)
+            if not isinstance(macro_frames, dict):
+                macro_frames = account._macro_trend_frame_15m = {}
+            macro_frames[symbol] = frame_15m
         mtf_result = await cls._process_mtf_kc_state_machine(
             symbol=symbol,
             account=account,
@@ -6673,6 +6700,55 @@ class ExecutionManager:
                 logger.warning(f"⏳ [EXECUTION_BLOCKED_DUPLICATE_EXIT] {symbol} 已有在途平倉委託 (exit_in_progress/closing_lock)，阻斷重複平倉！")
                 return False
 
+            reason_upper = str(reason or "").upper()
+            manual_exit = bool((meta or {}).get("is_manual")) or "MANUAL" in reason_upper
+            emergency_exit = any(token in reason_upper for token in (
+                "OPPOSITE_KC_BAND_BREACH", "EMERGENCY", "HARD_STOP",
+                "CIRCUIT_BREAKER", "WATERFALL", "CATASTROPHIC_DUMP",
+                "CATASTROPHIC_PUMP", "LIQUIDATION", "閃崩", "瀑布",
+                "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM",
+                "TWO_CLOSED_ADVERSE_ABNORMAL",
+            ))
+            profit_protection_exit = any(token in reason_upper for token in (
+                "PROFIT_LOCK", "TRAILING_LOCK", "RATCHET", "BREAKEVEN",
+            ))
+            position_side = str((pos_obj or {}).get("side") or "").upper()
+            if (
+                position_side in ("LONG", "SHORT")
+                and not manual_exit
+                and not emergency_exit
+                and not profit_protection_exit
+            ):
+                from core.services.mtf_kc_state_machine import (
+                    _detect_ltf_outer_band_turn_state,
+                    _valid_live_frame,
+                    evaluate_closed_15m_kc_trend,
+                )
+
+                frame_15m = (meta or {}).get("frame_15m")
+                if not isinstance(frame_15m, pd.DataFrame):
+                    frames = getattr(account, "_macro_trend_frame_15m", {})
+                    frame_15m = frames.get(symbol) if isinstance(frames, dict) else None
+                trend = evaluate_closed_15m_kc_trend(frame_15m)
+                expected_exit_trend = (
+                    "DOWNTREND" if position_side == "LONG" else "UPTREND"
+                )
+                exit_trend_dir = trend.get("direction")
+                if isinstance((meta or {}).get("raw_df"), pd.DataFrame):
+                    ltf_exit_data = _valid_live_frame((meta or {}).get("raw_df"), 60_000.0)
+                    if ltf_exit_data is not None:
+                        ltf_exit_turn = _detect_ltf_outer_band_turn_state(ltf_exit_data[0])
+                        if ltf_exit_turn == expected_exit_trend:
+                            exit_trend_dir = expected_exit_trend
+                if not trend.get("valid") or exit_trend_dir != expected_exit_trend:
+                    logger.info(
+                        "POSITION_EXIT_VETO_MTF_TREND symbol=%s side=%s "
+                        "reason=%s trend=%s trend_reason=%s",
+                        symbol, position_side, reason, trend.get("direction"),
+                        trend.get("reason"),
+                    )
+                    return False
+
             if hasattr(account, "close_position"):
                 closed_side = None
                 positions_dict = getattr(account, "positions", {})
@@ -6696,12 +6772,7 @@ class ExecutionManager:
                     ):
                         logger.info("[ULTIMATE_EXIT_VETO] symbol=%s reason=%s request=DISCARDED", symbol, reason)
                         return False
-                is_emergency = any(token in str(reason).upper() for token in (
-                    "OPPOSITE_KC_BAND_BREACH", "EMERGENCY", "HARD_STOP", "CIRCUIT_BREAKER",
-                    "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP", "閃崩", "瀑布"
-                    , "EXIT_LONG_AT_PEAK", "EXIT_SHORT_AT_BOTTOM", "TWO_CLOSED_ADVERSE_ABNORMAL"
-                ))
-                is_limit = False if is_emergency else bool((meta or {}).get("is_limit", False))
+                is_limit = False if emergency_exit else bool((meta or {}).get("is_limit", False))
                 success = await account.close_position(
                     symbol=symbol,
                     current_price=price,
@@ -6793,6 +6864,68 @@ class ExecutionManager:
                 cls._last_open_error[symbol] = f"BLOCKED_{pos_state_check or 'MANUAL_REVIEW'}"
                 logger.critical(f"🛑 [EXECUTION_BLOCKED_{pos_state_check or 'MANUAL_REVIEW'}] {symbol} 處於人工審核/對帳鎖定狀態，嚴禁自動開倉副作用！")
                 return False
+            manual_entry = bool((meta or {}).get("manual_entry")) or bool(
+                (meta or {}).get("is_manual")
+            ) or "MANUAL" in str(reason or "").upper()
+            wait_authority = (
+                str((meta or {}).get("entry_authority") or "").upper() == "WAIT"
+            )
+            if not manual_entry and not wait_authority:
+                from core.services.mtf_kc_state_machine import (
+                    _detect_ltf_outer_band_turn_state,
+                    _has_ltf_outer_band_valley_or_peak_turn,
+                    _valid_live_frame,
+                    evaluate_closed_15m_kc_trend,
+                    evaluate_htf_kc_state,
+                )
+
+                frame_15m = (meta or {}).get("frame_15m")
+                if not isinstance(frame_15m, pd.DataFrame):
+                    frames = getattr(account, "_macro_trend_frame_15m", {})
+                    frame_15m = frames.get(symbol) if isinstance(frames, dict) else None
+                trend = evaluate_closed_15m_kc_trend(frame_15m)
+                normalized_side = str(side).upper()
+                expected_entry_trend = (
+                    "UPTREND" if normalized_side == "LONG" else "DOWNTREND"
+                )
+                trend_direction = trend.get("direction")
+                if (
+                    trend.get("valid")
+                    and isinstance((meta or {}).get("raw_df"), pd.DataFrame)
+                ):
+                    ltf_data = _valid_live_frame((meta or {}).get("raw_df"), 60_000.0)
+                    ltf_turn = (
+                        _detect_ltf_outer_band_turn_state(ltf_data[0])
+                        if ltf_data is not None
+                        else None
+                    )
+                    if ltf_turn == expected_entry_trend:
+                        trend_direction = expected_entry_trend
+                    elif trend_direction == "FLAT":
+                        htf_live = evaluate_htf_kc_state(frame_15m)
+                        if (
+                            htf_live.get("valid")
+                            and htf_live.get("state") == expected_entry_trend
+                            and ltf_data is not None
+                            and _has_ltf_outer_band_valley_or_peak_turn(
+                                ltf_data[0], expected_entry_trend,
+                            )
+                        ):
+                            trend_direction = expected_entry_trend
+                if (
+                    normalized_side not in ("LONG", "SHORT")
+                    or not trend.get("valid")
+                    or trend_direction != expected_entry_trend
+                ):
+                    cls._last_open_error[symbol] = (
+                        f"BLOCKED_15M_KC_TREND_{trend_direction or 'UNKNOWN'}"
+                    )
+                    logger.warning(
+                        "ENTRY_MTF_TREND_VETO symbol=%s side=%s trend=%s "
+                        "trend_reason=%s",
+                        symbol, side, trend_direction, trend.get("reason"),
+                    )
+                    return False
             entry_method_authority = (meta or {}).get("entry_method_authority")
             if entry_method_authority:
                 from core.services.entry_methods import revalidate_entry_method
@@ -6925,7 +7058,11 @@ class ExecutionManager:
                         frame.attrs["macro_trend"] = str(macro_label).upper()
                     if entry_method_authority:
                         frame.attrs["entry_method_context"] = {
-                            key: (meta or {}).get(key)
+                            key: (
+                                _wrap_frame_ref((meta or {}).get(key))
+                                if key == "frame_15m"
+                                else (meta or {}).get(key)
+                            )
                             for key in (
                                 "entry_method_authority",
                                 "entry_method_signal",
