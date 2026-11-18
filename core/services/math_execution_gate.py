@@ -552,6 +552,25 @@ def validate_exit_math(
     if meme_strategy_disaster_disabled(str(position.get("symbol") or ""), close_reason):
         return False, "BLOCKED_MEME_STRATEGY_DISASTER_DISABLED", {"exit_type": "BLOCKED"}
     if any(token in norm_reason for token in (
+        "HARD_STOP_LOSS",
+        "EXIT_INITIAL_ATR_HARD_STOP",
+        "CIRCUIT_BREAKER_HARD_SL",
+        "MAX_MARGIN_LOSS",
+        "MAX_POSITION_MARGIN_LOSS",
+    )) and not any(token in norm_reason for token in (
+        "ACCOUNT_HARD_STOP",
+        "ACCOUNT_CIRCUIT_BREAKER",
+        "DATA_OUTAGE",
+        "LIQUIDATION",
+        "PRIORITY_EXIT_",
+    )):
+        from core.services.exits.hard_stop_service import price_atr_stop_disabled
+
+        if price_atr_stop_disabled(position, metadata):
+            return False, "BLOCKED_EXIT_POSITION_PRICE_ATR_STOP_DISABLED", {
+                "exit_type": "POSITION_PRICE_ATR_STOP_DISABLED",
+            }
+    if any(token in norm_reason for token in (
         "WATERFALL", "CATASTROPHIC_DUMP", "CATASTROPHIC_PUMP",
         "EMERGENCY_SURGE", "閃崩", "瀑布",
     )):

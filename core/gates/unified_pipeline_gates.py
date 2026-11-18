@@ -3428,11 +3428,8 @@ class UnifiedExitGate:
         peak_roe = max(peak_pct * self.leverage, unrealized_roe)
 
         # ─────────────────────────────────────────────────────────────
-        # 最高優先級：硬止損與階梯動態鎖利 (不接受任何「健康回踩」否決)
+        # 最高優先級：階梯動態鎖利 (不接受任何「健康回踩」否決)
         # ─────────────────────────────────────────────────────────────
-        # 止損線 (例如 ROE <= -15%)
-        if unrealized_roe <= -0.15:
-            return True, "HARD_STOP_LOSS", f"觸及硬止損線 (當前 ROE: {unrealized_roe*100:.2f}%)"
 
         # 統一淨 ROE 鎖利 (達 10% 啟動，固定回吐 3.0 個百分點)
         if peak_roe >= 0.10:

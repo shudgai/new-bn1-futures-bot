@@ -75,7 +75,7 @@ def test_channel_peak_reversal_pullback_does_not_close(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_net_roe_ratchet_waits_for_confirmed_true_pivot(side):
+def test_net_roe_ratchet_is_independent_of_true_pivot(side):
     from core.gates.holding_protection_gate import HoldingProtectionExitGate
 
     held = position(side)
@@ -109,8 +109,8 @@ def test_net_roe_ratchet_waits_for_confirmed_true_pivot(side):
         held, pd.DataFrame(rows), quote,
         "NET_ROE_THREE_TIER_GIVEBACK_TIER_5",
     )
-    assert allowed is False
-    assert reason == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    assert allowed is True
+    assert reason == "EXIT_BY_RATCHET_PROFIT_LOCK"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

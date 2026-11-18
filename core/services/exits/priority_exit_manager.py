@@ -482,6 +482,10 @@ def _valid_authorization(
         str(auth.get("reason") or "") != str(reason)
         or str(auth.get("side") or "").upper()
         != str(position.get("side") or "").upper()
+        or (
+            auth.get("position_uid") is not None
+            and str(auth.get("position_uid")) != str(position.get("position_uid") or "")
+        )
         or not all(math.isfinite(value) for value in (
             issued_at, expected_quote, actual_quote, expected_open, actual_open,
         ))
@@ -529,6 +533,7 @@ def evaluate_priority_exit(
     quote: float,
     metadata: dict[str, Any],
     *,
+    profit_protection: Mapping[str, Any] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate the P0-P3 emergency and confirmed KC exit policy."""
@@ -725,6 +730,33 @@ def evaluate_priority_exit(
             state["htf_state"] = htf_state
             state_changed = True
 
+    if isinstance(profit_protection, Mapping):
+        protection_status = str(profit_protection.get("status") or "")
+        if protection_status == "BLOCKED":
+            logger.error(
+                "POSITION_PROFIT_PROTECTION_BLOCKED symbol=%s side=%s reason=%s",
+                position.get("symbol"),
+                side,
+                profit_protection.get("reason") or "BLOCKED_POSITION_PROTECTION_STATE",
+            )
+        protection_reason = profit_protection.get("reason")
+        if protection_status == "READY" and protection_reason:
+            evidence = profit_protection.get("evidence")
+            if not isinstance(evidence, Mapping):
+                return {
+                    "priority": None,
+                    "reason": None,
+                    "state_changed": state_changed,
+                    "hold_reason": "BLOCKED_POSITION_PROTECTION_EVIDENCE_INVALID",
+                    "evidence": {},
+                }
+            return {
+                "priority": 1,
+                "reason": str(protection_reason),
+                "state_changed": state_changed,
+                "evidence": dict(evidence),
+            }
+
     midline_exit_direction = _ltf_midline_exit_direction(
         side, frame_1m, live_pair,
     )
@@ -883,8 +915,41 @@ async def evaluate_and_execute_exit(
         metadata = {}
         metadata_map[symbol] = metadata
 
+    from core.services.exits.position_profit_protection import (
+        evaluate_and_persist_position_protection,
+    )
+
+    profit_protection = evaluate_and_persist_position_protection(
+        symbol, position, frame_1m, quote, now=current_time,
+    )
+    if (
+        profit_protection.get("status") == "READY"
+        and profit_protection.get("position_uid_created") is True
+    ):
+        position_uid = str(profit_protection.get("position_uid") or "")
+        if not isinstance(position, dict) or not position_uid:
+            profit_protection = {
+                "status": "BLOCKED",
+                "reason": "POSITION_PROTECTION_UID_PERSIST_UNAVAILABLE",
+            }
+        else:
+            position["position_uid"] = position_uid
+            if not _persist_account_state(account, symbol, "POSITION_EXIT_UID"):
+                if position.get("position_uid") == position_uid:
+                    position.pop("position_uid", None)
+                profit_protection = {
+                    "status": "BLOCKED",
+                    "reason": "POSITION_PROTECTION_UID_PERSIST_FAILED",
+                }
+
     decision = evaluate_priority_exit(
-        position, frame_1m, frame_15m, quote, metadata, now=current_time,
+        position,
+        frame_1m,
+        frame_15m,
+        quote,
+        metadata,
+        profit_protection=profit_protection,
+        now=current_time,
     )
     if decision.get("priority") == 1 and metadata.pop(
         "mtf_pending_closed_bar_exit", None,
@@ -1021,6 +1086,7 @@ async def evaluate_and_execute_exit(
     metadata[_AUTHORIZATION_KEY] = {
         "reason": str(reason),
         "side": str(position.get("side") or "").upper(),
+        "position_uid": position.get("position_uid"),
         "quote": float(quote),
         "position_open_timestamp": open_timestamp,
         "issued_at": current_time,
@@ -1035,7 +1101,7 @@ async def evaluate_and_execute_exit(
         )
     else:
         priority_label = {
-            1: "15m KC 趨勢反轉",
+            1: "獲利保護或 15m KC 趨勢反轉",
             2: "1m KC 中軌轉向與結構破壞",
             3: "ATR 硬止損或 15m 反側外軌破壞",
         }.get(priority, "未分類")

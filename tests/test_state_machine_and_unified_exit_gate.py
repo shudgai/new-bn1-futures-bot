@@ -98,41 +98,43 @@ def test_state_machine_short_chasing_veto():
 
 
 # ==============================================================================
-# 測試 2：UnifiedExitGate 硬止損 (-15% ROE)
+# 測試 2：UnifiedExitGate 不使用一般行情硬止損
 # ==============================================================================
-def test_unified_exit_gate_hard_stop_loss():
+def test_unified_exit_gate_does_not_apply_fixed_roe_hard_stop():
     gate = UnifiedExitGate(leverage=5.0)
     df = _build_test_df(30, start_price=100.0, step=0.1)
     df.loc[df.index[-1], "close"] = 96.0  # -4% 價格跌幅 -> 5x 槓桿 ROE = -20% <= -15%
+    df.loc[df.index[-2], "ma5"] = 95.5
+    df.loc[df.index[-1], "ma5"] = 96.0
+    df.loc[df.index[-1], "ma15"] = 95.0
 
     pos = {"side": "LONG", "entry_price": 100.0, "peak_price": 100.5}
     should_exit, code, reason = gate.evaluate_exit(pos, df, current_bar_index=30)
-    assert should_exit is True
-    assert code == "HARD_STOP_LOSS"
+    assert code != "HARD_STOP_LOSS"
 
 
 # ==============================================================================
-# 測試 3：UnifiedExitGate 雙階梯鎖利 (15% 鎖 80%, 10% 鎖 70%)
+# 測試 3：UnifiedExitGate 淨 ROE 回撤鎖利
 # ==============================================================================
 def test_unified_exit_gate_profit_lock_tiers():
     gate = UnifiedExitGate(leverage=5.0)
 
-    # Tier 2: 峰值 ROE 20% (>= 15%)，鎖 80% (16%)。當前 ROE 回吐至 14% -> 觸發 PROFIT_LOCK_T2
+    # Peak ROE 20% sets a 17% floor; current ROE 14% reaches the floor.
     df = _build_test_df(30, start_price=100.0)
     df.loc[df.index[-1], "close"] = 102.8  # +2.8% 漲幅 -> 5x ROE = 14%
     pos = {"side": "LONG", "entry_price": 100.0, "peak_price": 104.0}  # peak +4% -> peak ROE 20%
 
     should_exit, code, reason = gate.evaluate_exit(pos, df, current_bar_index=30)
     assert should_exit is True
-    assert code == "PROFIT_LOCK_T2"
+    assert code == "EXIT_BY_RATCHET_PROFIT_LOCK"
 
-    # Tier 1: 峰值 ROE 12% (>= 10%)，鎖 70% (8.4%)。當前 ROE 回吐至 7.5% -> 觸發 PROFIT_LOCK_T1
+    # Peak ROE 12% sets a 9% floor; current ROE 7.5% reaches the floor.
     df.loc[df.index[-1], "close"] = 101.5  # +1.5% -> 5x ROE = 7.5%
     pos = {"side": "LONG", "entry_price": 100.0, "peak_price": 102.4}  # peak +2.4% -> peak ROE 12%
 
     should_exit, code, reason = gate.evaluate_exit(pos, df, current_bar_index=30)
     assert should_exit is True
-    assert code == "PROFIT_LOCK_T1"
+    assert code == "EXIT_BY_RATCHET_PROFIT_LOCK"
 
 
 # ==============================================================================

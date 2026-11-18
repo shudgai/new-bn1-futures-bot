@@ -160,7 +160,7 @@ def test_entry_chop_vetoes_can_never_authorize_a_position_exit(reason):
     "side,close",
     [("LONG", 100.0), ("SHORT", 100.0)],
 )
-def test_choppy_position_profit_lock_waits_for_confirmed_true_pivot(
+def test_choppy_position_profit_lock_is_independent_of_true_pivot(
     monkeypatch, side, close,
 ):
     from core.gates.pipeline import pipeline
@@ -182,8 +182,8 @@ def test_choppy_position_profit_lock_waits_for_confirmed_true_pivot(
         channel_swing=True,
     )
 
-    assert allowed is False
-    assert reason == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    assert allowed is True
+    assert reason == "EXIT_BY_RATCHET_PROFIT_LOCK"
 
 
 @pytest.mark.parametrize(

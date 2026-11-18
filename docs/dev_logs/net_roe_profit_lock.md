@@ -1,9 +1,15 @@
 # UI Net ROE staged profit protection
 
-The latest user authorization sets the first activation at 5%, keeps each stage four percentage points apart, and sets the peak giveback to 1.5 percentage points. The basis is the chart's displayed Net ROE%: estimated unrealized PnL minus entry/exit fees and estimated closing slippage, divided by the position margin and multiplied by 100. This is margin ROE (including leverage), not unleveraged price return.
+## Current position protection update
 
-Track the highest observed Net ROE% from live quotes only. At a peak of +5%, arm a +3.5% floor; at +9%, floor +7.5%; at +13%, floor +11.5%; and at each later four-point stage, move the floor up by four points (for example, +17% peak gives a +15.5% floor). Close at or below the active floor. Peak, floor, arming, and close-retry state are persisted under the position identity. Missing/nonpositive margin cannot arm the lock. No historical OHLC peak is reconstructed.
+The current authorization supersedes the earlier 5% staged-lock proposal. The active lock starts at 8% net ROE, uses 5-point tier intervals, and continuously raises a monotonic stop to peak net ROE minus 3 percentage points. Net PnL and ROE use the chart's verified fee/slippage estimate, funding cost, and the position's initial margin.
 
-Existing hard and separately authorized emergency exits remain active. The existing KC outer-band and shadow-support/resistance holds still veto soft exits, including giveback, while their hold conditions apply.
+Two consecutive adverse closed 1-minute candles may independently exit a profitable position when the second close progresses against the position and breaks MA5 or the prior short-term structure. A single adverse candle qualifies only at 0.5 ATR or larger and a confirmed structure break. Unclosed candles do not count. The trigger is latched in SQLite state keyed by a deterministic position UID; updates use a revision check and all exits still go through the existing priority close authority.
 
-Focused verification covers all four tier boundaries, long/short symmetry, fee/slippage matching the UI formula, stale quotes, missing margin, persisted arming, pending retry, and the Channel Swing realtime close whitelist.
+Ordinary per-position percentage, ATR, and ROE hard stops are disabled. Account-level emergencies, verified waterfall exits, liquidation/data-integrity protections, and the existing Phase 3C close path remain separate.
+
+Verification: the final focused protection, priority-exit, hard-stop, Channel Swing, and pivot run passed 158 tests. A separate legacy close-authority module has two unrelated failures because its `DataPipeline` fixture returns `None`; that module was not changed.
+
+## Earlier 5% staged-lock proposal
+
+The prior proposal used a 5% start, four-point stages, and a 1.5-point drawdown. It was superseded by the current 8% / 5-point / 3-point policy above.
