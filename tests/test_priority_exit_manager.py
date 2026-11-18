@@ -7,10 +7,6 @@ import pytest
 
 from core.services.exits.priority_exit_manager import (
     CIRCUIT_BREAKER_COOLDOWN_SEC,
-    FLAT_EXIT_BUFFER_ATR,
-    HARD_SL_ATR_MULT,
-    TRAILING_DIST_ATR,
-    TRAILING_START_ATR,
     _valid_authorization,
     entry_circuit_breaker_cooldown_problem,
     evaluate_and_execute_exit,
@@ -20,7 +16,8 @@ from core.services.exits.priority_exit_manager import (
 
 def _ltf(now, *, current_open=100.0, quote=100.0, previous_open=100.0,
          atr=1.0, closed_close=99.5, closed_mid=100.0, closed_atr=1.0,
-         closed_middles=None):
+         closed_middles=None, live_mid=100.0, closed_lower=99.0,
+         closed_upper=101.0, closed_closes=None, closed_ma15=None):
     now_ms = now * 1000.0
     live_stamp = math.floor(now_ms / 60_000) * 60_000
     if closed_middles is None:
@@ -36,8 +33,17 @@ def _ltf(now, *, current_open=100.0, quote=100.0, previous_open=100.0,
             "open": previous_open,
             "high": max(previous_open, closed_close) + 0.5,
             "low": min(previous_open, closed_close) - 0.5,
-            "close": closed_close if index == 2 else middle,
+            "close": (
+                closed_closes[index]
+                if closed_closes is not None
+                else closed_close if index == 2 else middle
+            ),
             "kc_middle": middle,
+            "kc_lower": closed_lower,
+            "kc_upper": closed_upper,
+            "ma15": (
+                closed_ma15[index] if closed_ma15 is not None else middle
+            ),
             "atr": closed_atr,
         }
         for index, middle in enumerate(closed_middles)
@@ -49,7 +55,10 @@ def _ltf(now, *, current_open=100.0, quote=100.0, previous_open=100.0,
             "high": max(current_open, quote) + 0.1,
             "low": min(current_open, quote) - 0.1,
             "close": quote,
-            "kc_middle": 100.0,
+            "kc_middle": live_mid,
+            "kc_lower": live_mid - 1.0,
+            "kc_upper": live_mid + 1.0,
+            "ma15": live_mid,
             "atr": atr,
         }])
     frame.attrs.update(
@@ -108,13 +117,13 @@ def _position(side="LONG", *, entry=100.0, atr=1.0, opened=1_700_000_000.0):
 @pytest.mark.parametrize(
     ("side", "quote", "expected_trigger"),
     [
-        ("LONG", 98.5, "SINGLE_CANDLE_ATR"),
-        ("SHORT", 101.5, "SINGLE_CANDLE_ATR"),
+        ("LONG", 98.3, "SINGLE_WATERFALL_1_6_ATR_KC_CROSS"),
+        ("SHORT", 101.7, "SINGLE_WATERFALL_1_6_ATR_KC_CROSS"),
         ("LONG", 99.1, "SINGLE_CANDLE_PERCENT"),
         ("SHORT", 100.9, "SINGLE_CANDLE_PERCENT"),
     ],
 )
-def test_priority_zero_requires_a_verified_waterfall_not_percent_spikes(
+def test_priority_zero_closes_immediately_on_any_configured_threshold(
     side, quote, expected_trigger,
 ):
     now = time.time()
@@ -129,21 +138,9 @@ def test_priority_zero_requires_a_verified_waterfall_not_percent_spikes(
         now=now,
     )
 
-    if expected_trigger == "SINGLE_CANDLE_ATR":
-        assert result["priority"] == 0
-        assert result["cooldown"] is True
-        assert result["evidence"]["trigger"] == "SINGLE_WATERFALL_1_5_ATR_KC_CROSS"
-    else:
-        assert result["priority"] is None
-        assert result["hold_reason"] == "WAITING_FOR_SECOND_CONSECUTIVE_ABNORMAL_CANDLE"
-        live_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
-        next_now = (live_bar_ms + 61_000) / 1000.0
-        result = evaluate_priority_exit(
-            position, _ltf(next_now, quote=quote), None, quote, metadata,
-            now=next_now,
-        )
-        assert result["priority"] is None
-        assert result["priority"] is None
+    assert result["priority"] == 0
+    assert result["cooldown"] is True
+    assert result["evidence"]["trigger"] == expected_trigger
 
 
 def test_priority_zero_precedes_higher_timeframe_reversal():
@@ -152,9 +149,9 @@ def test_priority_zero_precedes_higher_timeframe_reversal():
     metadata = {}
     evaluate_priority_exit(
         position,
-        _ltf(now, quote=98.5),
+        _ltf(now, quote=98.3),
         None,
-        98.5,
+        98.3,
         metadata,
         now=now,
     )
@@ -162,9 +159,9 @@ def test_priority_zero_precedes_higher_timeframe_reversal():
     next_now = (live_bar_ms + 61_000) / 1000.0
     result = evaluate_priority_exit(
         position,
-        _ltf(next_now, quote=98.5),
+        _ltf(next_now, quote=98.3),
         _htf(now, slope=-0.1),
-        98.5,
+        98.3,
         metadata,
         now=next_now,
     )
@@ -183,8 +180,8 @@ def test_priority_zero_clears_after_the_next_candle_closes_without_anomaly(
     position = _position(side)
     metadata = {}
     evaluate_priority_exit(
-        position, _ltf(now, quote=98.5 if side == "LONG" else 101.5),
-        None, 98.5 if side == "LONG" else 101.5, metadata, now=now,
+        position, _ltf(now, quote=98.3 if side == "LONG" else 101.7),
+        None, 98.3 if side == "LONG" else 101.7, metadata, now=now,
     )
     first_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
     third_bar_now = (first_bar_ms + 121_000) / 1000.0
@@ -213,20 +210,9 @@ def test_priority_zero_clears_after_the_next_candle_closes_without_anomaly(
         ("SHORT", 0.1, (99.8, 99.9, 100.0)),
     ],
 )
-def test_priority_one_closes_on_confirmed_ltf_and_macro_reversal(
-    side, slope, closed_middles, monkeypatch,
+def test_priority_one_closes_on_htf_reversal_without_ltf_confirmation(
+    side, slope, closed_middles,
 ):
-    from core.services.exits import strict_true_pivot
-
-    pivot_reason = (
-        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
-        if side == "LONG" else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
-    )
-    monkeypatch.setattr(
-        strict_true_pivot,
-        "profitable_true_pivot_exit",
-        lambda *_args, **_kwargs: (pivot_reason, {"exit_policy": "verified"}),
-    )
     now = time.time()
     result = evaluate_priority_exit(
         _position(side),
@@ -238,17 +224,17 @@ def test_priority_one_closes_on_confirmed_ltf_and_macro_reversal(
     )
 
     assert result["priority"] == 1
-    assert result["reason"] == "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY"
+    assert result["reason"] == "PRIORITY_EXIT_P1_HTF_KC_REVERSAL"
 
 
 @pytest.mark.parametrize(
     ("side", "slope", "closed_middles"),
     [
-        ("LONG", -0.1, (99.8, 99.9, 100.0)),
-        ("SHORT", 0.1, (100.2, 100.1, 100.0)),
+        ("LONG", -0.01, (99.8, 99.9, 100.0)),
+        ("SHORT", 0.01, (100.2, 100.1, 100.0)),
     ],
 )
-def test_priority_one_holds_until_ltf_midline_confirms_macro_reversal(
+def test_priority_one_ignores_htf_slopes_inside_flat_threshold(
     side, slope, closed_middles,
 ):
     now = time.time()
@@ -262,47 +248,68 @@ def test_priority_one_holds_until_ltf_midline_confirms_macro_reversal(
     )
 
     assert result["priority"] is None
-    assert result["hold_reason"] == "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
+    assert result["reason"] is None
 
 
-def test_priority_two_hard_stop_remains_active_when_ltf_reversal_is_unconfirmed():
+def test_per_position_atr_hard_stop_does_not_close_without_market_emergency():
     now = time.time()
     result = evaluate_priority_exit(
         _position("LONG", entry=100.0, atr=1.0),
         None,
-        _htf(now, slope=-0.1),
-        98.0,
+        None,
+        97.0,
         {},
         now=now,
     )
 
-    assert result["priority"] == 2
-    assert result["evidence"]["trigger"] == "ENTRY_ATR_HARD_STOP"
+    assert result["priority"] is None
+    assert result["reason"] is None
 
 
-def test_priority_two_applies_entry_atr_stop_and_macro_outer_band():
+@pytest.mark.parametrize(
+    ("side", "first_open", "second_open", "second_close"),
+    [
+        ("LONG", 101.8, 99.9, 98.2),
+        ("SHORT", 98.2, 100.1, 101.8),
+    ],
+)
+def test_priority_zero_requires_two_consecutive_abnormal_candles(
+    side, first_open, second_open, second_close,
+):
     now = time.time()
-    stop_result = evaluate_priority_exit(
-        _position("LONG", entry=100.0, atr=1.0),
+    position = _position(side)
+    metadata = {}
+    first_quote = 100.1 if side == "LONG" else 99.9
+    first_result = evaluate_priority_exit(
+        position,
+        _ltf(now, current_open=first_open, quote=first_quote),
         None,
-        None,
-        100.0 - HARD_SL_ATR_MULT,
-        {},
+        first_quote,
+        metadata,
         now=now,
     )
-    assert stop_result["priority"] == 2
-    assert stop_result["evidence"]["trigger"] == "ENTRY_ATR_HARD_STOP"
+    assert first_result["priority"] is None
+    assert metadata["priority_exit_state"]["abnormal_exit_pending"]
 
-    band_result = evaluate_priority_exit(
-        _position("LONG", entry=100.0, atr=10.0),
+    first_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
+    next_now = (first_bar_ms + 61_000) / 1000.0
+    result = evaluate_priority_exit(
+        position,
+        _ltf(
+            next_now,
+            current_open=second_open,
+            quote=second_close,
+            previous_open=second_open,
+            closed_close=second_close,
+        ),
         None,
-        _htf(now, lower=90.0),
-        89.0,
-        {},
-        now=now,
+        second_close,
+        metadata,
+        now=next_now,
     )
-    assert band_result["priority"] == 2
-    assert band_result["evidence"]["trigger"] == "OPPOSITE_HTF_KC_BAND"
+
+    assert result["priority"] == 0
+    assert result["evidence"]["trigger"] == "CONSECUTIVE_WATERFALL_2_3_ATR_KC_CROSS"
 
 
 def test_priority_three_does_not_close_on_atr_pullback():
@@ -342,7 +349,77 @@ def test_priority_three_does_not_close_on_pullback_when_trend_is_aligned():
     assert result["reason"] is None
 
 
-def test_priority_four_requires_flat_transition_and_closed_ltf_break():
+@pytest.mark.parametrize(
+    ("side", "current_open", "quote", "middles", "closed_close", "outer"),
+    [
+        ("LONG", 99.0, 98.8, (100.3, 100.2, 100.1), 98.9, 99.0),
+        ("SHORT", 101.0, 101.2, (99.7, 99.8, 99.9), 101.1, 101.0),
+    ],
+)
+def test_priority_two_requires_midline_turn_and_closed_outer_band_break(
+    side, current_open, quote, middles, closed_close, outer,
+):
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position(side),
+        _ltf(
+            now,
+            current_open=current_open,
+            quote=quote,
+            closed_middles=middles,
+            closed_close=closed_close,
+            live_mid=100.0,
+            closed_lower=outer if side == "LONG" else 99.0,
+            closed_upper=outer if side == "SHORT" else 101.0,
+        ),
+        None,
+        quote,
+        {},
+        now=now,
+    )
+
+    assert result["priority"] == 2
+    assert result["reason"] == "PRIORITY_EXIT_P2_KC_MIDLINE_REVERSAL"
+    assert result["evidence"]["structure_confirmation"] == (
+        "CLOSED_CLOSE_BEYOND_OPPOSITE_OUTER_BAND"
+    )
+
+
+@pytest.mark.parametrize(
+    ("side", "middles", "closes", "ma15"),
+    [
+        ("LONG", (100.3, 100.2, 100.1), (100.4, 100.0, 99.9), (100.4, 100.3, 100.2)),
+        ("SHORT", (99.7, 99.8, 99.9), (99.6, 100.0, 100.1), (99.6, 99.7, 99.8)),
+    ],
+)
+def test_priority_two_allows_two_close_and_ma15_structure_confirmation(
+    side, middles, closes, ma15,
+):
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position(side),
+        _ltf(
+            now,
+            current_open=100.0,
+            quote=100.1 if side == "LONG" else 99.9,
+            closed_middles=middles,
+            closed_closes=closes,
+            closed_ma15=ma15,
+            live_mid=100.0,
+        ),
+        None,
+        100.1 if side == "LONG" else 99.9,
+        {},
+        now=now,
+    )
+
+    assert result["priority"] == 2
+    assert result["evidence"]["structure_confirmation"] == (
+        "TWO_CLOSES_BEYOND_MIDLINE_WITH_MA15_TURN"
+    )
+
+
+def test_flat_htf_does_not_exit_before_ltf_structure_reversal():
     now = time.time()
     metadata = {}
     evaluate_priority_exit(
@@ -366,34 +443,99 @@ def test_priority_four_requires_flat_transition_and_closed_ltf_break():
         now=now,
     )
     assert result["priority"] is None
-    assert result["hold_reason"] == "VETO_FLAT_EXIT_UNTIL_TRUE_PEAK"
+    assert result["hold_reason"].startswith("LONG_HOLD_")
 
 
-def test_true_pivot_closes_without_mtf_or_flat_condition(monkeypatch):
-    from core.services.exits import strict_true_pivot
+def test_true_pivot_does_not_override_the_kc_exit_policy():
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position("LONG"),
+        _ltf(now, quote=100.0),
+        None,
+        100.0,
+        {},
+        now=now,
+    )
 
-    for side, pivot_reason in (
-        ("LONG", "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"),
-        ("SHORT", "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"),
-    ):
-        monkeypatch.setattr(
-            strict_true_pivot,
-            "profitable_true_pivot_exit",
-            lambda *_args, result=pivot_reason, **_kwargs: (
-                result, {"exit_policy": "verified"},
-            ),
-        )
-        now = time.time()
-        result = evaluate_priority_exit(
-            _position(side),
-            _ltf(now, quote=100.0),
-            None,
-            100.0,
-            {},
-            now=now,
-        )
-        assert result["priority"] == 1
-        assert result["reason"] == "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY"
+    assert result["priority"] is None
+    assert result["reason"] is None
+
+
+@pytest.mark.parametrize(
+    ("side", "closed_middles"),
+    [
+        ("LONG", (100.3, 100.2, 100.1)),
+        ("SHORT", (99.7, 99.8, 99.9)),
+    ],
+)
+def test_consolidation_blocks_kc_exit_after_true_pivot_check(
+    side, closed_middles, monkeypatch,
+):
+    from core.services import market_consolidation_filter
+    from core.services.exits import priority_exit_manager
+
+    monkeypatch.setattr(
+        market_consolidation_filter,
+        "evaluate_market_blacklist",
+        lambda *_args, **_kwargs: (
+            True, "VETO_MA5_MA15_CHOP", {"crossings": 2},
+        ),
+    )
+    monkeypatch.setattr(
+        priority_exit_manager,
+        "_confirmed_true_pivot",
+        lambda *_args, **_kwargs: (False, {}),
+    )
+    monkeypatch.setattr(
+        priority_exit_manager,
+        "_confirmed_kc_midline_reversal",
+        lambda *_args, **_kwargs: {"trigger": "KC_STRUCTURE_CONFIRMED"},
+    )
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position(side),
+        _ltf(now, closed_middles=closed_middles),
+        None,
+        100.0,
+        {},
+        now=now,
+    )
+
+    assert result["priority"] is None
+    assert result["hold_reason"] == f"{side}_HOLD_LTF_CONSOLIDATION"
+    assert result["evidence"]["reason"] == "VETO_MA5_MA15_CHOP"
+
+
+def test_confirmed_true_pivot_remains_exit_authority_during_consolidation(
+    monkeypatch,
+):
+    from core.services import market_consolidation_filter
+    from core.services.exits import priority_exit_manager
+
+    monkeypatch.setattr(
+        market_consolidation_filter,
+        "evaluate_market_blacklist",
+        lambda *_args, **_kwargs: (
+            True, "VETO_MA5_MA15_CHOP", {"crossings": 2},
+        ),
+    )
+    monkeypatch.setattr(
+        priority_exit_manager,
+        "_confirmed_true_pivot",
+        lambda *_args, **_kwargs: (True, {"true_pivot_type": "CONFIRMED"}),
+    )
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position("LONG"),
+        _ltf(now, closed_middles=(100.3, 100.2, 100.1)),
+        None,
+        100.0,
+        {},
+        now=now,
+    )
+
+    assert result["priority"] == 1
+    assert result["reason"] == "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY"
 
 
 @pytest.mark.parametrize(
@@ -477,14 +619,7 @@ def test_p0_execution_persists_cooldown_and_short_lived_close_authority():
         ("SHORT", (99.9, 99.8, 100.0, 100.1)),
     ],
 )
-def test_ma5_reversal_never_closes_without_strict_true_pivot(side, quotes, monkeypatch):
-    from core.services.exits import strict_true_pivot
-
-    monkeypatch.setattr(
-        strict_true_pivot,
-        "profitable_true_pivot_exit",
-        lambda *_args, **_kwargs: None,
-    )
+def test_ma5_reversal_is_ignored_until_kc_structure_exit(side, quotes):
     now = time.time()
     position = _position(side)
     metadata = {}
@@ -507,10 +642,7 @@ def test_ma5_reversal_never_closes_without_strict_true_pivot(side, quotes, monke
         ))
 
     assert all(result["priority"] is None for result in results)
-    assert results[-1]["hold_reason"] == (
-        "VETO_MA5_TURN_UNTIL_TRUE_PEAK"
-        if side == "LONG" else "VETO_MA5_TURN_UNTIL_TRUE_VALLEY"
-    )
+    assert results[-1]["hold_reason"].startswith(f"{side}_HOLD_")
 
 
 def test_ma5_priority_exit_cannot_trigger_immediate_reverse_entry(monkeypatch):

@@ -1410,7 +1410,13 @@ class BinanceTestnetAccount:
                     or ticker_prices.get(symbol.replace('/USDT', ''))
                 )
                 if curr_p is not None:
-                    stopped = await enforce_hard_stop(self, symbol, float(curr_p))
+                    is_channel_swing = entry_mode in (
+                        'WILD_SWING', 'CHANNEL_SWING',
+                    )
+                    stopped = (
+                        False if is_channel_swing
+                        else await enforce_hard_stop(self, symbol, float(curr_p))
+                    )
                     if not stopped:
                         await enforce_atr_protection(self, symbol, float(curr_p))
                 continue

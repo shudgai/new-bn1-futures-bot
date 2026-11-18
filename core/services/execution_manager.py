@@ -935,20 +935,6 @@ class ExecutionManager:
                 cls.close_position,
             )
             if priority_exit is not None:
-                if priority_exit.get("success"):
-                    reversal = await cls._attempt_priority_exit_reversal(
-                        symbol=symbol,
-                        account=account,
-                        engine_or_account=engine_or_account,
-                        frame_1m=frame_1m,
-                        quote=quote,
-                        position=position,
-                        exit_result=priority_exit,
-                    )
-                    priority_exit["reversal"] = reversal
-                    if reversal.get("status") == "REVERSED":
-                        priority_exit["status"] = "EXIT_AND_REVERSE_EXECUTED"
-                        priority_exit["reversed_side"] = reversal["side"]
                 return priority_exit
         managed_position = bool(
             position and is_mtf_managed_position(position, metadata)

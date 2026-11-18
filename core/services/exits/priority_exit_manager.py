@@ -12,11 +12,11 @@ import numpy as np
 import pandas as pd
 
 
-ABNORMAL_SINGLE_ATR_MULT = 1.5
-ABNORMAL_MULTI_ATR_MULT = 2.2
+HTF_SLOPE_THRESHOLD = 0.015
+ABNORMAL_SINGLE_ATR_MULT = 1.6
+ABNORMAL_MULTI_ATR_MULT = 2.3
 ABNORMAL_PCT_THRESHOLD = 0.008
 CIRCUIT_BREAKER_COOLDOWN_SEC = 300
-HARD_SL_ATR_MULT = 2.0
 TRAILING_START_ATR = 1.5
 TRAILING_DIST_ATR = 1.0
 FLAT_EXIT_BUFFER_ATR = 0.3
@@ -25,6 +25,13 @@ _AUTHORIZATION_KEY = "priority_exit_authorization"
 _STATE_KEY = "priority_exit_state"
 _COOLDOWN_KEY = "priority_exit_cooldown_until"
 _AUTHORIZATION_TTL_SEC = 30.0
+_CONSOLIDATION_EXIT_VETOES = frozenset({
+    "VETO_MA5_KC_MIDLINE_CHOP",
+    "VETO_KC_MIDLINE_FLAT",
+    "VETO_FLAT_MA5_OR_KC_MIDLINE",
+    "VETO_MA5_MA15_CHOP",
+    "VETO_DONCHIAN_RANGE_LOW_TREND",
+})
 logger = logging.getLogger(__name__)
 
 
@@ -118,6 +125,57 @@ def _confirmed_true_pivot(
     return True, {"true_pivot_type": expected_reason, **dict(evidence or {})}
 
 
+def _ltf_midline_exit_direction(
+    side: str,
+    frame: Any,
+    live_pair: tuple[pd.Series, pd.Series] | None,
+) -> str | None:
+    if live_pair is None or not isinstance(frame, pd.DataFrame):
+        return None
+    try:
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return None
+        previous, current = closed.iloc[-2], closed.iloc[-1]
+        previous_mid = _number(previous, "kc_middle")
+        current_mid = _number(current, "kc_middle")
+        previous_ms = _timestamp_ms(previous.get("timestamp"))
+        current_ms = _timestamp_ms(current.get("timestamp"))
+        if (
+            previous_mid is None or previous_mid <= 0
+            or current_mid is None or current_mid <= 0
+            or previous_ms is None or current_ms is None
+            or current_ms - previous_ms != 60_000
+        ):
+            return None
+        if current_mid == previous_mid:
+            return "FLAT"
+        aligned = (
+            current_mid > previous_mid
+            if side == "LONG" else current_mid < previous_mid
+        )
+        return "ALIGNED" if aligned else "REVERSED"
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def _ltf_consolidation_evidence(
+    side: str, frame: Any, live_pair: tuple[pd.Series, pd.Series] | None,
+) -> dict[str, Any] | None:
+    if live_pair is None or not isinstance(frame, pd.DataFrame):
+        return None
+    from core.services.market_consolidation_filter import evaluate_market_blacklist
+
+    blocked, reason, evidence = evaluate_market_blacklist(
+        frame, i=-2, side=side, strict_consolidation=True,
+    )
+    if blocked and reason in _CONSOLIDATION_EXIT_VETOES:
+        return {"trigger": "LTF_CONSOLIDATION", "reason": reason, **evidence}
+    return None
+
+
 def _abnormal_adverse_candle(
     side: str,
     candle: Mapping[str, Any] | pd.Series,
@@ -155,8 +213,93 @@ def _abnormal_adverse_candle(
     }
 
 
+def _confirmed_kc_midline_reversal(
+    side: str, frame: Any, live_pair: tuple[pd.Series, pd.Series] | None,
+) -> dict[str, Any] | None:
+    if live_pair is None or not isinstance(frame, pd.DataFrame) or len(frame) < 3:
+        return None
+    try:
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return None
+        prior, previous, current = frame.iloc[-3], frame.iloc[-2], frame.iloc[-1]
+        middle_values = tuple(
+            _number(row, "kc_middle") for row in (prior, previous, current)
+        )
+        if any(value is None for value in middle_values):
+            return None
+        is_long = side == "LONG"
+        midline_turned = (
+            middle_values[2] < middle_values[1] < middle_values[0]
+            if is_long
+            else middle_values[2] > middle_values[1] > middle_values[0]
+        )
+        if not midline_turned:
+            return None
+
+        last_closed = closed.iloc[-1]
+        last_close = _number(last_closed, "close")
+        outer_band = _number(
+            last_closed, "kc_lower" if is_long else "kc_upper",
+        )
+        outer_break = (
+            last_close is not None and outer_band is not None
+            and (last_close < outer_band if is_long else last_close > outer_band)
+        )
+
+        previous_closed = closed.iloc[-2]
+        closes = (
+            _number(previous_closed, "close"),
+            _number(last_closed, "close"),
+        )
+        closed_middles = (
+            _number(previous_closed, "kc_middle"),
+            _number(last_closed, "kc_middle"),
+        )
+        ma15_values = (
+            _number(previous_closed, "ma15"),
+            _number(last_closed, "ma15"),
+        )
+        two_closes_beyond_midline = (
+            all(value is not None for value in (*closes, *closed_middles))
+            and (
+                closes[0] < closed_middles[0]
+                and closes[1] < closed_middles[1]
+                if is_long
+                else closes[0] > closed_middles[0]
+                and closes[1] > closed_middles[1]
+            )
+        )
+        ma15_turned = (
+            all(value is not None for value in ma15_values)
+            and (
+                ma15_values[1] < ma15_values[0]
+                if is_long else ma15_values[1] > ma15_values[0]
+            )
+        )
+        if not outer_break and not (two_closes_beyond_midline and ma15_turned):
+            return None
+        return {
+            "trigger": "KC_MIDLINE_REVERSAL_AND_STRUCTURE_BREAK",
+            "side": side,
+            "midline_values": middle_values,
+            "closed_close": last_close,
+            "closed_outer_band": outer_band,
+            "structure_confirmation": (
+                "CLOSED_CLOSE_BEYOND_OPPOSITE_OUTER_BAND"
+                if outer_break
+                else "TWO_CLOSES_BEYOND_MIDLINE_WITH_MA15_TURN"
+            ),
+            "ma15_values": ma15_values,
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def _verified_waterfall_cross(side, opening, close, atr, middle):
-    """Only a >=1.5 ATR adverse body crossing KC middle is a waterfall exit."""
+    """Only a configured abnormal body crossing KC middle is a waterfall exit."""
     try:
         opening, close, atr, middle = map(float, (opening, close, atr, middle))
         if not all(math.isfinite(value) and value > 0 for value in (opening, close, atr, middle)):
@@ -172,7 +315,7 @@ def _verified_waterfall_cross(side, opening, close, atr, middle):
 
 
 def _verified_consecutive_waterfall(side, first, second):
-    """Require cumulative >=1.5 ATR adverse movement and a KC-middle cross."""
+    """Require a cumulative abnormal move and a KC-middle cross."""
     try:
         opening = float(first["candle_open"])
         close = float(second["candle_close"])
@@ -186,7 +329,7 @@ def _verified_consecutive_waterfall(side, first, second):
         adverse_body = opening - close if side == "LONG" else close - opening
         if (not all(math.isfinite(value) and value > 0 for value in
                     (opening, close, atr, first_middle, second_middle))
-                or adverse_body < ABNORMAL_SINGLE_ATR_MULT * atr
+                or adverse_body < ABNORMAL_MULTI_ATR_MULT * atr
                 or not crossed):
             return None
         return {
@@ -195,7 +338,7 @@ def _verified_consecutive_waterfall(side, first, second):
             "kc_middle_first": first_middle,
             "kc_middle_second": second_middle,
             "kc_middle_crossed": True,
-            "trigger": "CONSECUTIVE_WATERFALL_1_5_ATR_KC_CROSS",
+            "trigger": "CONSECUTIVE_WATERFALL_2_3_ATR_KC_CROSS",
         }
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
@@ -388,7 +531,7 @@ def evaluate_priority_exit(
     *,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Evaluate P0-P4 in strict priority order and update persistent trackers."""
+    """Evaluate the P0-P3 emergency and confirmed KC exit policy."""
     current_time = time.time() if now is None else float(now)
     try:
         price = float(quote)
@@ -409,52 +552,29 @@ def evaluate_priority_exit(
 
     live_pair = _live_ltf_pair(frame_1m, current_time)
     live, previous = live_pair if live_pair is not None else (None, None)
-    entry = _number(position, "entry_price")
-    entry_atr = (
-        _number(position, "entry_atr")
-        or _number(metadata, "entry_atr")
-        or _number(position, "atr")
-        or _number(metadata, "atr")
-    )
     live_atr = _number(live, "atr") if live is not None else None
     if live_atr is None and previous is not None:
         live_atr = _number(previous, "atr")
 
     htf: dict[str, Any] = {"valid": False}
     if frame_15m is not None:
-        from core.services.mtf_kc_state_machine import (
-            evaluate_htf_kc_state,
-            evaluate_ltf_kc_midline_direction,
-        )
-
+        from core.services.mtf_kc_state_machine import evaluate_htf_kc_state
         htf = evaluate_htf_kc_state(frame_15m)
-        ltf_midline = evaluate_ltf_kc_midline_direction(frame_1m)
-    else:
-        from core.services.mtf_kc_state_machine import evaluate_ltf_kc_midline_direction
-
-        ltf_midline = evaluate_ltf_kc_midline_direction(frame_1m)
     htf_state = str(htf.get("state") or "").upper() if htf.get("valid") else ""
     previous_htf_state = str(state.get("htf_state") or "").upper()
-    ltf_direction = (
-        str(ltf_midline.get("direction") or "").upper()
-        if ltf_midline.get("valid") else "UNKNOWN"
-    )
     trend_hold_reason = None
     abnormal_hold_reason = None
-    pivot_confirmed, pivot_evidence = _confirmed_true_pivot(
-        position, frame_1m, price, metadata,
-    )
 
     if live is not None and live_atr is not None and live_atr > 0:
         interval_ms = 60_000.0
         live_bar_ms = _timestamp_ms(live.get("timestamp"))
         previous_bar_ms = _timestamp_ms(previous.get("timestamp"))
-        pending = state.get("abnormal_exit_pending")
-        if not isinstance(pending, dict):
-            pending = None
         position_open_ms = _timestamp_ms(
             position.get("open_timestamp") or position.get("entry_timestamp")
         )
+        pending = state.get("abnormal_exit_pending")
+        if not isinstance(pending, dict):
+            pending = None
         if pending is not None and (
             pending.get("side") != side
             or _timestamp_ms(pending.get("bar_timestamp")) is None
@@ -463,7 +583,6 @@ def evaluate_priority_exit(
             state.pop("abnormal_exit_pending", None)
             pending = None
             state_changed = True
-
         pending_bar_ms = (
             _timestamp_ms(pending.get("bar_timestamp"))
             if pending is not None else None
@@ -485,6 +604,20 @@ def evaluate_priority_exit(
         current_trigger, current_evidence = _abnormal_adverse_candle(
             side, live, quote=price, atr=live_atr,
         )
+        if current_trigger == "SINGLE_CANDLE_PERCENT":
+            return {
+                "priority": 0,
+                "reason": "PRIORITY_EXIT_P0_CIRCUIT_BREAKER",
+                "cooldown": True,
+                "state_changed": state_changed,
+                "evidence": {
+                    **current_evidence,
+                    "trigger": current_trigger,
+                    "side": side,
+                    "quote": price,
+                    "threshold_pct": ABNORMAL_PCT_THRESHOLD,
+                },
+            }
         current_middle = _number(live, "kc_middle")
         if (current_trigger == "SINGLE_CANDLE_ATR"
                 and current_middle is not None
@@ -498,7 +631,7 @@ def evaluate_priority_exit(
                 "cooldown": True,
                 "state_changed": state_changed,
                 "evidence": {
-                    "trigger": "SINGLE_WATERFALL_1_5_ATR_KC_CROSS",
+                    "trigger": "SINGLE_WATERFALL_1_6_ATR_KC_CROSS",
                     "side": side,
                     "quote": price,
                     "waterfall": current_evidence,
@@ -562,7 +695,7 @@ def evaluate_priority_exit(
                     "state_changed": state_changed,
                     "evidence": {
                         **pending["confirmed_evidence"],
-                        "trigger": "CONSECUTIVE_WATERFALL_1_5_ATR_KC_CROSS",
+                        "trigger": "CONSECUTIVE_WATERFALL_2_3_ATR_KC_CROSS",
                         "side": side,
                         "quote": price,
                     },
@@ -591,70 +724,45 @@ def evaluate_priority_exit(
         if htf_state != previous_htf_state:
             state["htf_state"] = htf_state
             state_changed = True
-        if side == "LONG" and htf_state == "DOWNTREND":
-            if ltf_direction == "DOWNTREND":
-                trend_hold_reason = "VETO_MTF_EXIT_UNTIL_TRUE_PEAK"
-            else:
-                trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
-        if side == "SHORT" and htf_state == "UPTREND":
-            if ltf_direction == "UPTREND":
-                trend_hold_reason = "VETO_MTF_EXIT_UNTIL_TRUE_VALLEY"
-            else:
-                trend_hold_reason = "VETO_MTF_LTF_MIDLINE_DIRECTION_UNCONFIRMED"
 
-    from core.services.exits.hard_stop_service import POSITION_HARD_STOPS_ENABLED
-    if POSITION_HARD_STOPS_ENABLED and entry is not None and entry > 0 and entry_atr is not None and entry_atr > 0:
-        stop = (
-            entry - HARD_SL_ATR_MULT * entry_atr
-            if side == "LONG"
-            else entry + HARD_SL_ATR_MULT * entry_atr
-        )
-        hard_stop_hit = price <= stop if side == "LONG" else price >= stop
-        if hard_stop_hit:
-            return {
-                "priority": 2,
-                "reason": "PRIORITY_EXIT_P2_ENTRY_HARD_STOP",
-                "state_changed": state_changed,
-                "evidence": {
-                    "trigger": "ENTRY_ATR_HARD_STOP",
-                    "side": side,
-                    "quote": price,
-                    "entry_price": entry,
-                    "entry_atr": entry_atr,
-                    "stop_price": stop,
-                },
-            }
-    if htf.get("valid"):
-        band = _number(htf, "kc_lower" if side == "LONG" else "kc_upper")
-        band_hit = (
-            band is not None and (price < band if side == "LONG" else price > band)
-        )
-        if band_hit:
-            return {
-                "priority": 2,
-                "reason": "PRIORITY_EXIT_P2_OPPOSITE_HTF_KC_BAND",
-                "state_changed": state_changed,
-                "evidence": {
-                    "trigger": "OPPOSITE_HTF_KC_BAND",
-                    "side": side,
-                    "quote": price,
-                    "band": band,
-                    "bar_timestamp": htf.get("bar_timestamp"),
-                },
-            }
-
-    ma5_turn_evidence, ma5_state_changed = _update_ma5_turn_state(
-        position, frame_1m, price, state,
+    midline_exit_direction = _ltf_midline_exit_direction(
+        side, frame_1m, live_pair,
     )
-    state_changed = state_changed or ma5_state_changed
-    if ma5_turn_evidence is not None:
-        # MA5 turns are diagnostic only; a swing exits only on a confirmed,
-        # profitable true pivot or a separately verified emergency.
-        trend_hold_reason = (
-            "VETO_MA5_TURN_UNTIL_TRUE_PEAK"
-            if side == "LONG" else "VETO_MA5_TURN_UNTIL_TRUE_VALLEY"
-        )
+    if midline_exit_direction != "REVERSED":
+        if midline_exit_direction == "ALIGNED":
+            hold_reason = (
+                "LONG_HOLD_KC_MIDLINE_STILL_UP_WAIT_TRUE_PEAK"
+                if side == "LONG"
+                else "SHORT_HOLD_KC_MIDLINE_STILL_DOWN_WAIT_TRUE_VALLEY"
+            )
+        elif midline_exit_direction == "FLAT":
+            hold_reason = (
+                "LONG_HOLD_KC_MIDLINE_NOT_TURNED_DOWN"
+                if side == "LONG"
+                else "SHORT_HOLD_KC_MIDLINE_NOT_TURNED_UP"
+            )
+        else:
+            hold_reason = (
+                "LONG_HOLD_KC_MIDLINE_DATA_UNAVAILABLE"
+                if side == "LONG"
+                else "SHORT_HOLD_KC_MIDLINE_DATA_UNAVAILABLE"
+            )
+        return {
+            "priority": None,
+            "reason": None,
+            "state_changed": state_changed,
+            "htf_valid": bool(htf.get("valid")),
+            "htf_reason": htf.get("reason"),
+            "hold_reason": hold_reason,
+            "evidence": {
+                "htf_state": htf_state or None,
+                "ltf_midline_exit_direction": midline_exit_direction,
+            },
+        }
 
+    pivot_confirmed, pivot_evidence = _confirmed_true_pivot(
+        position, frame_1m, price, metadata,
+    )
     if pivot_confirmed:
         return {
             "priority": 1,
@@ -667,34 +775,79 @@ def evaluate_priority_exit(
             },
         }
 
-    if htf.get("valid"):
-        flat_key = "flat_exit_armed_side"
-        if htf_state == "FLAT":
-            required_previous = "UPTREND" if side == "LONG" else "DOWNTREND"
-            if previous_htf_state == required_previous:
-                if state.get(flat_key) != side:
-                    state[flat_key] = side
-                    state_changed = True
-        else:
-            if state.pop(flat_key, None) is not None:
-                state_changed = True
-        if htf_state == "FLAT" and state.get(flat_key) == side:
-            closed = _closed_ltf_last(frame_1m)
-            close = _number(closed, "close")
-            middle = _number(closed, "kc_middle")
-            atr = _number(closed, "atr")
-            if (
-                close is not None and middle is not None
-                and atr is not None and atr > 0
-            ):
-                threshold = middle - FLAT_EXIT_BUFFER_ATR * atr if side == "LONG" else middle + FLAT_EXIT_BUFFER_ATR * atr
-                flat_exit_hit = close < threshold if side == "LONG" else close > threshold
-                if flat_exit_hit:
-                    trend_hold_reason = (
-                        "VETO_FLAT_EXIT_UNTIL_TRUE_PEAK"
-                        if side == "LONG" else "VETO_FLAT_EXIT_UNTIL_TRUE_VALLEY"
-                    )
+    consolidation_evidence = _ltf_consolidation_evidence(
+        side, frame_1m, live_pair,
+    )
+    if consolidation_evidence is not None:
+        return {
+            "priority": None,
+            "reason": None,
+            "state_changed": state_changed,
+            "htf_valid": bool(htf.get("valid")),
+            "htf_reason": htf.get("reason"),
+            "hold_reason": f"{side}_HOLD_LTF_CONSOLIDATION",
+            "evidence": consolidation_evidence,
+        }
 
+    if htf.get("valid"):
+        htf_slope = _number(htf, "normalized_slope")
+        htf_reversed = (
+            htf_slope is not None
+            and (
+                side == "LONG" and htf_slope < -HTF_SLOPE_THRESHOLD
+                or side == "SHORT" and htf_slope > HTF_SLOPE_THRESHOLD
+            )
+        )
+        if htf_reversed:
+            return {
+                "priority": 1,
+                "reason": "PRIORITY_EXIT_P1_HTF_KC_REVERSAL",
+                "state_changed": state_changed,
+                "evidence": {
+                    "trigger": "HTF_KC_MIDLINE_REVERSED",
+                    "side": side,
+                    "normalized_slope": htf_slope,
+                    "slope_threshold": HTF_SLOPE_THRESHOLD,
+                    "htf_state": htf_state,
+                    "bar_timestamp": htf.get("bar_timestamp"),
+                },
+            }
+
+    kc_reversal_evidence = _confirmed_kc_midline_reversal(
+        side, frame_1m, live_pair,
+    )
+    if kc_reversal_evidence is not None:
+        return {
+            "priority": 2,
+            "reason": "PRIORITY_EXIT_P2_KC_MIDLINE_REVERSAL",
+            "state_changed": state_changed,
+            "evidence": {**kc_reversal_evidence, "quote": price},
+        }
+
+    if htf.get("valid"):
+        band = _number(htf, "kc_lower" if side == "LONG" else "kc_upper")
+        band_hit = (
+            band is not None and (price < band if side == "LONG" else price > band)
+        )
+        if band_hit:
+            return {
+                "priority": 3,
+                "reason": "PRIORITY_EXIT_P3_OPPOSITE_HTF_KC_BAND",
+                "state_changed": state_changed,
+                "evidence": {
+                    "trigger": "OPPOSITE_HTF_KC_BAND",
+                    "side": side,
+                    "quote": price,
+                    "band": band,
+                    "bar_timestamp": htf.get("bar_timestamp"),
+                },
+            }
+
+    trend_hold_reason = (
+        "LONG_HOLD_TRUE_PEAK_OR_STRUCTURE_NOT_CONFIRMED"
+        if side == "LONG"
+        else "SHORT_HOLD_TRUE_VALLEY_OR_STRUCTURE_NOT_CONFIRMED"
+    )
     return {
         "priority": None,
         "reason": None,
@@ -741,6 +894,24 @@ async def evaluate_and_execute_exit(
         _persist_account_state(account, symbol, "PRIORITY_EXIT_TRACKER")
     reason = decision.get("reason")
     if not reason:
+        hold_reason = str(decision.get("hold_reason") or "")
+        if hold_reason.endswith("_HOLD_LTF_CONSOLIDATION"):
+            logger.info(
+                "[震盪續抱 | 不執行策略平倉] symbol=%s side=%s evidence=%s",
+                symbol, position.get("side"), dict(decision.get("evidence") or {}),
+            )
+        elif hold_reason.startswith("LONG_HOLD_"):
+            logger.info(
+                "[多單死抱中 | 1m KC 中軌尚未確認轉下或真峰頂未確認] "
+                "symbol=%s quote=%s",
+                symbol, quote,
+            )
+        elif hold_reason.startswith("SHORT_HOLD_"):
+            logger.info(
+                "[空單死抱中 | 1m KC 中軌尚未確認轉上或真谷底未確認] "
+                "symbol=%s quote=%s",
+                symbol, quote,
+            )
         return {
             "status": "HOLD",
             "symbol": symbol,
@@ -766,6 +937,39 @@ async def evaluate_and_execute_exit(
             "reason": "BLOCKED_PRIORITY_EXIT_EVIDENCE_INVALID",
             "priority": decision.get("priority"), "success": False,
         }
+    if reason == "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY":
+        pivot_reason = str(evidence.get("true_pivot_type") or "")
+        pivot_details = {
+            key: value for key, value in evidence.items()
+            if key not in ("true_pivot_type", "side", "quote")
+        }
+        try:
+            from core.services.exits.strict_true_pivot import (
+                PROFIT_PIVOT_REASONS,
+                persist_profit_pivot_exit,
+            )
+
+            if (
+                not isinstance(position, dict)
+                or pivot_reason not in PROFIT_PIVOT_REASONS
+            ):
+                raise ValueError("confirmed pivot evidence is incomplete")
+            persist_profit_pivot_exit(
+                account, symbol, position, pivot_reason, pivot_details,
+                strict_save=True,
+            )
+        except Exception:
+            logger.exception(
+                "PRIORITY_EXIT_PIVOT_PERSIST_FAILED symbol=%s reason=%s",
+                symbol, reason,
+            )
+            return {
+                "status": "HOLD",
+                "symbol": symbol,
+                "reason": "BLOCKED_PRIORITY_EXIT_PIVOT_PERSIST_FAILED",
+                "priority": decision.get("priority"),
+                "success": False,
+            }
     if decision.get("cooldown"):
         entry_state = getattr(account, "entry_filter_last", None)
         if not isinstance(entry_state, dict):
@@ -831,10 +1035,9 @@ async def evaluate_and_execute_exit(
         )
     else:
         priority_label = {
-            1: "大週期方向反轉強制清倉",
-            2: "硬止損或反向軌道破壞",
-            3: "MA5 即時轉向確認",
-            4: "大週期走平緩衝出場",
+            1: "15m KC 趨勢反轉",
+            2: "1m KC 中軌轉向與結構破壞",
+            3: "ATR 硬止損或 15m 反側外軌破壞",
         }.get(priority, "未分類")
         logger.warning(
             "[平倉執行 | Priority %s %s] symbol=%s side=%s reason=%s evidence=%s",
@@ -883,11 +1086,11 @@ def _persist_account_state(account: Any, symbol: str, operation: str) -> bool:
 
 
 __all__ = [
+    "HTF_SLOPE_THRESHOLD",
     "ABNORMAL_SINGLE_ATR_MULT",
     "ABNORMAL_MULTI_ATR_MULT",
     "ABNORMAL_PCT_THRESHOLD",
     "CIRCUIT_BREAKER_COOLDOWN_SEC",
-    "HARD_SL_ATR_MULT",
     "TRAILING_START_ATR",
     "TRAILING_DIST_ATR",
     "FLAT_EXIT_BUFFER_ATR",

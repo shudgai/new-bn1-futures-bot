@@ -177,43 +177,13 @@ def test_channel_short_holds_on_kc_midline_touch_without_macro_confirmation(
     assert account.close_attempts == []
 
 
-def test_atr_exit_authority_receives_current_market_frame(monkeypatch):
-    from core.services.exits import peak_trailing_exit
-
+def test_atr_exit_does_not_close_on_true_pivot_alone():
     live_bar_ms = 1_800_000_000_000
     position = _short_position(live_bar_ms)
     frame = _valley_frame(live_bar_ms)
     account = _Account("CAP/USDT", position, frame, close_results=[True])
-    received_frames = []
-
-    def allow_with_frame(*_args, frame=None, **_kwargs):
-        received_frames.append(frame)
-        return frame is not None
-
-    monkeypatch.setattr(
-        peak_trailing_exit,
-        "evaluate_peak_trailing",
-        lambda *_args, **_kwargs: {
-            "type": "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
-            "trigger": "THREE_POINT_PIVOT",
-        },
-    )
-    monkeypatch.setattr(
-        "core.services.exits.authorized_position_exit.automated_position_exit_allowed",
-        allow_with_frame,
-    )
-    monkeypatch.setattr(
-        "test_channel_exit_true_pivot_poll.automated_position_exit_allowed",
-        allow_with_frame,
-    )
-    monkeypatch.setattr(
-        "core.services.exits.entry_atr_protection.check_trend_lock_exit_permission",
-        lambda *_args, **_kwargs: True,
-    )
 
     closed = asyncio.run(enforce_atr_protection(account, "CAP/USDT", 10.6))
 
-    assert len(received_frames) == 2
-    assert all(received is frame for received in received_frames)
-    assert closed is True
-    assert len(account.close_attempts) == 1
+    assert closed is False
+    assert account.close_attempts == []

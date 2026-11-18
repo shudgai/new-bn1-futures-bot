@@ -131,6 +131,33 @@ async def enforce_atr_protection(account, symbol, price):
         frame = frame_provider(symbol) if callable(frame_provider) else None
         if frame is None:
             frame = getattr(account, "_channel_exit_frames", {}).get(symbol)
+        if entry_mode in ("CHANNEL_SWING", "WILD_SWING"):
+            frames_15m = getattr(account, "_macro_trend_frame_15m", {})
+            frame_15m = (
+                frames_15m.get(symbol) if isinstance(frames_15m, dict) else None
+            )
+            from core.services.execution_manager import ExecutionManager
+            from core.services.exits.priority_exit_manager import (
+                evaluate_and_execute_exit,
+            )
+
+            result = await evaluate_and_execute_exit(
+                account,
+                symbol,
+                position,
+                frame,
+                frame_15m,
+                price,
+                ExecutionManager.close_position,
+            )
+            if result is None:
+                account.log(
+                    f"PRIORITY_EXIT_BLOCK symbol={symbol} "
+                    "reason=POSITION_NOT_EVALUATED",
+                    "ERROR",
+                )
+                return False
+            return bool(result.get("success"))
         from core.gates.ultimate_short_exit_gatekeeper import (
             UltimateShortExitGatekeeper,
         )

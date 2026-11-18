@@ -2428,7 +2428,11 @@ class PaperAccount:
             # ----------------------------------------------------------------
             # 📌 50% Limit TP1 觸發檢測
             tp1_target = float(meta.get("limit_tp1_price", 0.0))
-            if tp1_target > 0 and not meta.get("limit_tp1_filled", False):
+            if (
+                not is_channel_swing
+                and tp1_target > 0
+                and not meta.get("limit_tp1_filled", False)
+            ):
                 if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
                     # Restored TP1 state must use the same final Trend Lock
                     # boundary as every other automated partial close.
@@ -2562,67 +2566,13 @@ class PaperAccount:
             max_unrealized = max(float(meta.get("max_unrealized_pnl", unrealized)), unrealized)
             meta["max_unrealized_pnl"] = max_unrealized
 
-            if POSITION_HARD_STOPS_ENABLED and await enforce_hard_stop(self, symbol, curr_p):
+            if (
+                POSITION_HARD_STOPS_ENABLED
+                and entry_mode not in ("CHANNEL_SWING", "WILD_SWING")
+                and await enforce_hard_stop(self, symbol, curr_p)
+            ):
                 continue
-            if is_channel_swing:
-                qty = float(pos.get("qty") or meta.get("qty") or 0.0)
-                notional_value = qty * entry_p
-                margin_usdt = float(pos.get("margin") or meta.get("margin") or 0.0)
-                round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
-                estimated_net_usdt = (
-                    unrealized - round_trip_fee
-                    - notional_value * SLIPPAGE_PCT
-                )
-                lock_state = dict(
-                    pos.get("channel_profit_protection")
-                    or meta.get("channel_profit_protection")
-                    or {}
-                )
-                peak_net_usdt = max(
-                    float(lock_state.get("peak_net") or 0.0),
-                    estimated_net_usdt,
-                )
-                lock_state["peak_net"] = peak_net_usdt
-                trigger_net = CHANNEL_PROFIT_LOCK_TRIGGER_NET_USDT
-                # Persist the peak even before the lock arms, so the gate can
-                # audit exactly when the configured net threshold was crossed.
-                lock_state.setdefault("policy", "net_peak_giveback_20pct_v1")
-                lock_state["trigger_net_usdt"] = trigger_net
-                if peak_net_usdt >= trigger_net and peak_net_usdt > 0.0:
-                    locked_net = peak_net_usdt * (
-                        1.0 - CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO
-                    )
-                    protected_move = (
-                        locked_net + round_trip_fee
-                        + notional_value * SLIPPAGE_PCT
-                    ) / max(qty, 1e-12)
-                    floor_price = (
-                        entry_p + protected_move if side == "LONG"
-                        else entry_p - protected_move
-                    )
-                    lock_state.update(
-                        policy="net_peak_giveback_20pct_v1",
-                        armed=True,
-                        trigger_net_usdt=trigger_net,
-                        locked_net=locked_net,
-                        breakeven_price=floor_price,
-                        giveback_ratio=CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO,
-                    )
-                    pos["profit_lock_usdt_armed"] = True
-                    meta["profit_lock_usdt_armed"] = True
-                    if estimated_net_usdt <= locked_net:
-                        pos["channel_profit_protection"] = lock_state
-                        meta["channel_profit_protection"] = lock_state
-                        pos["profit_lock_peak_net_usdt"] = peak_net_usdt
-                        meta["profit_lock_peak_net_usdt"] = peak_net_usdt
-                        if await self.close_position(
-                            symbol, curr_p, "EXIT_BY_RATCHET_PROFIT_LOCK",
-                        ):
-                            continue
-                pos["channel_profit_protection"] = lock_state
-                meta["channel_profit_protection"] = lock_state
-                pos["profit_lock_peak_net_usdt"] = peak_net_usdt
-                meta["profit_lock_peak_net_usdt"] = peak_net_usdt
+            # Channel Swing exits are exclusively authorized by the KC exit gate below.
             if is_channel_swing or pos.get("atr_protection_version") in (1, 2):
                 if await enforce_atr_protection(self, symbol, curr_p):
                     continue
