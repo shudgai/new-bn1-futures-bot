@@ -58,9 +58,31 @@ def initialize_atr_protection(position, entry_price, side, atr, initial_stop=Non
                           ))
 
 
+def kc_midline_turn_exit_reason(position, frame) -> Optional[str]:
+    """Return exit reason when confirmed KC midline turns against position."""
+    if frame is None or len(frame) < 2:
+        return None
+    side = str(position.get("side", "")).upper()
+    last_closed = bool(frame.iloc[-1].get("is_closed", True))
+    closed_k = frame.iloc[-2] if (not last_closed and len(frame) >= 2) else frame.iloc[-1]
+    prev_closed_k = frame.iloc[-3] if (not last_closed and len(frame) >= 3) else frame.iloc[-2]
+    kc_mid = float(closed_k.get("kc_middle", 0.0) or 0.0)
+    prev_kc_mid = float(prev_closed_k.get("kc_middle", 0.0) or 0.0)
+    if kc_mid <= 0 or prev_kc_mid <= 0:
+        return None
+    if side == "LONG" and kc_mid < prev_kc_mid - 1e-9:
+        return "EXIT_BY_KC_MIDLINE_TURN_DOWN"
+    if side == "SHORT" and kc_mid > prev_kc_mid + 1e-9:
+        return "EXIT_BY_KC_MIDLINE_TURN_UP"
+    return None
+
+
 def atr_exit_reason(position, price, frame=None):
     from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
-    return DualTrackExitStrategy().evaluate_exit(position, frame, current_price=price)
+    reason = DualTrackExitStrategy().evaluate_exit(position, frame, current_price=price)
+    if reason:
+        return reason
+    return kc_midline_turn_exit_reason(position, frame)
 
 
 def check_trend_lock_exit_permission(position, frame, price) -> bool:
@@ -268,6 +290,8 @@ async def enforce_atr_protection(account, symbol, price):
                 "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL",
                 "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL",
                 "EXIT_SHORT_TREND_REVERSAL",
+                "EXIT_BY_KC_MIDLINE_TURN_DOWN",
+                "EXIT_BY_KC_MIDLINE_TURN_UP",
                 "EXIT_LONG_TREND_REVERSAL",
                 "OPPOSITE_KC_BAND_BREACH",
             )
