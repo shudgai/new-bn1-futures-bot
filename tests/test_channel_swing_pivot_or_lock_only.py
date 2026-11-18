@@ -48,7 +48,7 @@ def test_channel_swing_allows_exit_when_true_pivot_is_confirmed(monkeypatch):
     assert reason == "EXIT_BY_MEME_CLIMAX_TOP"
 
 
-def test_channel_swing_allows_only_verified_profit_lock(monkeypatch):
+def test_channel_swing_allows_verified_profit_lock_without_waiting_for_pivot(monkeypatch):
     monkeypatch.setattr(
         holding_gate, "_verified_profit_lock_details",
         lambda *_args, **_kwargs: {
@@ -69,8 +69,8 @@ def test_channel_swing_allows_only_verified_profit_lock(monkeypatch):
         candidate_reason="EXIT_BY_RATCHET_PROFIT_LOCK",
     )
 
-    assert not allowed_without_pivot
-    assert reason_without_pivot == "VETO_HOLDING_UNTIL_TRUE_PIVOT"
+    assert allowed_without_pivot
+    assert reason_without_pivot == "EXIT_BY_RATCHET_PROFIT_LOCK"
 
     monkeypatch.setattr(
         holding_gate, "has_confirmed_true_pivot",
@@ -81,7 +81,7 @@ def test_channel_swing_allows_only_verified_profit_lock(monkeypatch):
         candidate_reason="EXIT_BY_RATCHET_PROFIT_LOCK",
     )
     assert allowed
-    assert reason == "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+    assert reason == "EXIT_BY_RATCHET_PROFIT_LOCK"
 
 
 @pytest.mark.parametrize("reason", [

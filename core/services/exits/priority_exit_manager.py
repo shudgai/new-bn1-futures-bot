@@ -150,8 +150,55 @@ def _abnormal_adverse_candle(
         "adverse_body": adverse_body,
         "adverse_pct": adverse_pct,
         "atr": atr_value,
+        "kc_middle": _number(candle, "kc_middle"),
         "bar_timestamp": candle.get("timestamp"),
     }
+
+
+def _verified_waterfall_cross(side, opening, close, atr, middle):
+    """Only a >=1.5 ATR adverse body crossing KC middle is a waterfall exit."""
+    try:
+        opening, close, atr, middle = map(float, (opening, close, atr, middle))
+        if not all(math.isfinite(value) and value > 0 for value in (opening, close, atr, middle)):
+            return False
+        adverse_body = opening - close if side == "LONG" else close - opening
+        crossed = (
+            opening >= middle and close < middle if side == "LONG"
+            else opening <= middle and close > middle
+        )
+        return adverse_body >= ABNORMAL_SINGLE_ATR_MULT * atr and crossed
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _verified_consecutive_waterfall(side, first, second):
+    """Require cumulative >=1.5 ATR adverse movement and a KC-middle cross."""
+    try:
+        opening = float(first["candle_open"])
+        close = float(second["candle_close"])
+        atr = max(float(first["atr"]), float(second["atr"]))
+        first_middle = float(first["kc_middle"])
+        second_middle = float(second["kc_middle"])
+        crossed = (
+            opening >= first_middle and close < second_middle if side == "LONG"
+            else opening <= first_middle and close > second_middle
+        )
+        adverse_body = opening - close if side == "LONG" else close - opening
+        if (not all(math.isfinite(value) and value > 0 for value in
+                    (opening, close, atr, first_middle, second_middle))
+                or adverse_body < ABNORMAL_SINGLE_ATR_MULT * atr
+                or not crossed):
+            return None
+        return {
+            "adverse_body": adverse_body,
+            "atr": atr,
+            "kc_middle_first": first_middle,
+            "kc_middle_second": second_middle,
+            "kc_middle_crossed": True,
+            "trigger": "CONSECUTIVE_WATERFALL_1_5_ATR_KC_CROSS",
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def _update_ma5_turn_state(
@@ -438,6 +485,26 @@ def evaluate_priority_exit(
         current_trigger, current_evidence = _abnormal_adverse_candle(
             side, live, quote=price, atr=live_atr,
         )
+        current_middle = _number(live, "kc_middle")
+        if (current_trigger == "SINGLE_CANDLE_ATR"
+                and current_middle is not None
+                and _verified_waterfall_cross(
+                    side, current_evidence["candle_open"], price,
+                    current_evidence["atr"], current_middle,
+                )):
+            return {
+                "priority": 0,
+                "reason": "PRIORITY_EXIT_P0_CIRCUIT_BREAKER",
+                "cooldown": True,
+                "state_changed": state_changed,
+                "evidence": {
+                    "trigger": "SINGLE_WATERFALL_1_5_ATR_KC_CROSS",
+                    "side": side,
+                    "quote": price,
+                    "waterfall": current_evidence,
+                    "kc_middle": current_middle,
+                },
+            }
         second_trigger = None
         second_evidence: dict[str, Any] = {}
         if pending is not None and pending_bar_ms is not None:
@@ -473,24 +540,33 @@ def evaluate_priority_exit(
                 "quote": price if live_bar_ms == pending_bar_ms + interval_ms
                 else second_evidence.get("candle_close"),
             }
-            pending["confirmed"] = True
-            pending["confirmed_evidence"] = {
-                "first_abnormal_candle": first_evidence,
-                "second_abnormal_candle": second_candle_evidence,
-            }
-            state_changed = True
-            return {
-                "priority": 0,
-                "reason": "PRIORITY_EXIT_P0_CIRCUIT_BREAKER",
-                "cooldown": True,
-                "state_changed": state_changed,
-                "evidence": {
-                    **pending["confirmed_evidence"],
-                    "trigger": "CONSECUTIVE_ABNORMAL_CANDLES",
-                    "side": side,
-                    "quote": price,
-                },
-            }
+            waterfall = _verified_consecutive_waterfall(
+                side, first_evidence, second_candle_evidence,
+            )
+            if waterfall is None:
+                state.pop("abnormal_exit_pending", None)
+                state_changed = True
+                abnormal_hold_reason = "CONSECUTIVE_ABNORMAL_BARS_NOT_WATERFALL"
+            else:
+                pending["confirmed"] = True
+                pending["confirmed_evidence"] = {
+                    "first_abnormal_candle": first_evidence,
+                    "second_abnormal_candle": second_candle_evidence,
+                    **waterfall,
+                }
+                state_changed = True
+                return {
+                    "priority": 0,
+                    "reason": "PRIORITY_EXIT_P0_CIRCUIT_BREAKER",
+                    "cooldown": True,
+                    "state_changed": state_changed,
+                    "evidence": {
+                        **pending["confirmed_evidence"],
+                        "trigger": "CONSECUTIVE_WATERFALL_1_5_ATR_KC_CROSS",
+                        "side": side,
+                        "quote": price,
+                    },
+                }
 
         if pending is not None:
             abnormal_hold_reason = "WAITING_FOR_SECOND_CONSECUTIVE_ABNORMAL_CANDLE"

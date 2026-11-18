@@ -6,6 +6,7 @@ from core.paper_account import (
     get_outer_run_net_giveback_usdt,
     get_profit_lock_giveback_usdt,
 )
+from unittest.mock import AsyncMock
 
 
 def seed_test_position(account, symbol, *, side, price, margin, leverage,
@@ -45,6 +46,39 @@ def test_outer_run_net_giveback_is_fixed_for_every_position_size():
     assert get_outer_run_net_giveback_usdt(75.0) == pytest.approx(1.0)
     assert get_outer_run_net_giveback_usdt(150.0) == pytest.approx(1.0)
     assert get_outer_run_net_giveback_usdt(300.0) == pytest.approx(1.0)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("side", "prices"),
+    [("LONG", (100.30, 100.20)), ("SHORT", (99.70, 99.80))],
+)
+async def test_channel_swing_arms_net_lock_and_closes_after_20pct_giveback(
+    tmp_path, monkeypatch, side, prices,
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / f"{side}.json"))
+    monkeypatch.setattr(pa_module, "CHANNEL_PROFIT_LOCK_TRIGGER_NET_USDT", 0.5)
+    monkeypatch.setattr(pa_module, "CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO", 0.20)
+    monkeypatch.setattr(pa_module, "POSITION_HARD_STOPS_ENABLED", False)
+    account = PaperAccount()
+    account.balance = 1000.0
+    seed_test_position(
+        account, "BTC/USDT", side=side, price=100.0, margin=150.0,
+        leverage=5, stop=95.0 if side == "LONG" else 105.0,
+        atr=1.0, entry_mode="CHANNEL_SWING",
+    )
+    account.close_position = AsyncMock(return_value=False)
+
+    await account.update_positions({"BTC/USDT": prices[0]})
+    lock = account.positions["BTC/USDT"]["channel_profit_protection"]
+    assert lock["armed"] is True
+    assert lock["peak_net"] >= 0.5
+    assert lock["locked_net"] == pytest.approx(lock["peak_net"] * 0.8)
+
+    await account.update_positions({"BTC/USDT": prices[1]})
+    account.close_position.assert_awaited_once_with(
+        "BTC/USDT", prices[1], "EXIT_BY_RATCHET_PROFIT_LOCK",
+    )
 
 
 @pytest.mark.anyio

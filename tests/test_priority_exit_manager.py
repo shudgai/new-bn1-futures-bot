@@ -114,7 +114,7 @@ def _position(side="LONG", *, entry=100.0, atr=1.0, opened=1_700_000_000.0):
         ("SHORT", 100.9, "SINGLE_CANDLE_PERCENT"),
     ],
 )
-def test_priority_zero_waits_for_a_second_consecutive_abnormal_candle(
+def test_priority_zero_requires_a_verified_waterfall_not_percent_spikes(
     side, quote, expected_trigger,
 ):
     now = time.time()
@@ -129,38 +129,21 @@ def test_priority_zero_waits_for_a_second_consecutive_abnormal_candle(
         now=now,
     )
 
-    assert result["priority"] is None
-    assert result["hold_reason"] == "WAITING_FOR_SECOND_CONSECUTIVE_ABNORMAL_CANDLE"
-
-    live_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
-    next_now = (live_bar_ms + 61_000) / 1000.0
-    result = evaluate_priority_exit(
-        position,
-        _ltf(next_now, quote=quote),
-        None,
-        quote,
-        metadata,
-        now=next_now,
-    )
-
-    assert result["priority"] == 0
-    assert result["cooldown"] is True
-    assert result["evidence"]["trigger"] == "CONSECUTIVE_ABNORMAL_CANDLES"
-    assert (
-        result["evidence"]["second_abnormal_candle"]["trigger"]
-        == expected_trigger
-    )
-    third_bar_now = (live_bar_ms + 121_000) / 1000.0
-    retry = evaluate_priority_exit(
-        position,
-        _ltf(third_bar_now, quote=100.2 if side == "LONG" else 99.8),
-        None,
-        100.2 if side == "LONG" else 99.8,
-        metadata,
-        now=third_bar_now,
-    )
-    assert retry["priority"] == 0
-    assert retry["evidence"]["close_retry"] is True
+    if expected_trigger == "SINGLE_CANDLE_ATR":
+        assert result["priority"] == 0
+        assert result["cooldown"] is True
+        assert result["evidence"]["trigger"] == "SINGLE_WATERFALL_1_5_ATR_KC_CROSS"
+    else:
+        assert result["priority"] is None
+        assert result["hold_reason"] == "WAITING_FOR_SECOND_CONSECUTIVE_ABNORMAL_CANDLE"
+        live_bar_ms = math.floor(now * 1000.0 / 60_000) * 60_000
+        next_now = (live_bar_ms + 61_000) / 1000.0
+        result = evaluate_priority_exit(
+            position, _ltf(next_now, quote=quote), None, quote, metadata,
+            now=next_now,
+        )
+        assert result["priority"] is None
+        assert result["priority"] is None
 
 
 def test_priority_zero_precedes_higher_timeframe_reversal():
@@ -467,33 +450,22 @@ def test_p0_execution_persists_cooldown_and_short_lived_close_authority():
         close_position,
         now=now,
     ))
-    assert first_result["status"] == "HOLD"
-    assert not closed
+    assert first_result["priority"] == 0
+    assert first_result["success"] is False
 
-    result = asyncio.run(evaluate_and_execute_exit(
-        account,
-        "X/USDT",
-        position,
-        _ltf(next_now, quote=98.5),
-        None,
-        98.5,
-        close_position,
-        now=next_now,
-    ))
-
-    assert result["priority"] == 0
-    assert result["success"] is False
+    assert first_result["priority"] == 0
+    assert first_result["success"] is False
     assert entry_circuit_breaker_cooldown_problem(
-        account, "X/USDT", now=next_now + CIRCUIT_BREAKER_COOLDOWN_SEC - 1,
+        account, "X/USDT", now=now + CIRCUIT_BREAKER_COOLDOWN_SEC - 1,
     ) == "BLOCKED_CIRCUIT_BREAKER_COOLDOWN"
     auth = account.position_meta["X/USDT"]["priority_exit_authorization"]
     assert _valid_authorization(
         account.positions["X/USDT"], account.position_meta["X/USDT"],
-        auth["reason"], 98.5, now=next_now,
+        auth["reason"], 98.5, now=now,
     ) is not None
     assert _valid_authorization(
         account.positions["X/USDT"], account.position_meta["X/USDT"],
-        auth["reason"], 99.0, now=next_now,
+        auth["reason"], 99.0, now=now,
     ) is None
     assert len(closed) == 1
 

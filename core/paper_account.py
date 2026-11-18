@@ -81,6 +81,8 @@ from core.config import (
     PROFIT_LOCK_BASE_MARGIN_USDT,
     OUTER_RUN_NET_GIVEBACK_USDT,
     PROFIT_LOCK_TRIGGER_USDT,
+    CHANNEL_PROFIT_LOCK_TRIGGER_NET_USDT,
+    CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO,
     PROFIT_LOCK_FLOOR_USDT,
     PROFIT_LOCK_TRAIL_RATIO,
     PROFIT_LOCK_MIN_STEP_USDT,
@@ -2213,6 +2215,43 @@ class PaperAccount:
                 "reason": close_reason,
                 **{key: pos.get(key) for key in ENTRY_CONTEXT_KEYS},
             })
+            normalized_close_reason = str(close_reason or "").upper()
+            is_channel_profit_lock_close = (
+                str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+                == "CHANNEL_SWING"
+                and net_pnl > 0.0
+                and any(token in normalized_close_reason for token in (
+                    "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK",
+                    "TRAILING TAKE-PROFIT", "BREAKEVEN",
+                ))
+            )
+            if is_channel_profit_lock_close:
+                exit_bar_id = int(time.time() // 60 * 60_000)
+                exit_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+                try:
+                    if exit_frame is not None and len(exit_frame) > 0:
+                        exit_bar_id = int(float(
+                            exit_frame.iloc[-1].get("timestamp", exit_bar_id)
+                        ))
+                except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
+                    pass
+                token = f"{symbol}:{profit_exit_ms}:{side}"
+                self.channel_profit_reentries[symbol] = {
+                    "token": token,
+                    "side": side,
+                    "old_side": side,
+                    "phase": "closed",
+                    "mode": "outer_cycle",
+                    "close_reason": close_reason,
+                    "close_requested_at_ms": profit_exit_ms,
+                    "exit_bar_id": exit_bar_id,
+                    "requires_pullback": False,
+                }
+                self.log(
+                    f"🔎 [鎖利後重入觀察] {symbol} {side} 鎖利平倉完成，"
+                    "等待下一個合格的同向入口訊號",
+                    "INFO",
+                )
             from core.gates.master_gate_funnel import record_position_close
             record_position_close(symbol, side, close_reason)
             log_level = "SUCCESS" if net_pnl >= 0 else "DANGER"
@@ -2525,6 +2564,65 @@ class PaperAccount:
 
             if POSITION_HARD_STOPS_ENABLED and await enforce_hard_stop(self, symbol, curr_p):
                 continue
+            if is_channel_swing:
+                qty = float(pos.get("qty") or meta.get("qty") or 0.0)
+                notional_value = qty * entry_p
+                margin_usdt = float(pos.get("margin") or meta.get("margin") or 0.0)
+                round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
+                estimated_net_usdt = (
+                    unrealized - round_trip_fee
+                    - notional_value * SLIPPAGE_PCT
+                )
+                lock_state = dict(
+                    pos.get("channel_profit_protection")
+                    or meta.get("channel_profit_protection")
+                    or {}
+                )
+                peak_net_usdt = max(
+                    float(lock_state.get("peak_net") or 0.0),
+                    estimated_net_usdt,
+                )
+                lock_state["peak_net"] = peak_net_usdt
+                trigger_net = CHANNEL_PROFIT_LOCK_TRIGGER_NET_USDT
+                # Persist the peak even before the lock arms, so the gate can
+                # audit exactly when the configured net threshold was crossed.
+                lock_state.setdefault("policy", "net_peak_giveback_20pct_v1")
+                lock_state["trigger_net_usdt"] = trigger_net
+                if peak_net_usdt >= trigger_net and peak_net_usdt > 0.0:
+                    locked_net = peak_net_usdt * (
+                        1.0 - CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO
+                    )
+                    protected_move = (
+                        locked_net + round_trip_fee
+                        + notional_value * SLIPPAGE_PCT
+                    ) / max(qty, 1e-12)
+                    floor_price = (
+                        entry_p + protected_move if side == "LONG"
+                        else entry_p - protected_move
+                    )
+                    lock_state.update(
+                        policy="net_peak_giveback_20pct_v1",
+                        armed=True,
+                        trigger_net_usdt=trigger_net,
+                        locked_net=locked_net,
+                        breakeven_price=floor_price,
+                        giveback_ratio=CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO,
+                    )
+                    pos["profit_lock_usdt_armed"] = True
+                    meta["profit_lock_usdt_armed"] = True
+                    if estimated_net_usdt <= locked_net:
+                        pos["channel_profit_protection"] = lock_state
+                        meta["channel_profit_protection"] = lock_state
+                        pos["profit_lock_peak_net_usdt"] = peak_net_usdt
+                        meta["profit_lock_peak_net_usdt"] = peak_net_usdt
+                        if await self.close_position(
+                            symbol, curr_p, "EXIT_BY_RATCHET_PROFIT_LOCK",
+                        ):
+                            continue
+                pos["channel_profit_protection"] = lock_state
+                meta["channel_profit_protection"] = lock_state
+                pos["profit_lock_peak_net_usdt"] = peak_net_usdt
+                meta["profit_lock_peak_net_usdt"] = peak_net_usdt
             if is_channel_swing or pos.get("atr_protection_version") in (1, 2):
                 if await enforce_atr_protection(self, symbol, curr_p):
                     continue
@@ -2575,7 +2673,10 @@ class PaperAccount:
 
             # 所有倉位持續記錄最高淨利；KC內 RANGE／TREND 不設 U 階梯，
             # 只在正式峰谷出現後使用固定回吐1U保護。
-            if ENABLE_PROFIT_LOCK_USDT:
+            entry_mode = str(
+                pos.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper()
+            if ENABLE_PROFIT_LOCK_USDT or entry_mode == "CHANNEL_SWING":
                 qty = float(pos.get("qty") or meta.get("qty") or 0.0)
                 notional_value = qty * entry_p
                 unrealized_usdt = pnl_pct * notional_value

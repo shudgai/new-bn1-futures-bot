@@ -49,7 +49,7 @@ CHANNEL_MOMENTUM_STALL_FLAT_MA5_ATR = 0.02
 MA5_REVERSAL_RULE_VERSION = 2
 RETIRED_KEYS = (
     'instant_exit_state', 'closed_exit_state', 'doji_reversal_state',
-    'three_stage_exit_state', 'chandelier_state', 'channel_profit_protection',
+    'three_stage_exit_state', 'chandelier_state',
     'ratchet_lock_state', 'swing_breakeven_armed', 'swing_peak_profit_atr',
     'swing_trailing_armed', 'swing_trailing_line', 'swing_trailing_last_bar',
     'has_broken_outer_band', 'peak_pnl_usdt', 'peak_profit_diff',

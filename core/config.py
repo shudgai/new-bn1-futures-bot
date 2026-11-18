@@ -978,6 +978,14 @@ OUTER_RUN_NET_GIVEBACK_USDT = max(
 )
 # 觸發門檻：未實現利潤達到此值（USDT）時開始鎖利
 PROFIT_LOCK_TRIGGER_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_TRIGGER_USDT", "4.0")))
+# Channel Swing net profit lock: activate after 0.5U net peak and close after
+# a 20% giveback, independently from the legacy account-wide ATR ladder.
+CHANNEL_PROFIT_LOCK_TRIGGER_NET_USDT = max(
+    0.0, float(os.getenv("CHANNEL_PROFIT_LOCK_TRIGGER_NET_USDT", "0.5"))
+)
+CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO = min(
+    1.0, max(0.0, float(os.getenv("CHANNEL_PROFIT_LOCK_GIVEBACK_RATIO", "0.20")))
+)
 # 鎖利地板：止損移動後保證至少保留此值（USDT）的利潤；0 代表由手續費倍數決定。
 PROFIT_LOCK_FLOOR_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_FLOOR_USDT", "0.0")))
 # 追蹤回撤：峰值利潤繼續擴大時，允許最多回撤峰值利潤的幾成（0~1）

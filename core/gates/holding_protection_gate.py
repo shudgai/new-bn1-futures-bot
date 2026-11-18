@@ -1899,6 +1899,16 @@ class HoldingProtectionExitGate:
                 return _reject(reason='VETO_UNVERIFIED_WATERFALL')
             details.update(waterfall_details)
             return _auth('EXIT_BY_EXTREME_WATERFALL')
+
+        # A verified net-profit floor is independent exit authority. Do not
+        # route it through the true-pivot holding veto: the lock exists to
+        # preserve already-earned net profit when price reaches its floor.
+        if is_profit_lock:
+            if verified_profit_lock is None:
+                return _reject(reason='VETO_PROFIT_LOCK_NOT_REACHED')
+            details.update(verified_profit_lock)
+            return _auth('EXIT_BY_RATCHET_PROFIT_LOCK')
+
         if (not waterfall_candidate
                 and _kc_midline_favors_position(frame, side)):
             trend_pivot, trend_pivot_type, trend_pivot_info = has_confirmed_true_pivot(
@@ -1921,22 +1931,6 @@ class HoldingProtectionExitGate:
         if color_block is not None:
             details.update(bar_color_guard=color_block)
             return _reject(reason=color_block)
-
-        # Profit locks are not emergency exits.  They may preserve gains only
-        # after the position's post-entry true peak/valley has closed and
-        # confirmed, matching ExitGate's top-level holding rule.
-        if is_profit_lock:
-            has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(
-                position, frame, quote,
-            )
-            if not has_pivot:
-                return _reject(reason='VETO_HOLDING_UNTIL_TRUE_PIVOT')
-            details.update(true_pivot_type=pivot_type, **pivot_info)
-            pivot_reason = (
-                'EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT'
-                if side == 'LONG' else 'EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT'
-            )
-            return _auth(pivot_reason)
 
         if clean_reason == 'EXIT_BY_TWO_CLOSED_ADVERSE_ABNORMAL':
             from core.services.exits.abnormal_candle_exit import (

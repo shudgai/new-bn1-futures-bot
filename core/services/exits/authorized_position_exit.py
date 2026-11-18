@@ -29,8 +29,29 @@ def swing_exit_authorization(
         evidence = metadata.get("priority_exit_evidence")
         if evidence is None and isinstance(authorization, Mapping):
             evidence = authorization.get("evidence")
-        if isinstance(evidence, Mapping) and evidence.get("trigger") == "CONSECUTIVE_ABNORMAL_CANDLES":
-            return True, "VERIFIED_CONSECUTIVE_ABNORMAL_CANDLES"
+        if isinstance(evidence, Mapping):
+            trigger = evidence.get("trigger")
+            if trigger == "SINGLE_WATERFALL_1_5_ATR_KC_CROSS":
+                details = evidence.get("waterfall")
+                try:
+                    opening = float(details["candle_open"])
+                    close = float(details["candle_close"])
+                    atr = float(details["atr"])
+                    middle = float(evidence["kc_middle"])
+                    adverse = opening - close if side == "LONG" else close - opening
+                    crossed = (opening >= middle and close < middle) if side == "LONG" else (opening <= middle and close > middle)
+                    if all(math.isfinite(v) and v > 0 for v in (opening, close, atr, middle)) and adverse >= 1.5 * atr and crossed:
+                        return True, "VERIFIED_SINGLE_WATERFALL"
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
+            if trigger == "CONSECUTIVE_WATERFALL_1_5_ATR_KC_CROSS":
+                try:
+                    adverse = float(evidence["adverse_body"])
+                    atr = float(evidence["atr"])
+                    if adverse >= 1.5 * atr and evidence.get("kc_middle_crossed") is True:
+                        return True, "VERIFIED_CONSECUTIVE_WATERFALL"
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
         return False, "BLOCKED_UNVERIFIED_CIRCUIT_BREAKER"
 
     if "ACCOUNT_CIRCUIT_BREAKER" in normalized:
@@ -44,6 +65,18 @@ def swing_exit_authorization(
 
     if "LIQUIDATION" in normalized:
         return True, "EXCHANGE_LIQUIDATION"
+
+    if any(token in normalized for token in (
+        "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK", "BREAKEVEN",
+    )):
+        try:
+            from core.gates.holding_protection_gate import _verified_profit_lock_details
+            lock_details = _verified_profit_lock_details(position, quote)
+            if lock_details is not None:
+                return True, "VERIFIED_PROFIT_LOCK"
+        except Exception:
+            pass
+        return False, "BLOCKED_UNVERIFIED_PROFIT_LOCK"
 
     if isinstance(frame, pd.DataFrame) and not frame.empty and side in ("LONG", "SHORT"):
         from core.services.exits.abnormal_candle_exit import (
@@ -379,6 +412,12 @@ class UltimateExitGatekeeper:
                 exit_price,
                 str(position.get("side") or "").upper(),
             )
+
+        if any(token in normalized_reason for token in (
+            "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK", "BREAKEVEN",
+        )):
+            from core.gates.holding_protection_gate import _verified_profit_lock_details
+            return _verified_profit_lock_details(position, exit_price) is not None
 
         from core.services.exits.strict_true_pivot import (
             PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,

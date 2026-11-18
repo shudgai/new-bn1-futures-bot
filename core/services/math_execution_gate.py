@@ -1006,6 +1006,8 @@ def validate_exit_math(
     state = (
         position.get("three_tier_net_roe_lock_state")
         or meta.get("three_tier_net_roe_lock_state")
+        or position.get("channel_profit_protection")
+        or meta.get("channel_profit_protection")
         or position.get("staged_profit_lock_state")
         or meta.get("staged_profit_lock_state")
         or position.get("profit_lock_state")
@@ -1051,6 +1053,25 @@ def validate_exit_math(
         if floor is not None and current_roe <= floor + 1e-12:
             details.update(exit_type="PROFIT_LOCK", floor_net_roe_pct=floor, current_net_roe_pct=current_roe)
             return True, "EXIT_MATH_PROFIT_LOCK", details
+
+        # Channel Swing stores its fee-aware net-USDT floor separately from
+        # the legacy net-ROE ladder. Validate that floor at the final math gate.
+        channel_floor = _number(state.get("locked_net"))
+        channel_peak = _number(state.get("peak_net"))
+        margin = _number(position.get("margin"))
+        if (state.get("armed") is True and channel_floor is not None
+                and channel_peak is not None and margin is not None
+                and margin > 0 and current_roe is not None):
+            current_net_usdt = current_roe * margin / 100.0
+            if current_net_usdt <= channel_floor + 1e-9:
+                details.update(
+                    exit_type="PROFIT_LOCK",
+                    lock_type="CHANNEL_NET_USDT_GIVEBACK",
+                    current_net_usdt=current_net_usdt,
+                    peak_net_usdt=channel_peak,
+                    locked_net_usdt=channel_floor,
+                )
+                return True, "EXIT_MATH_PROFIT_LOCK", details
 
     if hold_veto is not None:
         return False, hold_veto[0], hold_veto[1]
