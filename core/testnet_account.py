@@ -2689,7 +2689,6 @@ class BinanceTestnetAccount:
                         eval_frame = None
 
             if eval_frame is not None:
-                import pandas as pd
                 if isinstance(eval_frame, pd.DataFrame):
                     from core.services.low_latency_exit import wrap_frame_ref as _wrap_frame_ref
                     for k in ("direction_override", "is_agile_trigger", "is_cross_mid", "entry_type", "strategy_mode", "allow_kc_internal", "is_v_shape_recovery", "is_v_shape_breakdown", "is_peak_valley_inflection", "is_pv_flip", "pv_flip_bar_id", "pv_flip_origin_exit_reason", "pv_flip_watch_state", "frame_5m"):
