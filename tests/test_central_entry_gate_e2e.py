@@ -124,6 +124,41 @@ async def test_open_position_blocked_when_candle_not_closed():
 
 
 @pytest.mark.anyio
+async def test_manual_order_can_skip_central_gate_with_unclosed_frame(tmp_path):
+    """Manual authorization still has an initialized frame for later checks."""
+    account = PaperAccount()
+    account.balance = 1000.0
+    account.available_balance = 1000.0
+    frame = _create_mock_candles(30, side="LONG", closed=False)
+
+    opened = await account.open_position(
+        symbol="LOBSTER/USDT",
+        side="LONG",
+        price=float(frame.iloc[-1]["close"]),
+        amount_usdt=50.0,
+        sl=0.0,
+        tp=0.0,
+        reason="手動開倉_LONG",
+        atr=2.0,
+        leverage=1,
+        entry_context={
+            "entry_mode": "CHANNEL_SWING",
+            "source": "MANUAL",
+            "manual_entry": True,
+            "managed_by_bot": True,
+            "entry_atr": 2.0,
+            "entry_gate_frame": frame,
+            "entry_gate_quote": float(frame.iloc[-1]["close"]),
+        },
+    )
+
+    assert opened is True
+    assert account.positions["LOBSTER/USDT"]["managed_by_bot"] is True
+    audit = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert audit[1]["data"]["reason"] == "MANUAL_ENTRY_USER_AUTHORIZED"
+
+
+@pytest.mark.anyio
 async def test_open_position_blocked_when_kc_slope_insufficient():
     """驗證開倉路徑：當 KC 中軌斜率不足時，CentralEntryGate 強制拒單"""
     account = PaperAccount()

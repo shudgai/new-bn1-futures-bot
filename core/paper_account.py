@@ -647,6 +647,9 @@ class PaperAccount:
         # ──【全鏈路審計階段 2：中央 EntryGate 硬性條件審查】──
         # Explicit manual orders do not require strategy timing signals. Account
         # and balance checks above and execution/risk checks below still apply.
+        eval_frame = entry_context.get("frame")
+        if eval_frame is None:
+            eval_frame = entry_context.get("entry_gate_frame")
         is_ui_force_manual = bool(
             entry_context.get("manual_entry") is True
             or entry_context.get("is_manual") is True
@@ -667,9 +670,6 @@ class PaperAccount:
                 account=self,
             )
         if not is_ui_force_manual:
-            eval_frame = entry_context.get("frame")
-            if eval_frame is None:
-                eval_frame = entry_context.get("entry_gate_frame")
             if eval_frame is None:
                 eval_frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
             if eval_frame is None and hasattr(self, "entry_frame_provider"):
