@@ -240,6 +240,37 @@ def evaluate_entry_signal(
         (side == "LONG" and breaks_recent_high)
         or (side == "SHORT" and breaks_recent_low)
     ) and abs(quote - values["open"]) >= 0.25 * values["ltf_atr"]
+    entry_mode = "MODE_A" if early_impulse else "MODE_B"
+
+    # 妖幣專用影線過濾 (僅針對已收盤 1m K 棒，不阻斷主流幣)
+    from core.symbol_aliases import is_meme_breakout_symbol
+    from core.meme_coin_strategy_config import get_meme_params
+
+    is_meme = bool(symbol and is_meme_breakout_symbol(symbol))
+    meme_params = get_meme_params(symbol) if is_meme else None
+    prev_open = _finite(previous, "open")
+    prev_close = _finite(previous, "close")
+    prev_high = _finite(previous, "high")
+    prev_low = _finite(previous, "low")
+    wick_ratio = 0.0
+    if is_meme and None not in (prev_open, prev_close, prev_high, prev_low):
+        total_range = prev_high - prev_low
+        if total_range > 0:
+            if side == "LONG":
+                wick = prev_high - max(prev_open, prev_close)
+            else:
+                wick = min(prev_open, prev_close) - prev_low
+            wick_ratio = wick / total_range
+            if wick_ratio > meme_params.max_wick_ratio:
+                _logger.warning(
+                    "[MEME_ENTRY_BLOCKED]\n交易對：%s\n攔截原因：已收盤1m影線比例過高(%.2f > %.2f)\n模式：%s\n最終判斷：禁止開倉",
+                    symbol, wick_ratio, meme_params.max_wick_ratio, entry_mode,
+                )
+                return {
+                    "allowed": False,
+                    "reason": "BLOCKED_ENTRY_EXCESSIVE_WICK",
+                    "evidence": {**evidence, "wick_ratio": wick_ratio, "entry_mode": entry_mode},
+                }
     if abs(htf_norm_slope) <= HTF_SLOPE_THRESHOLD and not early_impulse:
         return {
             "allowed": False, "reason": "BLOCKED_HTF_FLAT",
@@ -382,10 +413,17 @@ def evaluate_entry_signal(
             "reason": "BLOCKED_MACRO_CANDLE_STRUCTURE:" + macro_reason,
             "evidence": evidence,
         }
+    if is_meme:
+        _logger.info(
+            "[MEME_ENTRY]\n交易對：%s\n方向：%s\n模式：%s\nHTF斜率：%.3f\nLTF短期斜率：%.3f\nLTF長期斜率：%.3f\nKC寬度：擴張\nMA5/MA15：%s\n影線比例：%.2f\n最終判斷：允許進場",
+            symbol, side, entry_mode, htf_norm_slope, ltf_short_norm, ltf_long_norm,
+            "多頭排列" if side == "LONG" else "空頭排列", wick_ratio,
+        )
     return {
         "allowed": True,
         "reason": "PASSED_DUAL_TIMEFRAME_ENTRY_GATE",
-        "evidence": evidence,
+        "entry_mode": entry_mode,
+        "evidence": {**evidence, "entry_mode": entry_mode, "wick_ratio": wick_ratio},
     }
 
 
