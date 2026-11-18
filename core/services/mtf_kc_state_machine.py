@@ -967,6 +967,100 @@ def evaluate_htf_kc_state(frame_15m: Any) -> dict[str, Any]:
     }
 
 
+MTF_KC_BAND_TREND_ENTRY = "MTF_KC_BAND_TREND_ENTRY"
+BAND_TREND_MAX_CHASE_ATR = 0.5
+
+
+def kc_band_trend_side(frame_1m: Any, htf: Mapping[str, Any]) -> Optional[str]:
+    """LONG when 15m KC is up and the closed 1m KC upper band rises; SHORT mirrors.
+
+    User authority (2026-11-18): 上軌向上 + 大週期向上就開多，下軌向下 + 大週期向下就開空。
+    """
+    if not isinstance(htf, Mapping) or not htf.get("valid"):
+        return None
+    state = htf.get("state")
+    closed_trend = htf.get("closed_trend")
+    data = _valid_live_frame(frame_1m, 60_000.0)
+    if data is None:
+        return None
+    closed = data[0]
+    if len(closed) < 2 or not {"kc_upper", "kc_lower", "kc_middle"}.issubset(closed.columns):
+        return None
+    upper_now, upper_prev = _number(closed.iloc[-1], "kc_upper"), _number(closed.iloc[-2], "kc_upper")
+    lower_now, lower_prev = _number(closed.iloc[-1], "kc_lower"), _number(closed.iloc[-2], "kc_lower")
+    if None in (upper_now, upper_prev, lower_now, lower_prev):
+        return None
+    htf_up = state == "UPTREND" or (closed_trend == "UPTREND" and state != "DOWNTREND")
+    htf_down = state == "DOWNTREND" or (closed_trend == "DOWNTREND" and state != "UPTREND")
+    if htf_up and upper_now > upper_prev:
+        return "LONG"
+    if htf_down and lower_now < lower_prev:
+        return "SHORT"
+    return None
+
+
+def _evaluate_kc_band_trend_entry(
+    frame_1m: Any, htf: Mapping[str, Any], quote: float, side: str | None,
+) -> Optional[dict[str, Any]]:
+    band_side = kc_band_trend_side(frame_1m, htf)
+    if band_side is None:
+        return None
+    if str(side or "").upper() in ("LONG", "SHORT") and str(side).upper() != band_side:
+        return None
+    if getattr(frame_1m, "attrs", {}).get("entry_finality_verified") is not True:
+        return None
+    closed, live = _valid_live_frame(frame_1m, 60_000.0)
+    try:
+        quote_value = float(quote)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    last = closed.iloc[-1]
+    middle = _number(last, "kc_middle")
+    upper = _number(last, "kc_upper")
+    lower = _number(last, "kc_lower")
+    atr = _number(last, "atr")
+    open_price = _number(live, "open")
+    if (
+        not math.isfinite(quote_value) or quote_value <= 0
+        or None in (middle, upper, lower, atr, open_price)
+        or atr <= 0 or not lower < middle < upper
+    ):
+        return None
+    is_long = band_side == "LONG"
+    # Price must sit on the trend side of the 1m KC midline.
+    if (is_long and quote_value <= middle) or (not is_long and quote_value >= middle):
+        return None
+    # Anti-chase: never further than 0.5 ATR outside the same-side outer band.
+    edge_offset = quote_value - upper if is_long else lower - quote_value
+    if edge_offset > BAND_TREND_MAX_CHASE_ATR * atr:
+        return None
+    half_width = middle - lower
+    ma5 = _number(last, "ma5")
+    ma15 = _number(last, "ma15")
+    previous_ma5 = _number(closed.iloc[-2], "ma5")
+    return {
+        **htf,
+        "allowed": True,
+        "reason": MTF_KC_BAND_TREND_ENTRY,
+        "side": band_side,
+        "price": quote_value,
+        "open": open_price,
+        "ma5": ma5,
+        "previous_ma5": previous_ma5,
+        "ma15": ma15,
+        "kc_middle_1m": middle,
+        "kc_upper_1m": upper,
+        "kc_lower_1m": lower,
+        "half_width_1m": half_width,
+        "entry_band_ratio": (
+            (quote_value - middle) if is_long else (middle - quote_value)
+        ) / half_width if half_width > 0 else 0.0,
+        "ltf_atr": atr,
+        "bandwidth_pct": (upper - lower) / middle,
+        "breakout_edge_offset": max(edge_offset, 0.0),
+    }
+
+
 def evaluate_mtf_entry(
     frame_1m: Any,
     frame_15m: Any,
@@ -982,6 +1076,10 @@ def evaluate_mtf_entry(
     htf = evaluate_htf_kc_state(frame_15m)
     if not htf.get("valid"):
         return {**htf, "allowed": False, "reason": htf["reason"]}
+    if not allow_colorless_reverse:
+        band_entry = _evaluate_kc_band_trend_entry(frame_1m, htf, quote, side)
+        if band_entry is not None:
+            return band_entry
     data = _valid_live_frame(frame_1m, 60_000.0)
     closed_trend = htf.get("closed_trend")
     ltf_turn_state = (

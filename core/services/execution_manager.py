@@ -1412,6 +1412,7 @@ class ExecutionManager:
         from core.services.mtf_kc_state_machine import (
             _detect_ltf_outer_band_turn_state,
             _valid_live_frame,
+            kc_band_trend_side,
         )
         ltf_entry_pair = _valid_live_frame(frame_1m, 60_000.0)
         ltf_entry_turn = (
@@ -1420,6 +1421,9 @@ class ExecutionManager:
             else None
         )
         confirmed_trend = ltf_entry_turn or htf.get("closed_trend")
+        band_side = kc_band_trend_side(frame_1m, htf)
+        if band_side is not None:
+            confirmed_trend = "UPTREND" if band_side == "LONG" else "DOWNTREND"
         preferred_side = (
             "LONG" if confirmed_trend == "UPTREND"
             else "SHORT" if confirmed_trend == "DOWNTREND"

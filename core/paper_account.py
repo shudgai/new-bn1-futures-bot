@@ -1295,6 +1295,7 @@ class PaperAccount:
             in {
                 "MTF_KC_BREAKOUT_ENTRY",
                 "MTF_KC_MIDLINE_HOLD_ENTRY",
+                "MTF_KC_BAND_TREND_ENTRY",
                 "MTF_KC_IMMEDIATE_REVERSE_ENTRY",
             }
         )

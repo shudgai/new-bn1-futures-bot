@@ -3565,7 +3565,7 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
                 colorless_midline_hold = (
                     midline_evaluation.get("allowed") is True
                     and midline_evaluation.get("reason")
-                    == "MTF_KC_MIDLINE_HOLD_ENTRY"
+                    in ("MTF_KC_MIDLINE_HOLD_ENTRY", "MTF_KC_BAND_TREND_ENTRY")
                     and str(midline_evaluation.get("side") or "").upper()
                     == str(side).upper()
                 )
