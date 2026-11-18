@@ -111,15 +111,17 @@ def closed_entry_candles(frame: Optional[pd.DataFrame]) -> pd.DataFrame:
     return result
 
 
-def confirmed_kc_midline_slope(frame: Optional[pd.DataFrame]) -> Optional[float]:
-    """Compare only the latest two explicitly completed KC basis values."""
+def confirmed_kc_band_slope(
+    frame: Optional[pd.DataFrame], column: str = "kc_middle"
+) -> Optional[float]:
+    """Compare only the latest two explicitly completed KC band values."""
     if not isinstance(frame, pd.DataFrame):
         return None
     closed = closed_entry_candles(frame)
-    if len(closed) < 2 or not {"timestamp", "kc_middle"}.issubset(closed.columns):
+    if len(closed) < 2 or not {"timestamp", column}.issubset(closed.columns):
         return None
     try:
-        values = closed.iloc[-2:][["timestamp", "kc_middle"]].to_numpy(dtype=float)
+        values = closed.iloc[-2:][["timestamp", column]].to_numpy(dtype=float)
     except (TypeError, ValueError, OverflowError):
         return None
     if not np.isfinite(values).all() or (values <= 0).any():
@@ -133,19 +135,43 @@ def confirmed_kc_midline_slope(frame: Optional[pd.DataFrame]) -> Optional[float]
     return float(values[1, 1] - values[0, 1])
 
 
+def confirmed_kc_midline_slope(frame: Optional[pd.DataFrame]) -> Optional[float]:
+    """Compare only the latest two explicitly completed KC basis values."""
+    return confirmed_kc_band_slope(frame, "kc_middle")
+
+
+def confirmed_kc_upper_slope(frame: Optional[pd.DataFrame]) -> Optional[float]:
+    """Compare only the latest two explicitly completed KC upper band values."""
+    return confirmed_kc_band_slope(frame, "kc_upper")
+
+
+def confirmed_kc_lower_slope(frame: Optional[pd.DataFrame]) -> Optional[float]:
+    """Compare only the latest two explicitly completed KC lower band values."""
+    return confirmed_kc_band_slope(frame, "kc_lower")
+
+
 def missed_breakout_trend_problem(frame: Optional[pd.DataFrame], side: str) -> Optional[str]:
-    """Require strict closed-KC and explicit higher-timeframe alignment for continuation."""
+    """Require upper-band-up for LONG, lower-band-down for SHORT, and HTF alignment."""
     normalized_side = str(side).upper()
     expected_macro = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(normalized_side)
     if expected_macro is None:
         return "BLOCKED_CONTINUATION_SIDE_INVALID"
-    slope = confirmed_kc_midline_slope(frame)
-    if slope is None:
-        return "BLOCKED_CONTINUATION_KC_MIDLINE_INVALID"
-    if (normalized_side == "LONG" and slope <= 0) or (
-        normalized_side == "SHORT" and slope >= 0
-    ):
-        return "BLOCKED_CONTINUATION_KC_MIDLINE_DIRECTION"
+    if normalized_side == "LONG":
+        band_slope = confirmed_kc_upper_slope(frame)
+        if band_slope is None:
+            band_slope = confirmed_kc_midline_slope(frame)
+        if band_slope is None:
+            return "BLOCKED_CONTINUATION_KC_MIDLINE_INVALID"
+        if band_slope <= 0:
+            return "BLOCKED_CONTINUATION_KC_MIDLINE_DIRECTION"
+    else:
+        band_slope = confirmed_kc_lower_slope(frame)
+        if band_slope is None:
+            band_slope = confirmed_kc_midline_slope(frame)
+        if band_slope is None:
+            return "BLOCKED_CONTINUATION_KC_MIDLINE_INVALID"
+        if band_slope >= 0:
+            return "BLOCKED_CONTINUATION_KC_MIDLINE_DIRECTION"
     macro = str(
         getattr(frame, "attrs", {}).get("macro_trend_htf") or ""
     ).upper()

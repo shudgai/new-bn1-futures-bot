@@ -1980,18 +1980,29 @@ class EntryGate:
                     "cause": f"長下影線倒灌陰線一票否決: 下影線({lower_wick:.4f}) >= 實體({body:.4f}) 且 >= 0.25*ATR({0.25*atr_val:.4f})，賣盤動能衰竭見底，禁止做空地板殺跌！",
                 }
 
-        from core.services.candle_data import confirmed_kc_midline_slope
+        from core.services.candle_data import (
+            confirmed_kc_lower_slope,
+            confirmed_kc_midline_slope,
+            confirmed_kc_upper_slope,
+        )
 
         kc_middle_slope = confirmed_kc_midline_slope(raw_df)
-        if kc_middle_slope is None:
+        kc_upper_slope = confirmed_kc_upper_slope(raw_df)
+        kc_lower_slope = confirmed_kc_lower_slope(raw_df)
+        band_slope = (
+            (kc_upper_slope if kc_upper_slope is not None else kc_middle_slope)
+            if signal_side == "LONG"
+            else (kc_lower_slope if kc_lower_slope is not None else kc_middle_slope)
+        )
+        if band_slope is None:
             return False, "VETO_KC_DIRECTION_UNAVAILABLE", meta
         if (
-            signal_side == "LONG" and kc_middle_slope <= 0
-            or signal_side == "SHORT" and kc_middle_slope >= 0
+            signal_side == "LONG" and band_slope <= 0
+            or signal_side == "SHORT" and band_slope >= 0
         ):
             return False, "VETO_KC_DIRECTION_CONFLICT", meta
-        slope = kc_middle_slope
-        macro_trend = "BULLISH" if kc_middle_slope > 0 else "BEARISH"
+        slope = kc_middle_slope if kc_middle_slope is not None else band_slope
+        macro_trend = "BULLISH" if band_slope > 0 else "BEARISH"
 
         kc_mid_safe = max(kc_mid, 1e-9)
         kc_bandwidth = (kc_up - kc_low) / kc_mid_safe

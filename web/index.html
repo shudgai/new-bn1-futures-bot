@@ -1340,14 +1340,18 @@
                     const current = bars[bars.length - 1];
                     const currMid = number(current.kc_middle);
                     const prevMid = number(previous.kc_middle);
+                    const currUpper = number(current.kc_upper);
+                    const prevUpper = number(previous.kc_upper);
+                    const currLower = number(current.kc_lower);
+                    const prevLower = number(previous.kc_lower);
                     const prevTime = number(previous.time);
                     const currTime = number(current.time);
                     if (currMid === null || prevMid === null || currMid <= 0 || prevMid <= 0
                             || prevTime === null || currTime === null || currTime - prevTime !== 60) return 'wait';
-                    const atr = number(current.atr) || (currMid * 0.005);
-                    const slopeAtr = Math.abs(currMid - prevMid) / atr;
-                    const slopePct = Math.abs(currMid - prevMid) / prevMid;
-                    if (slopeAtr < 0.05 && slopePct < 0.0003) return 'range';
+                    const upperUp = currUpper !== null && prevUpper !== null && currUpper > prevUpper;
+                    const lowerDown = currLower !== null && prevLower !== null && currLower < prevLower;
+                    if (upperUp && !lowerDown) return 'bull';
+                    if (lowerDown && !upperUp) return 'bear';
                     if (currMid > prevMid) return 'bull';
                     if (currMid < prevMid) return 'bear';
                     return 'range';

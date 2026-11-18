@@ -91,27 +91,19 @@ def check_trend_lock_exit_permission(position, frame, price) -> bool:
         # 1. 反側外軌突破：收盤與報價雙雙突破 KC 上軌
         if kc_u > 0 and c_close > kc_u and c_close > c_open and price > kc_u:
             return True
-        # 2. 只要大週期仍向下或價格仍在 KC 中軌下方，一票否決平空！
-        if kc_mid <= prev_kc_mid + 1e-9 or c_close <= kc_mid or price <= kc_mid:
+        # 2. 中間都不要平倉，到中軌轉上才平倉
+        if kc_mid <= prev_kc_mid + 1e-9:
             return False
-        # 3. 突破中軌且自最低價反彈 >= 1.8%
-        trough_p = float(position.get("trough_price") or position.get("lowest_price") or entry_p)
-        if trough_p > 0 and entry_p > 0 and ((entry_p - trough_p) / entry_p >= 0.015) and c_close > trough_p * 1.018 and price > trough_p * 1.018:
-            return True
-        return False
+        return True
 
     elif side == "LONG":
         # 1. 反側外軌跌破：收盤與報價雙雙跌破 KC 下軌
         if kc_lo > 0 and c_close < kc_lo and c_close < c_open and price < kc_lo:
             return True
-        # 2. 只要大週期仍向上或價格仍在 KC 中軌上方，一票否決平多！
-        if kc_mid >= prev_kc_mid - 1e-9 or c_close >= kc_mid or price >= kc_mid:
+        # 2. 中間都不要平倉，到中軌轉下才平倉
+        if kc_mid >= prev_kc_mid - 1e-9:
             return False
-        # 3. 跌破中軌且自最高價回撤 >= 1.8%
-        peak_p = float(position.get("highest_price") or entry_p)
-        if peak_p > 0 and entry_p > 0 and ((peak_p - entry_p) / entry_p >= 0.015) and c_close < peak_p * 0.982 and price < peak_p * 0.982:
-            return True
-        return False
+        return True
 
     return False
 
