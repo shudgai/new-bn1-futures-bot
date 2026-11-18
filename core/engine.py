@@ -1520,48 +1520,67 @@ class TradingEngine:
                 eval_frame = frame
                 now_tick_ms = float(quote_ms) if quote_ms is not None else (time.time() * 1000.0)
                 current_minute_ms = math.floor(now_tick_ms / 60_000.0) * 60_000.0
-                last_bar_ts = float(frame.iloc[-1]["timestamp"])
-                if last_bar_ts == current_minute_ms - 60_000.0:
-                    prev_close = float(frame.iloc[-1]["close"])
-                    prev_mid = float(frame.iloc[-1].get("kc_middle", 0.0))
-                    prev_atr = float(frame.iloc[-1].get("atr", 0.0))
-                    virtual_row = pd.DataFrame([{
-                        "timestamp": current_minute_ms,
-                        "open": prev_close,
-                        "high": max(prev_close, price),
-                        "low": min(prev_close, price),
-                        "close": price,
-                        "atr": prev_atr,
-                        "kc_middle": prev_mid,
-                        "kc_upper": float(frame.iloc[-1].get("kc_upper", 0.0)),
-                        "kc_lower": float(frame.iloc[-1].get("kc_lower", 0.0)),
-                        "is_closed": False,
-                    }])
-                    eval_frame = pd.concat([frame, virtual_row], ignore_index=True)
-                    eval_frame.attrs.update(frame.attrs)
-                    eval_frame.attrs["timeframe_ms"] = 60_000.0
-                    eval_frame.attrs["snapshot_ms"] = now_tick_ms
-                    eval_frame.attrs["live_kc_middle"] = prev_mid
-                    eval_frame.attrs["live_kc_middle_bar_timestamp"] = current_minute_ms
-                elif last_bar_ts == current_minute_ms:
-                    eval_frame = frame.copy()
-                    eval_frame.attrs.update(frame.attrs)
-                    eval_frame.attrs["timeframe_ms"] = 60_000.0
-                    eval_frame.attrs["snapshot_ms"] = now_tick_ms
-                    eval_frame.at[eval_frame.index[-1], "is_closed"] = False
-                    eval_frame.at[eval_frame.index[-1], "close"] = price
-                    eval_frame.at[eval_frame.index[-1], "high"] = max(float(eval_frame.iloc[-1]["high"]), price)
-                    eval_frame.at[eval_frame.index[-1], "low"] = min(float(eval_frame.iloc[-1]["low"]), price)
-                    mid_val = eval_frame.iloc[-1].get("kc_middle")
-                    if mid_val is None or not math.isfinite(float(mid_val)) or float(mid_val) <= 0:
-                        mid_val = eval_frame.iloc[-2].get("kc_middle", price)
-                        eval_frame.at[eval_frame.index[-1], "kc_middle"] = mid_val
-                    eval_frame.attrs["live_kc_middle"] = float(mid_val)
-                    eval_frame.attrs["live_kc_middle_bar_timestamp"] = current_minute_ms
 
-                waterfall_evidence = live_adverse_waterfall_evidence(pos, eval_frame, price, now_ms=quote_ms)
-                if waterfall_evidence is None and quote_ms is not None:
-                    waterfall_evidence = live_adverse_waterfall_evidence(pos, eval_frame, price, now_ms=None)
+                # 剛開倉當根保護鐵律：若持倉處於開倉當根（持倉時間未滿 60 秒或當根 bar 尚未收線），
+                # 嚴禁因盤中微幅跳動觸發秒級大瀑布避險，給予持倉充分呼吸空間！
+                opened_at = (
+                    pos.get("open_timestamp")
+                    or pos.get("entry_timestamp")
+                    or pos.get("created_at")
+                    or pos.get("entry_time")
+                )
+                opened = float(opened_at or 0.0)
+                opened_ms = opened * 1000.0 if (opened > 0 and opened < 1e11) else opened
+                is_entry_bar = opened_ms > 0 and (
+                    (now_tick_ms - opened_ms) < 60_000.0
+                    or current_minute_ms <= math.floor(opened_ms / 60_000.0) * 60_000.0
+                )
+
+                if is_entry_bar:
+                    waterfall_evidence = None
+                else:
+                    last_bar_ts = float(frame.iloc[-1]["timestamp"])
+                    if last_bar_ts == current_minute_ms - 60_000.0:
+                        prev_close = float(frame.iloc[-1]["close"])
+                        prev_mid = float(frame.iloc[-1].get("kc_middle", 0.0))
+                        prev_atr = float(frame.iloc[-1].get("atr", 0.0))
+                        virtual_row = pd.DataFrame([{
+                            "timestamp": current_minute_ms,
+                            "open": prev_close,
+                            "high": max(prev_close, price),
+                            "low": min(prev_close, price),
+                            "close": price,
+                            "atr": prev_atr,
+                            "kc_middle": prev_mid,
+                            "kc_upper": float(frame.iloc[-1].get("kc_upper", 0.0)),
+                            "kc_lower": float(frame.iloc[-1].get("kc_lower", 0.0)),
+                            "is_closed": False,
+                        }])
+                        eval_frame = pd.concat([frame, virtual_row], ignore_index=True)
+                        eval_frame.attrs.update(frame.attrs)
+                        eval_frame.attrs["timeframe_ms"] = 60_000.0
+                        eval_frame.attrs["snapshot_ms"] = now_tick_ms
+                        eval_frame.attrs["live_kc_middle"] = prev_mid
+                        eval_frame.attrs["live_kc_middle_bar_timestamp"] = current_minute_ms
+                    elif last_bar_ts == current_minute_ms:
+                        eval_frame = frame.copy()
+                        eval_frame.attrs.update(frame.attrs)
+                        eval_frame.attrs["timeframe_ms"] = 60_000.0
+                        eval_frame.attrs["snapshot_ms"] = now_tick_ms
+                        eval_frame.at[eval_frame.index[-1], "is_closed"] = False
+                        eval_frame.at[eval_frame.index[-1], "close"] = price
+                        eval_frame.at[eval_frame.index[-1], "high"] = max(float(eval_frame.iloc[-1]["high"]), price)
+                        eval_frame.at[eval_frame.index[-1], "low"] = min(float(eval_frame.iloc[-1]["low"]), price)
+                        mid_val = eval_frame.iloc[-1].get("kc_middle")
+                        if mid_val is None or not math.isfinite(float(mid_val)) or float(mid_val) <= 0:
+                            mid_val = eval_frame.iloc[-2].get("kc_middle", price)
+                            eval_frame.at[eval_frame.index[-1], "kc_middle"] = mid_val
+                        eval_frame.attrs["live_kc_middle"] = float(mid_val)
+                        eval_frame.attrs["live_kc_middle_bar_timestamp"] = current_minute_ms
+
+                    waterfall_evidence = live_adverse_waterfall_evidence(pos, eval_frame, price, now_ms=quote_ms)
+                    if waterfall_evidence is None and quote_ms is not None:
+                        waterfall_evidence = live_adverse_waterfall_evidence(pos, eval_frame, price, now_ms=None)
                 if waterfall_evidence is not None:
                     waterfall_reason = "EXIT_BY_EXTREME_WATERFALL"
                     self.account.log(

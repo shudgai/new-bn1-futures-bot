@@ -757,6 +757,21 @@ def evaluate_priority_exit(
                 "evidence": dict(evidence),
             }
 
+    pivot_confirmed, pivot_evidence = _confirmed_true_pivot(
+        position, frame_1m, price, metadata,
+    )
+    if pivot_confirmed:
+        return {
+            "priority": 1,
+            "reason": "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY",
+            "state_changed": state_changed,
+            "evidence": {
+                **pivot_evidence,
+                "side": side,
+                "quote": price,
+            },
+        }
+
     midline_exit_direction = _ltf_midline_exit_direction(
         side, frame_1m, live_pair,
     )
@@ -789,21 +804,6 @@ def evaluate_priority_exit(
             "evidence": {
                 "htf_state": htf_state or None,
                 "ltf_midline_exit_direction": midline_exit_direction,
-            },
-        }
-
-    pivot_confirmed, pivot_evidence = _confirmed_true_pivot(
-        position, frame_1m, price, metadata,
-    )
-    if pivot_confirmed:
-        return {
-            "priority": 1,
-            "reason": "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY",
-            "state_changed": state_changed,
-            "evidence": {
-                **pivot_evidence,
-                "side": side,
-                "quote": price,
             },
         }
 

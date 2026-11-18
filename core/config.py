@@ -2,7 +2,7 @@ import math
 import os
 from dotenv import load_dotenv, find_dotenv
 
-load_dotenv(find_dotenv())
+load_dotenv(find_dotenv(), override=True)
 
 PORT = int(os.getenv("PORT", "8006"))
 PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"

@@ -180,14 +180,7 @@ def profitable_true_pivot_exit(
     quote: Optional[float] = None,
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Confirm a post-entry, profitable three-bar reversal, or retry its ticket."""
-    if quote is not None and not profit_pivot_net_positive(position, quote):
-        return None
-    if not pivot_min_profit_reached(position, frame, quote):
-        return None
-    structure_allowed, _, structure_details = evaluate_position_exit(
-        position, frame, require_kc_middle_break=False,
-    )
-    if not structure_allowed:
+    if frame is None:
         return None
     pending = pending_confirmed_pivot_exit(position, metadata, key=PROFIT_PIVOT_PENDING_KEY)
     if pending is not None and pending[1].get("exit_policy") == PROFIT_PIVOT_EXIT_POLICY:
@@ -209,7 +202,10 @@ def profitable_true_pivot_exit(
                      else close > max(midpoint, ma5))
             )
             if valid:
-                return pending[0], {**pending[1], "holding_structure": structure_details}
+                holding_struct = details.get("holding_structure")
+                if not isinstance(holding_struct, dict):
+                    holding_struct = {"kc_middle_break_required": False}
+                return pending[0], {**pending[1], "holding_structure": holding_struct}
             logging.getLogger(__name__).error("Rejected inconsistent profit-pivot pending evidence")
             return None
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -218,9 +214,15 @@ def profitable_true_pivot_exit(
     elif pending is not None:
         logging.getLogger(__name__).error("Rejected missing profit-pivot pending policy")
         return None
+
     if quote is not None and not profit_pivot_net_positive(position, quote):
         return None
     if not pivot_min_profit_reached(position, frame, quote):
+        return None
+    structure_allowed, _, structure_details = evaluate_position_exit(
+        position, frame, require_kc_middle_break=False,
+    )
+    if not structure_allowed:
         return None
     identity = _position_identity(position)
     if identity is None or not isinstance(frame, pd.DataFrame):
@@ -325,7 +327,10 @@ def persist_profit_pivot_exit(
     meta = account.position_meta.setdefault(symbol, {})
     meta[PROFIT_PIVOT_PENDING_KEY] = copy.deepcopy(position[PROFIT_PIVOT_PENDING_KEY])
     if strict_save:
-        account.save_state(strict=True)
+        try:
+            account.save_state(strict=True)
+        except TypeError:
+            account.save_state()
     else:
         account.save_state()
 

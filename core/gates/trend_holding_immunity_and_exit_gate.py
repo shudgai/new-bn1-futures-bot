@@ -83,6 +83,25 @@ class TrendHoldingAndExitManager:
         position['highest_price'] = highest_p
         position['lowest_price'] = lowest_p
 
+        # ──【核心鐵律：所有開倉到真峰谷要能平倉，中間不平倉】──
+        from core.gates.holding_protection_gate import has_confirmed_true_pivot
+        has_pivot, pivot_type, pivot_info = has_confirmed_true_pivot(position, df_5m, quote)
+        if has_pivot:
+            pivot_reason = "EARLY_PIVOT_PEAK_EXIT" if side == "LONG" else "EARLY_PIVOT_VALLEY_EXIT"
+            return True, pivot_reason, {"pivot_type": pivot_type, **(pivot_info or {})}
+
+        clean_cand = str(candidate_reason or "").strip().upper()
+        if clean_cand not in (
+            "HARD_STOP_LOSS",
+            "CIRCUIT_BREAKER_HARD_SL",
+            "EXIT_BY_EXTREME_WATERFALL",
+            "OPPOSITE_KC_BAND_BREACH",
+        ):
+            return False, "REJECT_EXIT: HOLDING_UNTIL_TRUE_PIVOT", {
+                "curr_profit_atr": round(curr_profit_atr, 4),
+                "peak_profit_atr": round(peak_profit_atr, 4),
+            }
+
         # ──【第一道出場：高檔利潤動態回撤止盈 (Dynamic Ratchet Profit Lock)】──
         # 規格：
         # 1. 若 Peak Profit >= 2.5 ATR (或 ROE >= 25%)：允許最大回撤 25% (保留 75% 峰值利潤)。

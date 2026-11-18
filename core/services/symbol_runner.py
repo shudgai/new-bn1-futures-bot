@@ -1395,8 +1395,8 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 ma5_s = m5_metrics.get('5m_ma5_slope', 0.0)
                 ma5_v = m5_metrics.get('5m_ma5', 0.0)
                 kc_mid = m5_metrics.get('5m_kc_middle', 0.0)
-                # 均線間距 (>= 0.20 ATR) 與 MA5 斜率動能 (>= 0.05 / <= -0.05 ATR) 終極過濾 (Mode 3 斷頭鍘刀已放寬)
-                if mode_name != 'MODE3_GUILLOTINE_CUT':
+                # 均線間距 (>= 0.20 ATR) 與 MA5 斜率動能 (>= 0.05 / <= -0.05 ATR) 終極過濾 (Mode 3 斷頭鍘刀與直覺順勢軌道模式已放寬)
+                if mode_name not in ('MODE3_GUILLOTINE_CUT', 'MODE_KC_OUTER_SLOPE_MACRO'):
                     ma_ok, ma_reason = MemeSharedProtectionGate.validate_ma_condition(
                         frame, candidate_side, min_gap_atr=0.20, min_down_slope_atr=-0.05, min_up_slope_atr=0.05
                     )
@@ -1404,20 +1404,21 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                         logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {ma_reason}")
                         continue
 
-                # 平倉後回抽二次進場終極過濾 (Post-Exit Pullback Re-entry Filter)
-                pb_ok, pb_reason = MemeSharedProtectionGate.validate_pullback_reentry(
-                    df=frame,
-                    side=candidate_side,
-                    quote=quote,
-                    last_closed_action=last_closed_action,
-                    last_closed_price=last_closed_price,
-                    last_closed_ts=last_closed_ts,
-                    curr_ts=curr_ts,
-                    atr=m5_metrics.get('5m_atr', 0.0),
-                    ma5=ma5_v,
-                )
-                if not pb_ok:
-                    logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {pb_reason}")
+                    # 平倉後回抽二次進場終極過濾 (Post-Exit Pullback Re-entry Filter)
+                    pb_ok, pb_reason = MemeSharedProtectionGate.validate_pullback_reentry(
+                        df=frame,
+                        side=candidate_side,
+                        quote=quote,
+                        last_closed_action=last_closed_action,
+                        last_closed_price=last_closed_price,
+                        last_closed_ts=last_closed_ts,
+                        curr_ts=curr_ts,
+                        atr=m5_metrics.get('5m_atr', 0.0),
+                        ma5=ma5_v,
+                    )
+                    if not pb_ok:
+                        logger.warning(f"[{symbol}] CRITICAL_BLOCK: Final check blocked {candidate_side} due to {pb_reason}")
+                        continue
                     continue
 
                 # 終極「漲勢末端/跌勢末端」與「獲利空間」硬阻斷 (Final Exhaustion & Profit Room VETO)

@@ -972,9 +972,11 @@ BAND_TREND_MAX_CHASE_ATR = 0.5
 
 
 def kc_band_trend_side(frame_1m: Any, htf: Mapping[str, Any]) -> Optional[str]:
-    """LONG when 15m KC is up and the closed 1m KC upper band rises; SHORT mirrors.
+    """LONG when 15m KC is up and 1m KC upper band or midline turns up; SHORT mirrors.
 
-    User authority (2026-11-18): 上軌向上 + 大週期向上就開多，下軌向下 + 大週期向下就開空。
+    User authority (2026-11-18):
+    - 上軌向上 + 大週期向上就開多，下軌向下 + 大週期向下就開空。
+    - 中軌轉向時開倉要再早一點：當 1m 中軌剛拐頭向上/向下，且 15m 大週期順向時立即提早開倉！
     """
     if not isinstance(htf, Mapping) or not htf.get("valid"):
         return None
@@ -988,13 +990,17 @@ def kc_band_trend_side(frame_1m: Any, htf: Mapping[str, Any]) -> Optional[str]:
         return None
     upper_now, upper_prev = _number(closed.iloc[-1], "kc_upper"), _number(closed.iloc[-2], "kc_upper")
     lower_now, lower_prev = _number(closed.iloc[-1], "kc_lower"), _number(closed.iloc[-2], "kc_lower")
-    if None in (upper_now, upper_prev, lower_now, lower_prev):
+    mid_now, mid_prev = _number(closed.iloc[-1], "kc_middle"), _number(closed.iloc[-2], "kc_middle")
+    if None in (upper_now, upper_prev, lower_now, lower_prev, mid_now, mid_prev):
         return None
     htf_up = state == "UPTREND" or (closed_trend == "UPTREND" and state != "DOWNTREND")
     htf_down = state == "DOWNTREND" or (closed_trend == "DOWNTREND" and state != "UPTREND")
-    if htf_up and upper_now > upper_prev:
+
+    # 提早進場：只要上軌向上 或 中軌向上拐頭，立即授權做多
+    if htf_up and (upper_now > upper_prev or mid_now > mid_prev):
         return "LONG"
-    if htf_down and lower_now < lower_prev:
+    # 提早進場：只要下軌向下 或 中軌向下拐頭，立即授權做空
+    if htf_down and (lower_now < lower_prev or mid_now < mid_prev):
         return "SHORT"
     return None
 
@@ -1027,8 +1033,9 @@ def _evaluate_kc_band_trend_entry(
     ):
         return None
     is_long = band_side == "LONG"
-    # Price must sit on the trend side of the 1m KC midline.
-    if (is_long and quote_value <= middle) or (not is_long and quote_value >= middle):
+    # Price should align with entry side (relax strict midline threshold by 0.15 ATR to enter earlier on midline turns).
+    early_entry_buffer = 0.15 * atr
+    if (is_long and quote_value < (middle - early_entry_buffer)) or (not is_long and quote_value > (middle + early_entry_buffer)):
         return None
     # Anti-chase: never further than 0.5 ATR outside the same-side outer band.
     edge_offset = quote_value - upper if is_long else lower - quote_value

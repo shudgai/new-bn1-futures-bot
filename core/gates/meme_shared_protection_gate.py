@@ -767,6 +767,37 @@ class MemeSharedProtectionGate:
         lower_wick = min(c, o) - l
         dev = abs(p - ma5) / ma5 if ma5 > 0 else 0.0
 
+        # 【直覺順勢規則】：KC 上軌往上且大週期往上 => 開多；空單鏡像（KC 下軌往下且大週期往下 => 開空）
+        if len(df_5m) >= 2 and 'kc_upper' in df_5m.columns and 'kc_lower' in df_5m.columns:
+            prev_upper = float(df_5m['kc_upper'].iloc[-2] or 0.0)
+            curr_upper = float(df_5m['kc_upper'].iloc[-1] or 0.0)
+            prev_lower = float(df_5m['kc_lower'].iloc[-2] or 0.0)
+            curr_lower = float(df_5m['kc_lower'].iloc[-1] or 0.0)
+            kc_upper_up = (curr_upper > prev_upper > 0.0)
+            kc_lower_down = (0.0 < curr_lower < prev_lower)
+            macro_up = (
+                big_trend in ('UP', 'BULLISH') or kc_trend_15m in ('UP', 'BULLISH')
+            ) and kc_trend_15m != 'DOWN'
+            macro_down = (
+                big_trend in ('DOWN', 'BEARISH') or kc_trend_15m in ('DOWN', 'BEARISH')
+            ) and kc_trend_15m != 'UP'
+            if side == 'LONG' and kc_upper_up and macro_up and kc_trend_5m != 'DOWN':
+                return True, "PASS_LONG: MODE_KC_OUTER_SLOPE_MACRO", {
+                    'mode': 'MODE_KC_OUTER_SLOPE_MACRO',
+                    '15m_big_trend': big_trend,
+                    '15m_kc_trend': kc_trend_15m,
+                    '5m_kc_trend': kc_trend_5m,
+                    'dev': dev,
+                }
+            if side == 'SHORT' and kc_lower_down and macro_down and kc_trend_5m != 'UP':
+                return True, "PASS_SHORT: MODE_KC_OUTER_SLOPE_MACRO", {
+                    'mode': 'MODE_KC_OUTER_SLOPE_MACRO',
+                    '15m_big_trend': big_trend,
+                    '15m_kc_trend': kc_trend_15m,
+                    '5m_kc_trend': kc_trend_5m,
+                    'dev': dev,
+                }
+
         strong_trend = cls.is_strong_directional_expansion(
             df_5m, trend_15m_info, side,
         )

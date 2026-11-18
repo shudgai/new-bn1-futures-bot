@@ -59,8 +59,108 @@ def initialize_atr_protection(position, entry_price, side, atr, initial_stop=Non
                           ))
 
 
+def check_true_pivot_exit(position, frame) -> Optional[str]:
+    """
+    分清「震盪盤整小波動」與「真峰頂 / 真谷底」：
+    1. 必須脫離成本區且實質獲利展開（多單 peak_gain >= 0.5 ATR 或 peak_roe >= 5%），在成本附近的微幅小陰小陽皆判定為呼吸盤整，絕非真峰谷。
+    2. 中間棒突出度 (Prominence)：中間棒極值必須比左右兩棒高出 (或低於) 至少 0.15 ATR，拒絕平頭震盪或十字星盤整。
+    3. 確認棒實體有效跌破/突破 (Decisive Break)：
+       - 多單真峰頂：確認棒必須收陰且跌破實體中軸，且跌破 MA5（動能轉弱確認），實體下跌動能 >= 0.2 ATR。
+       - 空單真谷底：確認棒必須收陽且衝破實體中軸，且漲破 MA5（動能轉強確認），實體上漲動能 >= 0.2 ATR。
+    4. 盤整糾纏防洗：若過去 5 根 K 棒高低點振幅極小 (< 0.6 ATR) 或 MA5/MA15 糾纏，一律判定為「橫盤整理 (CHOP/CONSOLIDATION)」，絕不平倉。
+    """
+    if frame is None or len(frame) < 3:
+        return None
+    from core.services.candle_data import closed_entry_candles
+    closed = closed_entry_candles(frame)
+    if len(closed) < 3 or not bool(closed.iloc[-1].get("is_closed", True)):
+        return None
+
+    side = str(position.get("side", "")).upper()
+    entry_p = float(position.get("entry_price") or 0.0)
+    if entry_p <= 0:
+        return None
+
+    b_left = closed.iloc[-3]
+    b_mid = closed.iloc[-2]
+    b_confirm = closed.iloc[-1]
+
+    atr_val = float(b_confirm.get("atr") or b_mid.get("atr") or 0.0)
+    if atr_val <= 0:
+        return None
+
+    peak_roe = float(position.get("peak_roe") or position.get("unrealized_roe") or 0.0)
+
+    # 盤整過濾：如果近 5 根 K 棒高低點振幅小於 0.6 ATR，屬於橫盤死水，不可誤判為頂底反轉
+    if len(closed) >= 5:
+        recent_5 = closed.iloc[-5:]
+        highest_5 = float(recent_5["high"].max())
+        lowest_5 = float(recent_5["low"].min())
+        if (highest_5 - lowest_5) < 0.6 * atr_val:
+            return None
+
+    if side == "LONG":
+        peak_move = float(b_mid["high"]) - entry_p
+        # 鐵律：未實質脫離成本區（浮盈未達 0.5 ATR 且 peak_roe < 5%）100% 判定為盤整，絕不平倉
+        if peak_move < 0.5 * atr_val and peak_roe < 0.05:
+            return None
+
+        # 峰頂突出度判定：中間棒 High 必須顯著高於左棒與右棒至少 0.15 ATR（鶴立雞群，非平頂盤整）
+        is_prominent_peak = (
+            (float(b_mid["high"]) - float(b_left["high"]) >= 0.15 * atr_val)
+            and (float(b_mid["high"]) - float(b_confirm["high"]) >= 0.15 * atr_val)
+        )
+        if not is_prominent_peak:
+            return None
+
+        # 確認棒動能確認：確認棒收陰且實體 >= 0.2 ATR，跌破中間棒實體中點，且跌破 MA5 防守線
+        confirm_body = float(b_confirm["open"]) - float(b_confirm["close"])
+        mid_body_midpoint = (float(b_mid["open"]) + float(b_mid["close"])) / 2.0
+        ma5_val = float(b_confirm.get("ma5") or mid_body_midpoint)
+
+        is_decisive_bearish = (
+            confirm_body >= 0.2 * atr_val
+            and float(b_confirm["close"]) < mid_body_midpoint
+            and float(b_confirm["close"]) < ma5_val
+        )
+        if is_decisive_bearish:
+            return "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
+
+    elif side == "SHORT":
+        valley_move = entry_p - float(b_mid["low"])
+        # 鐵律：未實質脫離成本區（浮盈未達 0.5 ATR 且 peak_roe < 5%）100% 判定為盤整，絕不平倉
+        if valley_move < 0.5 * atr_val and peak_roe < 0.05:
+            return None
+
+        # 谷底突出度判定：中間棒 Low 必須顯著低於左棒與右棒至少 0.15 ATR（明確探底，非平底盤整）
+        is_prominent_valley = (
+            (float(b_left["low"]) - float(b_mid["low"]) >= 0.15 * atr_val)
+            and (float(b_confirm["low"]) - float(b_mid["low"]) >= 0.15 * atr_val)
+        )
+        if not is_prominent_valley:
+            return None
+
+        # 確認棒動能確認：確認棒收陽且實體 >= 0.2 ATR，漲破中間棒實體中點，且站上 MA5 防守線
+        confirm_body = float(b_confirm["close"]) - float(b_confirm["open"])
+        mid_body_midpoint = (float(b_mid["open"]) + float(b_mid["close"])) / 2.0
+        ma5_val = float(b_confirm.get("ma5") or mid_body_midpoint)
+
+        is_decisive_bullish = (
+            confirm_body >= 0.2 * atr_val
+            and float(b_confirm["close"]) > mid_body_midpoint
+            and float(b_confirm["close"]) > ma5_val
+        )
+        if is_decisive_bullish:
+            return "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+
+    return None
+
+
 def kc_midline_turn_exit_reason(position, frame) -> Optional[str]:
-    """Return exit reason when confirmed KC midline turns against position."""
+    """Return exit reason when confirmed KC midline turns against position or true pivot forms."""
+    pivot_reason = check_true_pivot_exit(position, frame)
+    if pivot_reason:
+        return pivot_reason
     if frame is None or len(frame) < 2:
         return None
     side = str(position.get("side", "")).upper()
@@ -111,6 +211,9 @@ def check_trend_lock_exit_permission(position, frame, price) -> bool:
     entry_p = float(position.get("entry_price") or 0.0)
 
     if side == "SHORT":
+        # 0. 遇真谷底立即平倉獲利了結
+        if check_true_pivot_exit(position, frame):
+            return True
         # 1. 反側外軌突破：收盤與報價雙雙突破 KC 上軌
         if kc_u > 0 and c_close > kc_u and c_close > c_open and price > kc_u:
             return True
@@ -120,6 +223,9 @@ def check_trend_lock_exit_permission(position, frame, price) -> bool:
         return True
 
     elif side == "LONG":
+        # 0. 遇真峰頂立即平倉獲利了結
+        if check_true_pivot_exit(position, frame):
+            return True
         # 1. 反側外軌跌破：收盤與報價雙雙跌破 KC 下軌
         if kc_lo > 0 and c_close < kc_lo and c_close < c_open and price < kc_lo:
             return True

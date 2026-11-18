@@ -21,7 +21,7 @@ def price_atr_stop_disabled(
 
 
 def hard_stop_reason(position, price):
-    """Per-position price/ATR stops are disabled; emergencies use dedicated gates."""
+    """Per-position price and ATR stops are disabled; emergencies use separate gates."""
     return None
 
 

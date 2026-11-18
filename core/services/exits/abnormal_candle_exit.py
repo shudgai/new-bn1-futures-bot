@@ -73,8 +73,19 @@ def live_adverse_waterfall_evidence(position, frame, quote, *, now_ms=None, max_
         threshold = 1.5 * atr
         if body < threshold and not math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0):
             return None
+        # 核心規格：單根反向巨型大瀑布必須「貫穿中軌」
+        # 開盤價在順向側，最新價貫穿至反向側
+        if sign * (opening - middle) < 0:
+            return None
         if sign * (price - middle) >= 0:
             return None
+
+        # 針對持倉成本保護：相對於開倉價必須有實質反向虧損，杜絕在進場價附近微幅毛刺被誤判為瀑布
+        entry_price = float(position.get("entry_price") or 0.0)
+        if entry_price > 0:
+            loss_from_entry = sign * (entry_price - price)
+            if loss_from_entry < 0.8 * atr:
+                return None
         return {
             "exit_type": "ABNORMAL_CANDLE", "trigger": "LIVE_ADVERSE_WATERFALL",
             "side": side, "body": body, "atr": atr, "threshold": threshold,

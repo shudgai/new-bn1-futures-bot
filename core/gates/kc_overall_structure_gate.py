@@ -402,7 +402,7 @@ def evaluate_entry_signal(
                     "reason": "BLOCKED_ENTRY_EXCESSIVE_WICK",
                     "evidence": {**evidence, "wick_ratio": wick_ratio, "entry_mode": entry_mode},
                 }
-    if abs(htf_norm_slope) <= HTF_SLOPE_THRESHOLD and not early_impulse:
+    if not is_meme and abs(htf_norm_slope) <= HTF_SLOPE_THRESHOLD and not early_impulse:
         return {
             "allowed": False, "reason": "BLOCKED_HTF_FLAT",
             "evidence": evidence,

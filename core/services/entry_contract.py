@@ -418,13 +418,23 @@ def automatic_entry_kc_structure_problem(
         long_slope,
         short_slope,
     )
-    if structure == expected and slopes_aligned:
-        dual_timeframe_problem = dual_timeframe_entry_problem(
-            side, account, symbol, context, fallback_frame=frame,
-            reason=reason,
-        )
-        if dual_timeframe_problem:
-            return dual_timeframe_problem
+    # 依使用者鐵律（2026-11-18）：上軌向上大週期向上就要開多，空單鏡像處理。
+    # 只要上軌向上（多單）或下軌向下（空單），或者結構與斜率一致，即放行。
+    from core.services.candle_data import (
+        confirmed_kc_lower_slope,
+        confirmed_kc_upper_slope,
+    )
+    band_trend_allowed = False
+    if str(side or "").upper() == "LONG":
+        up_slope = confirmed_kc_upper_slope(frame)
+        if up_slope is not None and up_slope > 0:
+            band_trend_allowed = True
+    elif str(side or "").upper() == "SHORT":
+        lo_slope = confirmed_kc_lower_slope(frame)
+        if lo_slope is not None and lo_slope < 0:
+            band_trend_allowed = True
+
+    if band_trend_allowed or (structure == expected and slopes_aligned):
         return None
 
     if structure != expected:

@@ -24,6 +24,13 @@ def swing_exit_authorization(
     metadata = metadata if isinstance(metadata, Mapping) else {}
     side = str(position.get("side") or "").upper()
 
+    if normalized.startswith("PRIORITY_EXIT_"):
+        from core.services.exits.priority_exit_manager import _valid_authorization
+
+        auth = _valid_authorization(position, metadata, reason, quote)
+        if auth is not None:
+            return True, "VERIFIED_PRIORITY_EXIT"
+
     if normalized == "PRIORITY_EXIT_P0_CIRCUIT_BREAKER":
         authorization = metadata.get("priority_exit_authorization")
         evidence = metadata.get("priority_exit_evidence")
@@ -98,6 +105,26 @@ def swing_exit_authorization(
             "MTF_KC_STATE_MACHINE",
         ))
         if wave_reason:
+            try:
+                from core.services.exits.strict_true_pivot import (
+                    PROFIT_PIVOT_PENDING_KEY,
+                    pending_confirmed_pivot_exit,
+                    profitable_true_pivot_exit,
+                )
+                pending = pending_confirmed_pivot_exit(
+                    position, metadata, key=PROFIT_PIVOT_PENDING_KEY,
+                )
+                if pending is not None:
+                    return True, "VERIFIED_TRUE_SWING_END"
+
+                pivot = profitable_true_pivot_exit(
+                    dict(position), frame, dict(metadata or {}), quote=float(quote),
+                )
+                if pivot is not None:
+                    return True, "VERIFIED_TRUE_SWING_END"
+            except Exception:
+                pass
+
             try:
                 from core.gates.holding_protection_gate import has_confirmed_true_pivot
                 confirmed, pivot_type, _ = has_confirmed_true_pivot(
@@ -419,6 +446,15 @@ class UltimateExitGatekeeper:
             from core.gates.holding_protection_gate import _verified_profit_lock_details
             return _verified_profit_lock_details(position, exit_price) is not None
 
+        if not is_dual_trend_emergency_exit(reason):
+            trend_block = dual_trend_exit_block_reason(position, frame, metadata)
+            if trend_block is not None:
+                logger.info(
+                    "[VETO_HOLD_%s] %s symbol=%s reason=%s",
+                    position.get("side"), trend_block, symbol, reason,
+                )
+                return False
+
         from core.services.exits.strict_true_pivot import (
             PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,
         )
@@ -436,15 +472,6 @@ class UltimateExitGatekeeper:
                 quote=exit_price,
             )
             return pivot is not None and pivot[0] == normalized_reason
-
-        if not is_dual_trend_emergency_exit(reason):
-            trend_block = dual_trend_exit_block_reason(position, frame, metadata)
-            if trend_block is not None:
-                logger.info(
-                    "[VETO_HOLD_%s] %s symbol=%s reason=%s",
-                    position.get("side"), trend_block, symbol, reason,
-                )
-                return False
 
         if is_dual_trend_emergency_exit(reason):
             from core.services.math_execution_gate import (
