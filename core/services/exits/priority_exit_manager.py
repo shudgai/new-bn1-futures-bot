@@ -97,20 +97,25 @@ def _closed_ltf_last(frame: Any) -> pd.Series | None:
 
 def _confirmed_true_pivot(
     position: Mapping[str, Any], frame: Any, quote: float,
+    metadata: Mapping[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     side = str(position.get("side") or "").upper()
-    expected_prefix = "TRUE_PEAK" if side == "LONG" else "TRUE_VALLEY"
+    expected_reason = (
+        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+        if side == "LONG" else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+    )
     try:
-        from core.gates.holding_protection_gate import has_confirmed_true_pivot
+        from core.services.exits.strict_true_pivot import profitable_true_pivot_exit
 
-        confirmed, pivot_type, evidence = has_confirmed_true_pivot(
-            position, frame, quote,
+        result = profitable_true_pivot_exit(
+            dict(position), frame, dict(metadata or {}), quote=quote,
         )
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return False, {}
-    if not confirmed or not str(pivot_type or "").upper().startswith(expected_prefix):
+    if result is None or result[0] != expected_reason:
         return False, {}
-    return True, {"true_pivot_type": pivot_type, **dict(evidence or {})}
+    evidence = result[1]
+    return True, {"true_pivot_type": expected_reason, **dict(evidence or {})}
 
 
 def _abnormal_adverse_candle(
@@ -390,7 +395,7 @@ def evaluate_priority_exit(
     trend_hold_reason = None
     abnormal_hold_reason = None
     pivot_confirmed, pivot_evidence = _confirmed_true_pivot(
-        position, frame_1m, price,
+        position, frame_1m, price, metadata,
     )
 
     if live is not None and live_atr is not None and live_atr > 0:
@@ -567,12 +572,12 @@ def evaluate_priority_exit(
     )
     state_changed = state_changed or ma5_state_changed
     if ma5_turn_evidence is not None:
-        return {
-            "priority": 3,
-            "reason": "PRIORITY_EXIT_P3_MA5_DIRECTION_REVERSAL",
-            "state_changed": state_changed,
-            "evidence": ma5_turn_evidence,
-        }
+        # MA5 turns are diagnostic only; a swing exits only on a confirmed,
+        # profitable true pivot or a separately verified emergency.
+        trend_hold_reason = (
+            "VETO_MA5_TURN_UNTIL_TRUE_PEAK"
+            if side == "LONG" else "VETO_MA5_TURN_UNTIL_TRUE_VALLEY"
+        )
 
     if pivot_confirmed:
         return {

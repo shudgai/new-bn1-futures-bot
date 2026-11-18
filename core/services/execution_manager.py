@@ -521,12 +521,8 @@ class ExecutionManager:
         position: Dict[str, Any],
         exit_result: Dict[str, Any],
     ) -> Dict[str, Any]:
-        reason = str(exit_result.get("reason") or "")
         priority = exit_result.get("priority")
-        if not (
-            priority in (0, 2)
-            or reason == "PRIORITY_EXIT_P3_MA5_DIRECTION_REVERSAL"
-        ):
+        if priority not in (0, 2):
             return {"status": "NOT_APPLICABLE"}
 
         old_side = str(position.get("side") or "").upper()

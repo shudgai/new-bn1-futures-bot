@@ -233,13 +233,16 @@ def test_priority_zero_clears_after_the_next_candle_closes_without_anomaly(
 def test_priority_one_closes_on_confirmed_ltf_and_macro_reversal(
     side, slope, closed_middles, monkeypatch,
 ):
-    from core.gates import holding_protection_gate
+    from core.services.exits import strict_true_pivot
 
-    pivot_type = "TRUE_PEAK_CONFIRMED" if side == "LONG" else "TRUE_VALLEY_CONFIRMED"
+    pivot_reason = (
+        "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"
+        if side == "LONG" else "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"
+    )
     monkeypatch.setattr(
-        holding_protection_gate,
-        "has_confirmed_true_pivot",
-        lambda *_args: (True, pivot_type, {}),
+        strict_true_pivot,
+        "profitable_true_pivot_exit",
+        lambda *_args, **_kwargs: (pivot_reason, {"exit_policy": "verified"}),
     )
     now = time.time()
     result = evaluate_priority_exit(
@@ -384,16 +387,18 @@ def test_priority_four_requires_flat_transition_and_closed_ltf_break():
 
 
 def test_true_pivot_closes_without_mtf_or_flat_condition(monkeypatch):
-    from core.gates import holding_protection_gate
+    from core.services.exits import strict_true_pivot
 
-    for side, pivot_type in (
-        ("LONG", "TRUE_PEAK_CONFIRMED"),
-        ("SHORT", "TRUE_VALLEY_CONFIRMED"),
+    for side, pivot_reason in (
+        ("LONG", "EXIT_BY_CONFIRMED_TRUE_PEAK_PIVOT"),
+        ("SHORT", "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT"),
     ):
         monkeypatch.setattr(
-            holding_protection_gate,
-            "has_confirmed_true_pivot",
-            lambda *_args, result=pivot_type: (True, result, {}),
+            strict_true_pivot,
+            "profitable_true_pivot_exit",
+            lambda *_args, result=pivot_reason, **_kwargs: (
+                result, {"exit_policy": "verified"},
+            ),
         )
         now = time.time()
         result = evaluate_priority_exit(
@@ -406,6 +411,33 @@ def test_true_pivot_closes_without_mtf_or_flat_condition(monkeypatch):
         )
         assert result["priority"] == 1
         assert result["reason"] == "PRIORITY_EXIT_P1_TRUE_PEAK_VALLEY"
+
+
+@pytest.mark.parametrize(
+    ("side", "pivot_type"),
+    [("LONG", "TRUE_PEAK_CONFIRMED"), ("SHORT", "TRUE_VALLEY_CONFIRMED")],
+)
+def test_raw_three_point_pivot_without_profit_confirmation_does_not_close(
+    side, pivot_type, monkeypatch,
+):
+    from core.gates import holding_protection_gate
+    from core.services.exits import strict_true_pivot
+
+    monkeypatch.setattr(
+        holding_protection_gate, "has_confirmed_true_pivot",
+        lambda *_args: (True, pivot_type, {"raw_pivot": True}),
+    )
+    monkeypatch.setattr(
+        strict_true_pivot, "profitable_true_pivot_exit",
+        lambda *_args, **_kwargs: None,
+    )
+    now = time.time()
+    result = evaluate_priority_exit(
+        _position(side), _ltf(now), None, 100.0, {}, now=now,
+    )
+
+    assert result["priority"] is None
+    assert result["reason"] is None
 
 
 def test_p0_execution_persists_cooldown_and_short_lived_close_authority():
@@ -473,23 +505,20 @@ def test_p0_execution_persists_cooldown_and_short_lived_close_authority():
         ("SHORT", (99.9, 99.8, 100.0, 100.1)),
     ],
 )
-def test_ma5_reversal_requires_two_adverse_live_observations(side, quotes, monkeypatch):
-    from core.gates import holding_protection_gate
+def test_ma5_reversal_never_closes_without_strict_true_pivot(side, quotes, monkeypatch):
+    from core.services.exits import strict_true_pivot
 
-    pivot_type = "TRUE_PEAK_CONFIRMED" if side == "LONG" else "TRUE_VALLEY_CONFIRMED"
-    pivot_enabled = [False]
     monkeypatch.setattr(
-        holding_protection_gate,
-        "has_confirmed_true_pivot",
-        lambda *_args: (pivot_enabled[0], pivot_type, {}),
+        strict_true_pivot,
+        "profitable_true_pivot_exit",
+        lambda *_args, **_kwargs: None,
     )
     now = time.time()
     position = _position(side)
     metadata = {}
 
     results = []
-    for index, quote in enumerate(quotes):
-        pivot_enabled[0] = index == len(quotes) - 1
+    for quote in quotes:
         live_frame = _ltf(
             now, current_open=100.0, quote=quote, closed_close=100.0,
         )
@@ -505,13 +534,14 @@ def test_ma5_reversal_requires_two_adverse_live_observations(side, quotes, monke
             position, live_frame, None, quote, metadata, now=now,
         ))
 
-    assert [result["priority"] for result in results] == [None, None, None, 3]
-    assert results[-1]["reason"] == "PRIORITY_EXIT_P3_MA5_DIRECTION_REVERSAL"
-    assert results[-1]["evidence"]["adverse_observations"] == 2
+    assert all(result["priority"] is None for result in results)
+    assert results[-1]["hold_reason"] == (
+        "VETO_MA5_TURN_UNTIL_TRUE_PEAK"
+        if side == "LONG" else "VETO_MA5_TURN_UNTIL_TRUE_VALLEY"
+    )
 
 
-def test_priority_exit_reversal_uses_entry_contract_and_reconciles_flat(monkeypatch):
-    from core.services import entry_contract
+def test_ma5_priority_exit_cannot_trigger_immediate_reverse_entry(monkeypatch):
     from core.services.execution_manager import ExecutionManager
 
     account = type("Account", (), {
@@ -527,15 +557,6 @@ def test_priority_exit_reversal_uses_entry_contract_and_reconciles_flat(monkeypa
         return True
 
     engine._execute_confirmed_channel_break = execute
-    monkeypatch.setattr(
-        entry_contract,
-        "evaluate_entry_contract",
-        lambda *_args, **_kwargs: {
-            "side": "SHORT",
-            "type": "AUTHORIZED_REALTIME_BREAKOUT",
-            "confirmation_bar_id": 123,
-        },
-    )
     result = asyncio.run(ExecutionManager._attempt_priority_exit_reversal(
         symbol="X/USDT",
         account=account,
@@ -549,8 +570,8 @@ def test_priority_exit_reversal_uses_entry_contract_and_reconciles_flat(monkeypa
         },
     ))
 
-    assert result == {"status": "REVERSED", "side": "SHORT"}
-    assert opened
+    assert result == {"status": "NOT_APPLICABLE"}
+    assert not opened
 
 
 def test_priority_exit_reversal_fails_closed_when_not_flat():
