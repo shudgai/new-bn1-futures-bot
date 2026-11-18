@@ -188,6 +188,7 @@ async def process_manual_order(
             "wave_regime": "RANGE",
             "market_mode": "RANGE",
             "manual_entry": True,
+            "intrabar_authorized": True,
             "source": "MANUAL",
             "managed_by_bot": True,
             "manual_favorable_rail_reached": False,

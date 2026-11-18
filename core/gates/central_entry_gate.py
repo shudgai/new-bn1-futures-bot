@@ -371,7 +371,7 @@ class CentralEntryGate:
             "PIVOT_LONG_CROSS_MID", "PIVOT_SHORT_CROSS_MID",
             "NONE_GOLDEN_CROSS", "NONE_DEAD_CROSS", "PIVOT_LONG", "PIVOT_SHORT",
             "SWING_PIVOT", "THREE_BAR_CONTINUATION", "TREND_PULLBACK",
-            "UNIFIED_PIPELINE", "MTF_KC_STATE_MACHINE",
+            "UNIFIED_PIPELINE", "MTF_KC_STATE_MACHINE", "MANUAL", "手動開倉",
         )
         route_is_intrabar_eligible = any(
             route in src_upper for route in allowed_intrabar_routes

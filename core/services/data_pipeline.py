@@ -383,6 +383,29 @@ class DataPipeline:
             for col in closed_df_with_ind.columns:
                 if col not in df_calc.columns or col in ("ma3", "ma5", "ma15", "atr", "kc_upper", "kc_middle", "kc_lower"):
                     df_calc[col] = closed_df_with_ind[col]
+            if has_live_bar and len(df_calc) > len(closed_df):
+                try:
+                    live_idx = df_calc.index[-1]
+                    live_row_dict = df.iloc[-1].to_dict()
+                    live_row_dict["close"] = float(quote)
+                    live_row_dict["high"] = max(float(live_row_dict.get("high", quote)), float(quote))
+                    live_row_dict["low"] = min(float(live_row_dict.get("low", quote)), float(quote))
+                    live_tmp = pd.concat(
+                        [closed_df, pd.DataFrame([live_row_dict], index=[live_idx])],
+                    )
+                    live_close_s = live_tmp["close"].astype(float)
+                    live_kc = compute_keltner_channels(
+                        live_tmp, ema_period=20, atr_period=14, multiplier=1.5,
+                    )
+                    df_calc.loc[live_idx, "ma3"] = float(live_close_s.rolling(window=3).mean().iloc[-1])
+                    df_calc.loc[live_idx, "ma5"] = float(live_close_s.rolling(window=5).mean().iloc[-1])
+                    df_calc.loc[live_idx, "ma15"] = float(live_close_s.rolling(window=15).mean().iloc[-1])
+                    df_calc.loc[live_idx, "atr"] = float(live_kc["atr"].iloc[-1])
+                    df_calc.loc[live_idx, "kc_middle"] = float(live_kc["kc_middle"].iloc[-1])
+                    df_calc.loc[live_idx, "kc_upper"] = float(live_kc["kc_upper"].iloc[-1])
+                    df_calc.loc[live_idx, "kc_lower"] = float(live_kc["kc_lower"].iloc[-1])
+                except Exception:
+                    pass
             if hasattr(df_calc, "attrs"):
                 df_calc.attrs["entry_finality_verified"] = is_verified
                 df_calc.attrs["macro_trend"] = macro_trend

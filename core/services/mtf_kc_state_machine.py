@@ -545,7 +545,7 @@ def _kc_midline_entry_problem(frame: Any, timeframe_ms: float, side: str, prefix
     if (
         slope_atr < 0.05
         and not math.isclose(slope_atr, 0.05, rel_tol=1e-9, abs_tol=0.0)
-    ) or (
+    ) and (
         slope_pct < 0.0003
         and not math.isclose(slope_pct, 0.0003, rel_tol=1e-9, abs_tol=0.0)
     ):
@@ -554,10 +554,21 @@ def _kc_midline_entry_problem(frame: Any, timeframe_ms: float, side: str, prefix
 
 
 def mtf_entry_midline_problem(frame_1m: Any, frame_15m: Any, side: str):
-    return (
-        _kc_midline_entry_problem(frame_1m, 60_000.0, side, "LTF")
-        or _kc_midline_entry_problem(frame_15m, 900_000.0, side, "HTF")
-    )
+    ltf_problem = _kc_midline_entry_problem(frame_1m, 60_000.0, side, "LTF")
+    if ltf_problem is not None:
+        return ltf_problem
+    expected_trend = "UPTREND" if str(side or "").upper() == "LONG" else "DOWNTREND"
+    data_1m = _valid_live_frame(frame_1m, 60_000.0)
+    if data_1m is not None and _detect_ltf_outer_band_turn_state(data_1m[0]) == expected_trend:
+        return None
+    htf = evaluate_htf_kc_state(frame_15m)
+    if (
+        htf.get("valid")
+        and htf.get("state") == expected_trend
+        and htf.get("closed_midline_direction") == expected_trend
+    ):
+        return None
+    return _kc_midline_entry_problem(frame_15m, 900_000.0, side, "HTF")
 
 
 def close_in_current_live_1m_bar(frame: Any, closed_at: Any) -> Optional[bool]:

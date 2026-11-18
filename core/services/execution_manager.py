@@ -1851,7 +1851,15 @@ class ExecutionManager:
 
         curr_quote = float(quote if quote is not None else market_data.current_price)
         raw_df = getattr(market_data, "raw_df", None)
-        if isinstance(frame_15m, pd.DataFrame):
+        if isinstance(raw_df, pd.DataFrame):
+            exit_frames = getattr(account, "_channel_exit_frames", None)
+            if not isinstance(exit_frames, dict):
+                exit_frames = account._channel_exit_frames = {}
+            exit_frames[symbol] = raw_df
+        if isinstance(frame_15m, pd.DataFrame) and (
+            frame_15m.empty
+            or getattr(frame_15m, "attrs", {}).get("timeframe_ms") == 900_000
+        ):
             macro_frames = getattr(account, "_macro_trend_frame_15m", None)
             if not isinstance(macro_frames, dict):
                 macro_frames = account._macro_trend_frame_15m = {}
@@ -1865,7 +1873,17 @@ class ExecutionManager:
             quote=curr_quote,
             position=current_position if has_position else None,
         )
-        if mtf_result is not None:
+        if mtf_result is not None and (
+            has_position
+            or mtf_result.get("status") == "ENTRY_EXECUTED"
+            or (
+                isinstance(frame_15m, pd.DataFrame)
+                and (
+                    frame_15m.empty
+                    or getattr(frame_15m, "attrs", {}).get("timeframe_ms") == 900_000
+                )
+            )
+        ):
             return mtf_result
         c_k = market_data.curr_k if market_data.curr_k else (raw_df.iloc[-1] if raw_df is not None and len(raw_df) >= 1 else {})
         p_k = market_data.prev_k if market_data.prev_k else (raw_df.iloc[-2] if raw_df is not None and len(raw_df) >= 2 else c_k)

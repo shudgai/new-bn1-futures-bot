@@ -12,9 +12,9 @@ from core.services.candle_data import closed_entry_candles
 
 
 HTF_SLOPE_THRESHOLD = 0.02
-LTF_SHORT_SLOPE_MIN = 0.15
-LTF_LONG_SLOPE_MIN = 0.35
-MAX_ENTRY_BAND_RATIO = 0.65
+LTF_SHORT_SLOPE_MIN = 0.03
+LTF_LONG_SLOPE_MIN = 0.08
+MAX_ENTRY_BAND_RATIO = 1.05
 KC_OVERALL_UP_ALIGNED = "UP_ALIGNED"
 KC_OVERALL_DOWN_ALIGNED = "DOWN_ALIGNED"
 KC_OVERALL_CHOP_BOX = "CHOP_BOX"
@@ -75,8 +75,10 @@ def _live_frame_problem(
     ):
         return "BLOCKED_ENTRY_CANDLE_SEQUENCE_INVALID"
     current_ms = timestamps[-1]
+    expected_now_bar = math.floor(now_ms / timeframe_ms) * timeframe_ms
+    expected_snap_bar = math.floor(snapshot_ms / timeframe_ms) * timeframe_ms
     if (
-        current_ms != math.floor(now_ms / timeframe_ms) * timeframe_ms
+        current_ms not in (expected_now_bar, expected_snap_bar)
         or current_ms > snapshot_ms
         or current_ms + timeframe_ms <= snapshot_ms
     ):
@@ -238,6 +240,11 @@ def evaluate_entry_signal(
         (side == "LONG" and breaks_recent_high)
         or (side == "SHORT" and breaks_recent_low)
     ) and abs(quote - values["open"]) >= 0.25 * values["ltf_atr"]
+    if abs(htf_norm_slope) <= HTF_SLOPE_THRESHOLD and not early_impulse:
+        return {
+            "allowed": False, "reason": "BLOCKED_HTF_FLAT",
+            "evidence": evidence,
+        }
     if (
         abs(ltf_short_norm) < LTF_SHORT_SLOPE_MIN
         or (not early_impulse and abs(ltf_long_norm) < LTF_LONG_SLOPE_MIN)
@@ -272,7 +279,10 @@ def evaluate_entry_signal(
             }
         if not early_impulse and not (
             values["ltf_upper"] > values["upper_previous_2"]
-            and values["ltf_lower"] > values["lower_previous_2"]
+            and (
+                values["ltf_lower"] > values["lower_previous_2"]
+                or values["ltf_middle"] > values["short_middle"]
+            )
         ):
             return {
                 "allowed": False, "reason": "BLOCKED_ENTRY_KC_BANDS_NOT_RISING",
@@ -302,8 +312,11 @@ def evaluate_entry_signal(
                 "evidence": evidence,
             }
         if not early_impulse and not (
-            values["ltf_upper"] < values["upper_previous_2"]
-            and values["ltf_lower"] < values["lower_previous_2"]
+            values["ltf_lower"] < values["lower_previous_2"]
+            and (
+                values["ltf_upper"] < values["upper_previous_2"]
+                or values["ltf_middle"] < values["short_middle"]
+            )
         ):
             return {
                 "allowed": False, "reason": "BLOCKED_ENTRY_KC_BANDS_NOT_FALLING",
