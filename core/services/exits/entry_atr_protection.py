@@ -1,6 +1,7 @@
 """Channel Swing ATR observations and peak exits, without an initial ATR stop."""
 import math
 import time
+from typing import Optional
 
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS as STATE_KEYS
 from core.services.exits.peak_trailing_exit import channel_swing_exit_allowed
