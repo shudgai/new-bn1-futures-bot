@@ -240,11 +240,11 @@ def _detect_ltf_outer_band_turn_state(closed: pd.DataFrame) -> Optional[str]:
     if slope_atr < 0.05 and slope_pct < 0.0003:
         return None
 
-    # Check for chop / MA5-MA15 entanglement in recent bars:
+    # Check for chop / MA5-MA15 entanglement in recent bars (relaxed for meme coins):
     if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
         spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
         crossings = int((spread * spread.shift(1) < 0).sum())
-        if crossings >= 2:
+        if crossings >= 4:
             return None
 
     if (
@@ -1054,7 +1054,7 @@ def evaluate_mtf_entry(
     if has_ltf_kc_bands:
         if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
             spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
-            if int((spread * spread.shift(1) < 0).sum()) >= 2:
+            if int((spread * spread.shift(1) < 0).sum()) >= 4:
                 return {
                     **htf,
                     "allowed": False,
@@ -1223,7 +1223,7 @@ def evaluate_mtf_entry(
             breakout_edge_offset = quote_value - upper if quote_value > upper else 0.0
             breakout_allowed = (
                 quote_value > upper
-                and 0.0 < breakout_edge_offset <= 0.35 * half_width
+                and 0.0 < breakout_edge_offset <= 0.80 * half_width
                 and ma_slope_aligned
             )
         else:
@@ -1234,7 +1234,7 @@ def evaluate_mtf_entry(
             breakout_edge_offset = lower - quote_value if quote_value < lower else 0.0
             breakout_allowed = (
                 quote_value < lower
-                and 0.0 < breakout_edge_offset <= 0.35 * half_width
+                and 0.0 < breakout_edge_offset <= 0.80 * half_width
                 and ma_slope_aligned
             )
 
