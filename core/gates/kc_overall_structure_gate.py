@@ -98,6 +98,80 @@ def _live_frame_problem(
     return None
 
 
+def evaluate_sideways_filter(
+    frame_1m: pd.DataFrame,
+    frame_15m: pd.DataFrame,
+    current_price: float,
+    *,
+    ltf_long_lookback: int = 6,
+    kc_width_lookback: int = 3,
+    htf_slope_threshold: float = HTF_SLOPE_THRESHOLD,
+    ltf_short_slope_min: float = 0.15,
+    ltf_long_slope_min: float = 0.20,
+) -> dict[str, Any]:
+    """Classify market state into TREND_UP, TREND_DOWN, V_BOTTOM_CANDIDATE, V_TOP_CANDIDATE, SIDEWAYS, NO_TRADE, or DATA_INVALID."""
+    if frame_1m is None or frame_15m is None or len(frame_1m) < max(ltf_long_lookback, kc_width_lookback, 3) or len(frame_15m) < 2:
+        return {"state": "DATA_INVALID", "reason": "INSUFFICIENT_BARS"}
+    try:
+        quote = float(current_price)
+    except (TypeError, ValueError, OverflowError):
+        return {"state": "DATA_INVALID", "reason": "INVALID_QUOTE"}
+    if not math.isfinite(quote) or quote <= 0:
+        return {"state": "DATA_INVALID", "reason": "INVALID_QUOTE"}
+
+    live = frame_1m.iloc[-1]
+    prev = frame_1m.iloc[-2]
+    htf_live = frame_15m.iloc[-1]
+    htf_prev = frame_15m.iloc[-2]
+
+    ltf_atr = _finite(prev, "atr") or _finite(live, "atr")
+    htf_atr = _finite(htf_prev, "atr") or _finite(htf_live, "atr")
+    ltf_mid_now = _finite(live, "kc_middle")
+    ltf_mid_short = _finite(frame_1m.iloc[-3], "kc_middle")
+    ltf_mid_long = _finite(frame_1m.iloc[-ltf_long_lookback], "kc_middle")
+    ltf_up_now = _finite(live, "kc_upper")
+    ltf_lo_now = _finite(live, "kc_lower")
+    ltf_up_prev = _finite(frame_1m.iloc[-kc_width_lookback], "kc_upper")
+    ltf_lo_prev = _finite(frame_1m.iloc[-kc_width_lookback], "kc_lower")
+    ma5_now = _finite(live, "ma5")
+    ma5_prev = _finite(prev, "ma5")
+    htf_mid_now = _finite(htf_live, "kc_middle")
+    htf_mid_prev = _finite(htf_prev, "kc_middle")
+
+    if any(
+        v is None
+        for v in (
+            ltf_atr, htf_atr, ltf_mid_now, ltf_mid_short, ltf_mid_long,
+            ltf_up_now, ltf_lo_now, ltf_up_prev, ltf_lo_prev,
+            ma5_now, ma5_prev, htf_mid_now, htf_mid_prev,
+        )
+    ) or ltf_atr <= 0 or htf_atr <= 0:
+        return {"state": "DATA_INVALID", "reason": "INVALID_INDICATORS"}
+
+    htf_slope = (htf_mid_now - htf_mid_prev) / htf_atr
+    ltf_short_slope = (ltf_mid_now - ltf_mid_short) / ltf_atr
+    ltf_long_slope = (ltf_mid_now - ltf_mid_long) / ltf_atr
+    width_now = ltf_up_now - ltf_lo_now
+    width_prev = ltf_up_prev - ltf_lo_prev
+    kc_expanding = width_now > width_prev
+
+    if ltf_short_slope >= ltf_short_slope_min and ltf_long_slope >= ltf_long_slope_min and htf_slope >= htf_slope_threshold:
+        return {"state": "TREND_UP", "kc_expanding": kc_expanding}
+    if ltf_short_slope <= -ltf_short_slope_min and ltf_long_slope <= -ltf_long_slope_min and htf_slope <= -htf_slope_threshold:
+        return {"state": "TREND_DOWN", "kc_expanding": kc_expanding}
+
+    # Early V-bottom / V-top candidate detection
+    if ma5_now > ma5_prev and quote > ltf_mid_now and (ltf_short_slope > 0 or kc_expanding):
+        return {"state": "V_BOTTOM_CANDIDATE", "kc_expanding": kc_expanding}
+    if ma5_now < ma5_prev and quote < ltf_mid_now and (ltf_short_slope < 0 or kc_expanding):
+        return {"state": "V_TOP_CANDIDATE", "kc_expanding": kc_expanding}
+
+    if abs(ltf_short_slope) < ltf_short_slope_min and abs(ltf_long_slope) < ltf_long_slope_min:
+        return {"state": "SIDEWAYS", "kc_expanding": kc_expanding}
+
+    return {"state": "NO_TRADE", "kc_expanding": kc_expanding}
+
+
 def evaluate_entry_signal(
     side: str,
     frame_1m: pd.DataFrame,
@@ -253,6 +327,63 @@ def evaluate_entry_signal(
     prev_high = _finite(previous, "high")
     prev_low = _finite(previous, "low")
     wick_ratio = 0.0
+    if is_meme and meme_params is not None:
+        sideways_res = evaluate_sideways_filter(
+            frame_1m,
+            frame_15m,
+            quote,
+            ltf_long_lookback=meme_params.ltf_long_slope_lookback,
+            kc_width_lookback=meme_params.kc_width_lookback,
+            htf_slope_threshold=meme_params.htf_slope_threshold,
+            ltf_short_slope_min=meme_params.ltf_short_slope_min,
+            ltf_long_slope_min=meme_params.ltf_long_slope_min,
+        )
+        market_state = sideways_res.get("state", "DATA_INVALID")
+        if market_state in ("SIDEWAYS", "NO_TRADE", "DATA_INVALID"):
+            return {
+                "allowed": False,
+                "reason": f"BLOCKED_ENTRY_SIDEWAYS_FILTER_{market_state}",
+                "evidence": {**evidence, "market_state": market_state},
+            }
+        # 異常波動入口防護
+        if None not in (prev_open, prev_close, prev_high, prev_low) and prev_open > 0:
+            prev_range = prev_high - prev_low
+            prev_pct = abs(prev_close - prev_open) / prev_open
+            if prev_range >= meme_params.abnormal_single_atr_mult * values["ltf_atr"] and prev_pct >= meme_params.abnormal_pct_threshold:
+                return {
+                    "allowed": False,
+                    "reason": "ENTRY_BLOCKED_ABNORMAL_MARKET",
+                    "evidence": {**evidence, "prev_range": prev_range, "prev_pct": prev_pct},
+                }
+        # 避免追價 (MAX_CHASE_ATR)
+        if side == "LONG" and quote > values["ltf_upper"] + meme_params.max_chase_atr * values["ltf_atr"]:
+            return {
+                "allowed": False,
+                "reason": "BLOCKED_ENTRY_MAX_CHASE_ATR",
+                "evidence": {**evidence, "max_chase_atr": meme_params.max_chase_atr},
+            }
+        if side == "SHORT" and quote < values["ltf_lower"] - meme_params.max_chase_atr * values["ltf_atr"]:
+            return {
+                "allowed": False,
+                "reason": "BLOCKED_ENTRY_MAX_CHASE_ATR",
+                "evidence": {**evidence, "max_chase_atr": meme_params.max_chase_atr},
+            }
+        # 流動性價差檢查 (MAX_SPREAD_RATIO)
+        spread_ratio = None
+        if account is not None and symbol:
+            quotes_map = getattr(account, "latest_quotes", None)
+            if isinstance(quotes_map, dict) and isinstance(quotes_map.get(symbol), dict):
+                q_info = quotes_map[symbol]
+                bid = q_info.get("bid")
+                ask = q_info.get("ask")
+                if isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and bid > 0 and ask >= bid:
+                    spread_ratio = (ask - bid) / bid
+        if spread_ratio is not None and spread_ratio > meme_params.max_spread_ratio:
+            return {
+                "allowed": False,
+                "reason": "BLOCKED_ENTRY_MAX_SPREAD_RATIO",
+                "evidence": {**evidence, "spread_ratio": spread_ratio},
+            }
     if is_meme and None not in (prev_open, prev_close, prev_high, prev_low):
         total_range = prev_high - prev_low
         if total_range > 0:
@@ -324,7 +455,8 @@ def evaluate_entry_signal(
                 "allowed": False, "reason": "BLOCKED_ENTRY_PRICE_NOT_ABOVE_MIDDLE",
                 "evidence": evidence,
             }
-        max_distance = MAX_ENTRY_BAND_RATIO * (
+        band_ratio = meme_params.max_entry_band_ratio if (is_meme and meme_params is not None) else MAX_ENTRY_BAND_RATIO
+        max_distance = band_ratio * (
             values["ltf_middle"] - values["ltf_lower"]
         )
         if quote - values["ltf_middle"] > max_distance:
@@ -358,7 +490,8 @@ def evaluate_entry_signal(
                 "allowed": False, "reason": "BLOCKED_ENTRY_PRICE_NOT_BELOW_MIDDLE",
                 "evidence": evidence,
             }
-        max_distance = MAX_ENTRY_BAND_RATIO * (
+        band_ratio = meme_params.max_entry_band_ratio if (is_meme and meme_params is not None) else MAX_ENTRY_BAND_RATIO
+        max_distance = band_ratio * (
             values["ltf_middle"] - values["ltf_lower"]
         )
         if values["ltf_middle"] - quote > max_distance:

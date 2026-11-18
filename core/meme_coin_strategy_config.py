@@ -16,11 +16,15 @@ STRATEGY_VERSION = "2.0.0"
 # MEME COIN STRATEGY CONFIG (初始候選值)
 # =====================================
 HTF_SLOPE_THRESHOLD = 0.025
-LTF_SHORT_SLOPE_MIN = 0.03
-LTF_LONG_SLOPE_MIN = 0.08
+LTF_SHORT_SLOPE_MIN = 0.15
+LTF_LONG_SLOPE_LOOKBACK = 6
+LTF_LONG_SLOPE_MIN = 0.20
 
-MAX_ENTRY_BAND_RATIO = 1.50
+MAX_ENTRY_BAND_RATIO = 0.55
 MAX_WICK_RATIO = 0.45
+KC_WIDTH_LOOKBACK = 3
+MAX_CHASE_ATR = 0.35
+MAX_SPREAD_RATIO = 0.001
 
 ABNORMAL_SINGLE_ATR_MULT = 1.3
 ABNORMAL_MULTI_ATR_MULT = 2.0
@@ -40,9 +44,13 @@ class MemeCoinParams:
     version: str = STRATEGY_VERSION
     htf_slope_threshold: float = HTF_SLOPE_THRESHOLD
     ltf_short_slope_min: float = LTF_SHORT_SLOPE_MIN
+    ltf_long_slope_lookback: int = LTF_LONG_SLOPE_LOOKBACK
     ltf_long_slope_min: float = LTF_LONG_SLOPE_MIN
     max_entry_band_ratio: float = MAX_ENTRY_BAND_RATIO
     max_wick_ratio: float = MAX_WICK_RATIO
+    kc_width_lookback: int = KC_WIDTH_LOOKBACK
+    max_chase_atr: float = MAX_CHASE_ATR
+    max_spread_ratio: float = MAX_SPREAD_RATIO
     abnormal_single_atr_mult: float = ABNORMAL_SINGLE_ATR_MULT
     abnormal_multi_atr_mult: float = ABNORMAL_MULTI_ATR_MULT
     abnormal_pct_threshold: float = ABNORMAL_PCT_THRESHOLD
@@ -58,12 +66,20 @@ class MemeCoinParams:
             raise ValueError("htf_slope_threshold out of bounds [0.005, 0.2]")
         if not (0.01 <= self.ltf_short_slope_min <= 0.5):
             raise ValueError("ltf_short_slope_min out of bounds [0.01, 0.5]")
+        if not (3 <= self.ltf_long_slope_lookback <= 20):
+            raise ValueError("ltf_long_slope_lookback out of bounds [3, 20]")
         if not (0.02 <= self.ltf_long_slope_min <= 1.0):
             raise ValueError("ltf_long_slope_min out of bounds [0.02, 1.0]")
         if not (0.3 <= self.max_entry_band_ratio <= 2.5):
             raise ValueError("max_entry_band_ratio out of bounds [0.3, 2.5]")
         if not (0.1 <= self.max_wick_ratio <= 0.8):
             raise ValueError("max_wick_ratio out of bounds [0.1, 0.8]")
+        if not (2 <= self.kc_width_lookback <= 10):
+            raise ValueError("kc_width_lookback out of bounds [2, 10]")
+        if not (0.1 <= self.max_chase_atr <= 1.5):
+            raise ValueError("max_chase_atr out of bounds [0.1, 1.5]")
+        if not (0.0001 <= self.max_spread_ratio <= 0.01):
+            raise ValueError("max_spread_ratio out of bounds [0.0001, 0.01]")
         if not (0.8 <= self.abnormal_single_atr_mult <= 4.0):
             raise ValueError("abnormal_single_atr_mult out of bounds [0.8, 4.0]")
         if not (1.2 <= self.abnormal_multi_atr_mult <= 6.0):
