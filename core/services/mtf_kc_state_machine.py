@@ -996,11 +996,10 @@ def kc_band_trend_side(frame_1m: Any, htf: Mapping[str, Any]) -> Optional[str]:
     htf_up = state == "UPTREND" or (closed_trend == "UPTREND" and state != "DOWNTREND")
     htf_down = state == "DOWNTREND" or (closed_trend == "DOWNTREND" and state != "UPTREND")
 
-    # 提早進場：只要上軌向上 或 中軌向上拐頭，立即授權做多
-    if htf_up and (upper_now > upper_prev or mid_now > mid_prev):
+    # 順勢鐵律：做多中軌不得向下，做空中軌不得向上
+    if htf_up and mid_now >= mid_prev and (upper_now > upper_prev or mid_now > mid_prev):
         return "LONG"
-    # 提早進場：只要下軌向下 或 中軌向下拐頭，立即授權做空
-    if htf_down and (lower_now < lower_prev or mid_now < mid_prev):
+    if htf_down and mid_now <= mid_prev and (lower_now < lower_prev or mid_now < mid_prev):
         return "SHORT"
     return None
 
@@ -1033,9 +1032,11 @@ def _evaluate_kc_band_trend_entry(
     ):
         return None
     is_long = band_side == "LONG"
-    # Price should align with entry side (relax strict midline threshold by 0.15 ATR to enter earlier on midline turns).
-    early_entry_buffer = 0.15 * atr
-    if (is_long and quote_value < (middle - early_entry_buffer)) or (not is_long and quote_value > (middle + early_entry_buffer)):
+    # 順勢鐵律：最新價與 K 線收盤價必須嚴格位於 KC 中軌順向側
+    last_close = _number(last, "close")
+    if is_long and (quote_value < middle or (last_close is not None and last_close < middle)):
+        return None
+    if not is_long and (quote_value > middle or (last_close is not None and last_close > middle)):
         return None
     # Anti-chase: never further than 0.5 ATR outside the same-side outer band.
     edge_offset = quote_value - upper if is_long else lower - quote_value
@@ -1045,6 +1046,36 @@ def _evaluate_kc_band_trend_entry(
     ma5 = _number(last, "ma5")
     ma15 = _number(last, "ma15")
     previous_ma5 = _number(closed.iloc[-2], "ma5")
+
+    # MA5 斜率必須順向
+    if ma5 is not None and previous_ma5 is not None:
+        if is_long and ma5 < previous_ma5:
+            return None
+        if not is_long and ma5 > previous_ma5:
+            return None
+
+    # 均線糾纏震盪過濾 (Chop Filter)
+    if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
+        spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
+        if int((spread * spread.shift(1) < 0).sum()) >= 2:
+            return None
+
+    # 市場死水盤整過濾 (Consolidation Blacklist)
+    if "volume" in closed.columns:
+        from core.services.market_consolidation_filter import evaluate_market_blacklist
+        consolidation_blocked, _, _ = evaluate_market_blacklist(
+            closed,
+            side=band_side,
+            cooldown_bars=0,
+            independent_kc_direction=True,
+            meme_policy=True,
+            meme_low_trend_override=True,
+            meme_structural_entry=True,
+            strict_consolidation=True,
+            confirmed_flat_kc_structure=True,
+        )
+        if consolidation_blocked:
+            return None
     return {
         **htf,
         "allowed": True,
