@@ -446,19 +446,19 @@ class UltimateExitGatekeeper:
             from core.gates.holding_protection_gate import _verified_profit_lock_details
             return _verified_profit_lock_details(position, exit_price) is not None
 
-        if not is_dual_trend_emergency_exit(reason):
-            trend_block = dual_trend_exit_block_reason(position, frame, metadata)
-            if trend_block is not None:
-                logger.info(
-                    "[VETO_HOLD_%s] %s symbol=%s reason=%s",
-                    position.get("side"), trend_block, symbol, reason,
-                )
-                return False
-
         from core.services.exits.strict_true_pivot import (
             PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,
         )
-        if normalized_reason in PROFIT_PIVOT_REASONS:
+        is_pivot_exit = (
+            normalized_reason in PROFIT_PIVOT_REASONS
+            or any(token in normalized_reason for token in (
+                "TRUE_PEAK", "TRUE_VALLEY", "TRUE_PIVOT",
+                "EARLY_PIVOT_PEAK", "EARLY_PIVOT_VALLEY",
+                "PROFIT_CONFIRMED_TRUE_PIVOT",
+            ))
+            or "PIVOT" in normalized_reason
+        )
+        if is_pivot_exit:
             if is_bar_closed is not None and is_bar_closed is not True:
                 return False
             if meme_strategy_disaster_disabled(symbol, reason):
@@ -471,7 +471,21 @@ class UltimateExitGatekeeper:
                 dict(metadata or {}),
                 quote=exit_price,
             )
-            return pivot is not None and pivot[0] == normalized_reason
+            return pivot is not None and (
+                pivot[0] == normalized_reason
+                or normalized_reason in PROFIT_PIVOT_REASONS
+                or "PIVOT" in normalized_reason
+            )
+
+        # 順勢鐵律：中軌方向大週期方向不變就不要平倉（非真峰谷且非極端避險時雙趨勢未反轉一票否決平倉）
+        if not is_dual_trend_emergency_exit(reason):
+            trend_block = dual_trend_exit_block_reason(position, frame, metadata)
+            if trend_block is not None:
+                logger.info(
+                    "[VETO_HOLD_%s] %s symbol=%s reason=%s",
+                    position.get("side"), trend_block, symbol, reason,
+                )
+                return False
 
         if is_dual_trend_emergency_exit(reason):
             from core.services.math_execution_gate import (

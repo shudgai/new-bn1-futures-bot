@@ -730,33 +730,7 @@ def evaluate_priority_exit(
             state["htf_state"] = htf_state
             state_changed = True
 
-    if isinstance(profit_protection, Mapping):
-        protection_status = str(profit_protection.get("status") or "")
-        if protection_status == "BLOCKED":
-            logger.error(
-                "POSITION_PROFIT_PROTECTION_BLOCKED symbol=%s side=%s reason=%s",
-                position.get("symbol"),
-                side,
-                profit_protection.get("reason") or "BLOCKED_POSITION_PROTECTION_STATE",
-            )
-        protection_reason = profit_protection.get("reason")
-        if protection_status == "READY" and protection_reason:
-            evidence = profit_protection.get("evidence")
-            if not isinstance(evidence, Mapping):
-                return {
-                    "priority": None,
-                    "reason": None,
-                    "state_changed": state_changed,
-                    "hold_reason": "BLOCKED_POSITION_PROTECTION_EVIDENCE_INVALID",
-                    "evidence": {},
-                }
-            return {
-                "priority": 1,
-                "reason": str(protection_reason),
-                "state_changed": state_changed,
-                "evidence": dict(evidence),
-            }
-
+    # ── 1. 真峰谷平倉最高優先級：若遇真峰谷，立即授權平倉落袋！ ──
     pivot_confirmed, pivot_evidence = _confirmed_true_pivot(
         position, frame_1m, price, metadata,
     )
@@ -772,10 +746,15 @@ def evaluate_priority_exit(
             },
         }
 
+    # ── 2. 中軌方向大週期方向不變就不要平倉：死抱主升/主跌段！ ──
     midline_exit_direction = _ltf_midline_exit_direction(
         side, frame_1m, live_pair,
     )
-    if midline_exit_direction != "REVERSED":
+    htf_aligned = (
+        (side == "LONG" and htf_state == "UPTREND")
+        or (side == "SHORT" and htf_state == "DOWNTREND")
+    )
+    if midline_exit_direction != "REVERSED" and (htf_aligned or midline_exit_direction == "ALIGNED"):
         if midline_exit_direction == "ALIGNED":
             hold_reason = (
                 "LONG_HOLD_KC_MIDLINE_STILL_UP_WAIT_TRUE_PEAK"
@@ -806,6 +785,33 @@ def evaluate_priority_exit(
                 "ltf_midline_exit_direction": midline_exit_direction,
             },
         }
+
+    if isinstance(profit_protection, Mapping):
+        protection_status = str(profit_protection.get("status") or "")
+        if protection_status == "BLOCKED":
+            logger.error(
+                "POSITION_PROFIT_PROTECTION_BLOCKED symbol=%s side=%s reason=%s",
+                position.get("symbol"),
+                side,
+                profit_protection.get("reason") or "BLOCKED_POSITION_PROTECTION_STATE",
+            )
+        protection_reason = profit_protection.get("reason")
+        if protection_status == "READY" and protection_reason:
+            evidence = profit_protection.get("evidence")
+            if not isinstance(evidence, Mapping):
+                return {
+                    "priority": None,
+                    "reason": None,
+                    "state_changed": state_changed,
+                    "hold_reason": "BLOCKED_POSITION_PROTECTION_EVIDENCE_INVALID",
+                    "evidence": {},
+                }
+            return {
+                "priority": 1,
+                "reason": str(protection_reason),
+                "state_changed": state_changed,
+                "evidence": dict(evidence),
+            }
 
     consolidation_evidence = _ltf_consolidation_evidence(
         side, frame_1m, live_pair,
