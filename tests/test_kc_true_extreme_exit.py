@@ -9,6 +9,7 @@ from core.services.exits.authorized_position_exit import (
 from core.services.exits.kc_true_extreme_exit import (
     STATE_KEY,
     evaluate_kc_true_extreme_exit,
+    short_kc_bearish_trend_active,
 )
 
 
@@ -116,6 +117,39 @@ def test_long_peak_requires_outer_extension_and_intraday_pullback():
     assert third is not None
     assert third[0] == "EXIT_BY_TRUE_PEAK_EXTREME_REVERSAL"
     assert third[1]["cause"] == "INTRADAY_PEAK_PULLBACK"
+
+
+def test_confirmed_short_valley_exits_while_kc_middle_still_falls(monkeypatch):
+    from core.services.exits import strict_true_pivot
+
+    live_bar_ms = 1_800_000_000_000
+    position = _position(live_bar_ms, side="SHORT")
+    frame = _frame(
+        live_bar_ms,
+        side="SHORT",
+        live_price=9.5,
+        kc_middle_values=(10.2, 10.1, 10.0),
+        ma5_values=(9.8, 9.9, 10.0),
+    )
+    monkeypatch.setattr(
+        strict_true_pivot,
+        "confirmed_true_pivot_exit",
+        lambda *_args, **_kwargs: (
+            "EXIT_BY_CONFIRMED_TRUE_VALLEY_PIVOT",
+            {"pivot_bar_id": live_bar_ms - 60_000,
+             "confirm_bar_id": live_bar_ms},
+        ),
+    )
+
+    decision, changed = evaluate_kc_true_extreme_exit(
+        position, frame, 9.5, live_bar_ms + 2_000,
+    )
+
+    assert short_kc_bearish_trend_active(frame, live_bar_ms + 2_000)
+    assert decision is not None
+    assert decision[0] == "EXIT_BY_TRUE_VALLEY_EXTREME_REVERSAL"
+    assert decision[1]["cause"] == "THREE_POINT_CONFIRMED_PIVOT"
+    assert changed
 
 
 def test_long_rejection_wick_alone_does_not_authorize_a_structure_exit():

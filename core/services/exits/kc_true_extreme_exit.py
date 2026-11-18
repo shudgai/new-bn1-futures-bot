@@ -431,10 +431,10 @@ def evaluate_kc_true_extreme_exit(
         from core.services.exits.strict_true_pivot import confirmed_true_pivot_exit
 
         confirmed_pivot = confirmed_true_pivot_exit(position, frame)
-        if (
-            confirmed_pivot is not None
-            and not bearish_kc_trend
-        ):
+        # A closed, verified three-point pivot is the ordinary swing exit
+        # authority. The aligned KC trend protects against unconfirmed
+        # pullbacks, but must not veto a true valley/peak once confirmed.
+        if confirmed_pivot is not None:
             pivot_reason, pivot_details = confirmed_pivot
             exit_reason = _EXIT_REASONS[side]
             details = {
