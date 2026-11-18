@@ -520,8 +520,21 @@ class MasterGateFunnel:
                 return False, None
             if m.kc_middle >= m.kc_middle_prev:
                 return False, None
+            if (
+                m.close_price < m.kc_lower
+                and m.quote < m.kc_lower
+                and m.close_price < m.open_price
+                and (m.kc_middle - m.kc_middle_prev) < 0
+                and m.ma15_curr < m.ma15_prev
+                and m.ma5_curr < m.ma5_prev
+            ):
+                return True, "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
             if cls.is_big_body_breakout(m, "SHORT"):
                 return True, "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+            if cls.is_early_breakdown_short(m):
+                return True, "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+            if cls.is_early_short(m):
+                return True, "TRIGGER_EARLY_SHORT"
             if cls.is_expansion(m, "SHORT"):
                 return True, "TRIGGER_A_EARLY_BODY_BREAKDOWN"
             if (
@@ -558,7 +571,8 @@ class MasterGateFunnel:
             return True, "VETO_MA5_MA15_CHOP_8"
         expansion = (
             cls.is_expansion(m, "LONG") or cls.is_expansion(m, "SHORT")
-            or cls.is_early_long(m) or cls.is_top_pivot_short(m)
+            or cls.is_early_long(m) or cls.is_early_short(m)
+            or cls.is_early_breakdown_short(m) or cls.is_top_pivot_short(m)
             or cls.is_squeeze_breakout_long(m) or cls.is_bottom_pivot_long(m)
             or cls.is_big_body_breakout(m, "LONG") or cls.is_big_body_breakout(m, "SHORT")
             or cls.is_outer_rail_continuation(m, "LONG") or cls.is_outer_rail_continuation(m, "SHORT")
@@ -598,7 +612,7 @@ class MasterGateFunnel:
     @staticmethod
     def is_early_long(m: MarketSnapshot) -> bool:
         body = m.close_price - m.open_price
-        threshold = 0.40 * m.atr
+        threshold = 0.20 * m.atr
         return (
             m.is_closed
             and body > 0
@@ -610,9 +624,24 @@ class MasterGateFunnel:
         )
 
     @staticmethod
+    def is_early_short(m: MarketSnapshot) -> bool:
+        """提早進場開空 (Early Short)：紅 K 起跌、收盤跌破 KC 中軌與 MA15、MA5 向下發散，提早敏捷開空。"""
+        body = m.open_price - m.close_price
+        threshold = 0.20 * m.atr
+        return (
+            m.is_closed
+            and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and m.close_price < m.kc_middle
+            and m.close_price < m.ma15_curr
+            and m.ma5_curr < m.ma5_prev
+            and m.ma5_curr <= m.ma15_curr
+        )
+
+    @staticmethod
     def is_bottom_v_long(m: MarketSnapshot) -> bool:
         body = m.close_price - m.open_price
-        threshold = 0.50 * m.atr
+        threshold = 0.40 * m.atr
         return (
             MasterGateFunnel.is_early_long(m)
             and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
@@ -623,12 +652,26 @@ class MasterGateFunnel:
     @staticmethod
     def is_early_breakout_long(m: MarketSnapshot) -> bool:
         body = m.close_price - m.open_price
-        threshold = 0.50 * m.atr
+        threshold = 0.25 * m.atr
         return (
             MasterGateFunnel.is_early_long(m)
             and m.ma5_curr > m.ma15_curr
             and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
-            and (m.open_price <= m.kc_middle or m.open_price <= m.ma15_curr)
+            and (m.open_price <= m.kc_middle or m.open_price <= m.ma15_curr or m.close_price > m.kc_upper)
+        )
+
+    @staticmethod
+    def is_early_breakdown_short(m: MarketSnapshot) -> bool:
+        """提早破軌開空 (Early Breakdown Short)：紅 K 實體 >= 0.25 ATR 跌破 KC 下軌，提早開空。"""
+        body = m.open_price - m.close_price
+        threshold = 0.25 * m.atr
+        return (
+            m.is_closed
+            and body > 0
+            and (body >= threshold or math.isclose(body, threshold, rel_tol=1e-12, abs_tol=0))
+            and m.close_price < m.kc_lower
+            and m.ma5_curr < m.ma15_curr
+            and m.ma5_curr < m.ma5_prev
         )
 
     @staticmethod
@@ -1533,6 +1576,10 @@ class MasterGateFunnel:
             and m.ma5_curr < m.ma5_prev
         ):
             trigger_hit = "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
+        elif cls.is_early_breakdown_short(m):
+            trigger_hit = "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+        elif cls.is_early_short(m):
+            trigger_hit = "TRIGGER_EARLY_SHORT"
         elif (
             m.close_price < m.kc_lower
             and m.quote < m.kc_lower
@@ -2129,6 +2176,10 @@ class MasterOpenGatekeeper(MasterGateFunnel):
                 and m.ma5_curr < m.ma5_prev
             ):
                 trigger_hit = "TRIGGER_B_BREAKDOWN_LOWER_RAIL"
+            elif cls.is_early_breakdown_short(m):
+                trigger_hit = "TRIGGER_EARLY_BREAKDOWN_CHANNEL"
+            elif cls.is_early_short(m):
+                trigger_hit = "TRIGGER_EARLY_SHORT"
             elif cls.is_slope_aligned_trend_entry(m, "SHORT"):
                 trigger_hit = "TRIGGER_ALIGNED_TREND_SLOPES"
             elif cls.is_outer_rail_continuation(m, "SHORT"):
@@ -2320,8 +2371,11 @@ class MasterOpenGatekeeper(MasterGateFunnel):
         check_long = normalized in ("", "LONG", "OPEN_LONG")
         check_short = normalized in ("", "SHORT", "OPEN_SHORT")
 
+        from core.symbol_aliases import is_meme_breakout_symbol
+        is_meme = is_meme_breakout_symbol(m.symbol)
+
         if check_long and m.close_price > m.ma5_curr and m.ma5_curr > m.ma5_prev:
-            if not header_exempt and (m.kc_middle <= m.kc_middle_prev or str(m.macro_trend).upper() == "BEARISH"):
+            if (not header_exempt or is_meme) and (m.kc_middle <= m.kc_middle_prev or str(m.macro_trend).upper() == "BEARISH"):
                 return GateDecision(False, "HOLD", "BLOCKED_LONG_ON_BEARISH_TREND", details)
             if already_holding and pos_side in ("LONG", "OPEN_LONG"):
                 return GateDecision(False, "HOLD", "BLOCKED_DUPLICATE_LONG_POSITION_ALREADY_HELD", details)
@@ -2342,7 +2396,7 @@ class MasterOpenGatekeeper(MasterGateFunnel):
             )
 
         if check_short and m.close_price < m.ma5_curr and m.ma5_curr < m.ma5_prev:
-            if not header_exempt and (m.kc_middle >= m.kc_middle_prev or str(m.macro_trend).upper() == "BULLISH"):
+            if (not header_exempt or is_meme) and (m.kc_middle >= m.kc_middle_prev or str(m.macro_trend).upper() == "BULLISH"):
                 return GateDecision(False, "HOLD", "BLOCKED_SHORT_ON_BULLISH_TREND", details)
             if already_holding and pos_side in ("SHORT", "OPEN_SHORT"):
                 return GateDecision(False, "HOLD", "BLOCKED_DUPLICATE_SHORT_POSITION_ALREADY_HELD", details)

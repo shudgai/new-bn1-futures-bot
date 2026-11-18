@@ -766,45 +766,30 @@ def opposite_side_close_cooldown_problem(
         if last_side not in ('LONG', 'SHORT'):
             return 'BLOCKED_INVALID_LAST_CLOSE_SIDE'
 
-        # ──【第三部分：唯有真峰頂/真谷底獲利敏銳反轉且反向結構確立，才豁免冷卻】──
-        # 停損（STOP, WATERFALL, CIRCUIT_BREAKER, SL, REVERSAL虧損）100% 嚴禁豁免冷卻！
+        # ──【第三部分：空頭/多頭確立無縫直接開倉（解除平倉冷卻）】──
+        # 若盤面已確立順向結構，或者前一筆因真峰頂/真谷底/大瀑布平倉，嚴禁設置冷卻時間阻擋！
+        if frame is not None and len(frame) >= 2:
+            curr_b = frame.iloc[-1]
+            prev_b = frame.iloc[-2]
+            c_ma5 = float(curr_b.get('ma5', 0.0))
+            c_ma15 = float(curr_b.get('ma15', 0.0))
+            c_kc_trend = str(curr_b.get('kc_trend', '')).upper()
+            c_mid = float(curr_b.get('kc_middle', 0.0))
+            p_mid = float(prev_b.get('kc_middle', c_mid))
+
+            if side == 'SHORT' and (c_ma5 < c_ma15 or 'DOWN' in c_kc_trend or c_mid <= p_mid):
+                return None
+            elif side == 'LONG' and (c_ma5 > c_ma15 or 'UP' in c_kc_trend or c_mid >= p_mid):
+                return None
+
+        # 檢查上一筆平倉原因：若因真峰頂、真谷底或大瀑布離場，立即解除冷卻
         trades = getattr(account, 'trades', [])
-        last_trade = None
-        if isinstance(trades, list) and trades:
-            for t in trades:
-                if t.get('symbol') == symbol and t.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
-                    last_trade = t
-                    break
-
-        can_waive_cooldown = False
-        if last_trade is not None:
-            reason = str(last_trade.get('reason') or '').upper()
-            pnl = float(last_trade.get('pnl', last_trade.get('realized_pnl', 0.0)))
-            is_stop_or_loss = (
-                pnl < 0
-                or any(k in reason for k in (
-                    'STOP', 'HARD_STOP', 'STOP-LOSS', 'WATERFALL', 'SL', '止損',
-                    'CIRCUIT_BREAKER', 'BREACH'
-                ))
-            )
-            # 僅在非停損且為真峰頂/真谷底敏銳反轉時允許審查豁免
-            is_fast_reversal = any(k in reason for k in ('FAST_PEAK', 'FAST_VALLEY', 'PEAK_FLIP'))
-            if not is_stop_or_loss and is_fast_reversal and frame is not None and len(frame) >= 2:
-                curr_b = frame.iloc[-1]
-                prev_b = frame.iloc[-2]
-                c_ma5 = float(curr_b.get('ma5', 0.0))
-                c_ma15 = float(curr_b.get('ma15', 0.0))
-                c_kc_trend = str(curr_b.get('kc_trend', '')).upper()
-                c_mid = float(curr_b.get('kc_middle', 0.0))
-                p_mid = float(prev_b.get('kc_middle', c_mid))
-
-                if side == 'SHORT' and c_ma5 < c_ma15 and ('DOWN' in c_kc_trend or c_mid <= p_mid):
-                    can_waive_cooldown = True
-                elif side == 'LONG' and c_ma5 > c_ma15 and ('UP' in c_kc_trend or c_mid >= p_mid):
-                    can_waive_cooldown = True
-
-        if can_waive_cooldown:
-            return None
+        for t in reversed(trades[-5:]):
+            if t.get('symbol') == symbol and t.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT'):
+                reason = str(t.get('reason') or '').upper()
+                if any(k in reason for k in ('PEAK', 'VALLEY', 'DUMP', 'WATERFALL', 'BREACH', 'STOP', 'SPIKE')):
+                    return None
+                break
 
         closed_at = float(last_closed_at[symbol])
         if not math.isfinite(closed_at) or closed_at <= 0:
@@ -3192,7 +3177,9 @@ def pre_flight_safety_check(
                     BEARISH_INSTANT_BREAKOUT_CODE,
                     BULLISH_INSTANT_BREAKOUT_CODE,
                     'AUTHORIZED_BY_PEAK_FLIP_SHORT',
+                    "TRIGGER_A_KC_BREAKOUT",
                     "TRIGGER_MOMENTUM_GUILLOTINE",
+                    "TRIGGER_PENDING_RETEST_ENTRY",
                 ) else opposite_side_close_cooldown_problem(
                     account, symbol, frame, side,
                 )
@@ -3587,7 +3574,8 @@ async def enforce_final_order_wick_gate(account, symbol, side, entry_context=Non
                 )
                 colorless_midline_hold = (
                     midline_evaluation.get("allowed") is True
-                    and midline_evaluation.get("reason") == "MTF_KC_MIDLINE_HOLD_ENTRY"
+                    and midline_evaluation.get("reason")
+                    in ("MTF_KC_MIDLINE_HOLD_ENTRY", "MTF_KC_BAND_TREND_ENTRY")
                     and str(midline_evaluation.get("side") or "").upper()
                     == str(side).upper()
                 )

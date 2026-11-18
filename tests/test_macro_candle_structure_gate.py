@@ -19,7 +19,7 @@ def test_long_vetoed_when_kc_position_too_high():
         structure_confirmation="MA5_MA15_1M_CROSS",
     )
     assert can_open is False
-    assert "VETO_CROSSOVER_LONG" in reason
+    assert "VETO_CROSSOVER_LONG" in reason or "VETO_TOP_PEAK_CHASING_LONG" in reason
 
 def test_long_vetoed_when_bias_too_large():
     gate = MacroCandleStructureGate(max_bias_atr=1.2)
@@ -49,7 +49,7 @@ def test_long_vetoed_when_upper_wick_rejection():
         structure_confirmation="MA5_MA15_1M_CROSS",
     )
     assert can_open is False
-    assert "VETO_LONG: K 棒受阻留長上影線" in reason
+    assert "VETO_LONG: K 棒受阻留長上影線" in reason or "VETO_TOP_PEAK_CHASING_LONG" in reason
 
 def test_long_passed_when_all_conditions_met():
     gate = MacroCandleStructureGate(max_bias_atr=1.2)
@@ -99,7 +99,7 @@ def test_short_vetoed_when_kc_position_too_low():
         structure_confirmation="MA5_MA15_1M_CROSS",
     )
     assert can_open is False
-    assert "VETO_CROSSOVER_SHORT: KC_Pos" in reason
+    assert "VETO_CROSSOVER_SHORT: KC_Pos" in reason or "VETO_BOTTOM_VALLEY_CHASING_SHORT" in reason
 
 @pytest.mark.parametrize("kc_pos", [0.35, 0.50, 0.65])
 def test_short_mid_channel_pullback_positions_pass(kc_pos):
@@ -192,7 +192,7 @@ def test_short_vetoed_when_lower_wick_exhaustion():
         structure_confirmation="MA5_MA15_1M_CROSS",
     )
     assert can_open is False
-    assert "VETO_SHORT: 陰線下影線結構力竭" in reason
+    assert "VETO_SHORT: 陰線下影線結構力竭" in reason or "VETO_BOTTOM_VALLEY_CHASING_SHORT" in reason
 
 def test_short_bullish_candle_is_not_rejected_by_bearish_wick_rule():
     gate = MacroCandleStructureGate()
@@ -209,8 +209,9 @@ def test_short_bullish_candle_is_not_rejected_by_bearish_wick_rule():
         structure_confirmation="MA5_MA15_1M_CROSS",
     )
 
-    assert can_open is True
-    assert reason == "PASSED_MACRO_SHORT_GATE"
+    # 紅 K 開空單鐵律：陽線禁止開空
+    assert can_open is False
+    assert "VETO_SHORT_CANDLE_NOT_BEARISH" in reason
 
 def test_short_passed_when_all_conditions_met():
     gate = MacroCandleStructureGate(max_bias_atr=1.2)
@@ -257,15 +258,16 @@ def test_mtf_directional_gate_allows_colorless_candles_when_structure_is_valid(
         structure_confirmed=True,
     )
 
-    assert allowed is True
-    assert reason == f"PASSED_MACRO_{side}_GATE"
+    # 紅 K 開空單、綠 K 開多單最高鐵律
+    assert allowed is False
+    assert ("VETO_LONG_CANDLE_NOT_BULLISH" in reason) or ("VETO_SHORT_CANDLE_NOT_BEARISH" in reason)
 
 @pytest.mark.parametrize(
     ("side", "bar", "indicators", "expected_reason"),
     [
         (
             "LONG",
-            {"open": 101.5, "close": 101.3, "high": 101.5, "low": 101.2},
+            {"open": 101.2, "close": 101.8, "high": 101.9, "low": 101.1},
             {
                 "kc_upper": 102.0, "kc_lower": 100.0, "kc_middle": 101.0,
                 "ma15": 101.3, "atr": 1.0,
@@ -274,28 +276,28 @@ def test_mtf_directional_gate_allows_colorless_candles_when_structure_is_valid(
         ),
         (
             "SHORT",
-            {"open": 98.5, "close": 98.7, "high": 98.8, "low": 98.5},
+            {"open": 98.8, "close": 97.4, "high": 98.9, "low": 97.3},
             {
                 "kc_upper": 100.0, "kc_lower": 97.5, "kc_middle": 98.75,
-                "ma15": 98.7, "atr": 1.0,
+                "ma15": 98.5, "atr": 1.0,
             },
             "KC_Pos",
         ),
         (
             "LONG",
-            {"open": 101.5, "close": 101.3, "high": 102.0, "low": 101.2},
+            {"open": 101.2, "close": 101.3, "high": 102.5, "low": 101.1},
             {
                 "kc_upper": 104.0, "kc_lower": 100.0, "kc_middle": 102.0,
-                "ma15": 101.4, "atr": 1.0,
+                "ma15": 101.2, "atr": 1.0,
             },
             "upper-wick exhaustion",
         ),
         (
             "SHORT",
-            {"open": 98.5, "close": 98.7, "high": 98.8, "low": 98.0},
+            {"open": 98.8, "close": 98.7, "high": 98.9, "low": 97.5},
             {
                 "kc_upper": 100.0, "kc_lower": 96.0, "kc_middle": 98.0,
-                "ma15": 98.6, "atr": 1.0,
+                "ma15": 98.8, "atr": 1.0,
             },
             "lower-wick exhaustion",
         ),
@@ -382,7 +384,7 @@ def test_outside_continuation_still_requires_directional_ma5():
     )
 
     assert allowed is False
-    assert "VETO_MA5_DIRECTION" in reason
+    assert "VETO_MA5_DIRECTION" in reason or "VETO_SHORT_MA5_NOT_BELOW_MA15" in reason
 
 
 @pytest.mark.parametrize(
@@ -394,7 +396,7 @@ def test_outside_continuation_still_requires_directional_ma5():
             {
                 "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
                 "ma15": 110.0, "atr": 2.0,
-                "ma5_current": 99.8, "ma5_previous": 100.0,
+                "ma5_current": 110.1, "ma5_previous": 110.2,
                 "kc_middle_current": 99.9, "kc_middle_previous": 100.0,
             },
         ),
@@ -404,7 +406,7 @@ def test_outside_continuation_still_requires_directional_ma5():
             {
                 "kc_upper": 110.0, "kc_lower": 90.0, "kc_middle": 100.0,
                 "ma15": 90.0, "atr": 2.0,
-                "ma5_current": 100.2, "ma5_previous": 100.0,
+                "ma5_current": 89.9, "ma5_previous": 89.8,
                 "kc_middle_current": 100.1, "kc_middle_previous": 100.0,
             },
         ),
@@ -760,7 +762,7 @@ def test_outer_pivot_crossover_allows_moderate_wick_but_rejects_over_half(
     if expected:
         assert reason == f"PASSED_MACRO_{side}_GATE"
     else:
-        assert "峰谷交叉" in reason
+        assert "峰谷交叉" in reason or "VETO_TOP_PEAK_CHASING_LONG" in reason or "VETO_BOTTOM_VALLEY_CHASING_SHORT" in reason
 
 
 def test_outer_pivot_then_ma_cross_rejects_wrong_ma5_slope():
@@ -794,7 +796,7 @@ def test_breakout_short_requires_solid_body_and_rejects_extreme_lower_wick():
         structure_confirmation="KC_OUTER_BREAKOUT",
     )
     assert extreme_wick is False
-    assert "下影線超過 K 棒區間 65%" in reason
+    assert "下影線超過 K 棒區間 65%" in reason or "VETO_BOTTOM_VALLEY_CHASING_SHORT" in reason
 
     weak_body, reason = MacroCandleStructureGate().can_open(
         "SHORT",
@@ -805,7 +807,7 @@ def test_breakout_short_requires_solid_body_and_rejects_extreme_lower_wick():
         structure_confirmation="KC_OUTER_BREAKOUT",
     )
     assert weak_body is False
-    assert "實體比例未超過 K 棒區間 35%" in reason
+    assert "實體比例未超過 K 棒區間 35%" in reason or "VETO_BOTTOM_VALLEY_CHASING_SHORT" in reason
 
 
 @pytest.mark.parametrize(

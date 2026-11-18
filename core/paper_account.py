@@ -392,7 +392,7 @@ class PaperAccount:
         if stored_accounting_version < ACCOUNTING_VERSION:
             self.save_state()
 
-    def save_state(self, *args, **kwargs) -> None:
+    def save_state(self) -> None:
         data = {
             "balance": self.balance,
             "realized_pnl": self.realized_pnl,

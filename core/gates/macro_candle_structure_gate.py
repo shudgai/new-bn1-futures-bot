@@ -135,6 +135,61 @@ class MacroCandleStructureGate:
         confirmation = str(structure_confirmation or "").upper()
         relaxed = uses_relaxed_entry_limits(symbol)
         relaxed_outer = relaxed and mode in {"BREAKOUT", "CONTINUATION"}
+
+        # ═════════════════════════════════════════════════════════════════
+        # 【最高鐵律一：紅 K 開空單，綠 K 開多單 (Strict Candle Color & Direction)】
+        # 任何模式下，開多單必須為實體綠 K (陽線)，開空單必須為實體紅 K (陰線)。
+        # ═════════════════════════════════════════════════════════════════
+        if side == "LONG" and close <= open_price:
+            return False, "VETO_LONG_CANDLE_NOT_BULLISH: 綠 K 開多單鐵律，紅 K 陰線一票否決開多"
+        if side == "SHORT" and close >= open_price:
+            return False, "VETO_SHORT_CANDLE_NOT_BEARISH: 紅 K 開空單鐵律，綠 K 陽線一票否決開空"
+
+        # ═════════════════════════════════════════════════════════════════
+        # 【最高鐵律三：MA5 與 MA15 相對位置 (MA5/MA15 Alignment Lock)】
+        # ma5 要在 ma15 上方才可開多單，ma5 在 ma15 下方才可開空單。
+        # ═════════════════════════════════════════════════════════════════
+        ma5_candidate = None
+        for ma5_key in ("ma5_current", "ma5"):
+            if ma5_key in indicators:
+                try:
+                    cand = float(indicators[ma5_key])
+                    if math.isfinite(cand) and cand > 0:
+                        ma5_candidate = cand
+                        break
+                except (ValueError, TypeError, OverflowError):
+                    pass
+        if ma5_candidate is not None:
+            if side == "LONG" and ma5_candidate <= ma15:
+                return False, f"VETO_LONG_MA5_NOT_ABOVE_MA15: MA5 ({ma5_candidate:.4f}) 必須在 MA15 ({ma15:.4f}) 上方才可開多單"
+            if side == "SHORT" and ma5_candidate >= ma15:
+                return False, f"VETO_SHORT_MA5_NOT_BELOW_MA15: MA5 ({ma5_candidate:.4f}) 必須在 MA15 ({ma15:.4f}) 下方才可開空單"
+
+        # ═════════════════════════════════════════════════════════════════
+        # 【最高鐵律二：不要在谷底開空單，不要在頂峰開多單 (Anti-Ceiling & Anti-Floor)】
+        # ═════════════════════════════════════════════════════════════════
+        is_special_reversal = (
+            (mode == "REVERSAL" and confirmation == "PINBAR_EXHAUSTION_TURN")
+            or (confirmation in {"CONFIRMED_KC_OUTER_PIVOT_THEN_MA5_MA15_CROSS", MTF_KC_DIRECTIONAL_ENTRY})
+        )
+        if side == "LONG":
+            if not is_special_reversal and not relaxed_outer:
+                if upper_wick > body * 1.5 and close < high and upper_wick >= 0.25 * atr:
+                    return False, "VETO_TOP_PEAK_CHASING_LONG: 頂部留長上影線力竭，嚴禁在頂峰開多"
+                if candle_range > 0 and (upper_wick / candle_range) > 0.40 and upper_wick >= 0.25 * atr:
+                    return False, "VETO_TOP_PEAK_CHASING_LONG: 上影線超過區間40%，嚴禁在頂峰開多"
+            if mode not in {"BREAKOUT", "CONTINUATION"} and confirmation not in PURE_MATH_ENTRY_CONFIRMATIONS:
+                if kc_pos > 0.85:
+                    return False, f"VETO_TOP_PEAK_CHASING_LONG: KC_Pos {kc_pos:.2f} 處於通道頂峰天花板，嚴禁追多"
+        elif side == "SHORT":
+            if not is_special_reversal and not relaxed_outer:
+                if lower_wick > body * 1.5 and close > low and lower_wick >= 0.25 * atr:
+                    return False, "VETO_BOTTOM_VALLEY_CHASING_SHORT: 底部留長下影線力竭，嚴禁在谷底開空"
+                if candle_range > 0 and (lower_wick / candle_range) > 0.40 and lower_wick >= 0.25 * atr:
+                    return False, "VETO_BOTTOM_VALLEY_CHASING_SHORT: 下影線超過區間40%，嚴禁在谷底開空"
+            if mode not in {"BREAKOUT", "CONTINUATION"} and confirmation not in PURE_MATH_ENTRY_CONFIRMATIONS:
+                if kc_pos < 0.15:
+                    return False, f"VETO_BOTTOM_VALLEY_CHASING_SHORT: KC_Pos {kc_pos:.2f} 處於通道谷底地板，嚴禁追空"
         if (
             mode == "CONTINUATION"
             and confirmation == MTF_KC_DIRECTIONAL_ENTRY

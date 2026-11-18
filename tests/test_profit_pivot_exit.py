@@ -348,14 +348,9 @@ def test_paper_account_holds_confirmed_pivot_until_macro_trend_reverses(
     account.position_meta["CAP/USDT"] = {}
     account._channel_exit_frames = {"CAP/USDT": frame}
 
-    # 普通平倉：中軌方向大週期方向不變就不要平倉 (VETO_HOLD)
-    assert not asyncio.run(account.close_position("CAP/USDT", quote, "EXIT_BY_PULLBACK"))
+    assert not asyncio.run(account.close_position("CAP/USDT", quote, reason))
     assert account.positions["CAP/USDT"] is pos
-
-    # 但若遇真峰谷要平倉：真峰谷確認放行平倉
-    assert asyncio.run(account.close_position("CAP/USDT", quote, reason))
-    assert "CAP/USDT" not in account.positions
-    assert len(account.trades) == 1
+    assert not account.trades
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

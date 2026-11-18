@@ -6,7 +6,6 @@ import math
 import time
 from collections.abc import Mapping
 from typing import Any
-import pandas as pd
 
 
 def _number(value: Any) -> float | None:
@@ -296,6 +295,36 @@ def validate_entry_math(
         if side == "SHORT" and (curr_ema15 >= prev_ema15 or ema15_slope >= 0):
             return False, "BLOCKED_SHORT_ON_EMA_RISING"
 
+    # ─── 最高鐵律一：綠 K 開多單，紅 K 開空單 (Strict Candle Color) ───
+    if side == "LONG" and close <= opened:
+        return False, "BLOCKED_LONG_ON_RED_CANDLE"
+    if side == "SHORT" and close >= opened:
+        return False, "BLOCKED_SHORT_ON_GREEN_CANDLE"
+
+    # ─── 最高鐵律三：MA5 與 MA15 位置鎖定 (MA5/MA15 Alignment Lock) ───
+    # 做多：MA5 必須在 MA15 上方 (ma5 > ma15)
+    # 做空：MA5 必須在 MA15 下方 (ma5 < ma15)
+    if side == "LONG" and ma5 <= ma15 and not allow_override and not pivot_guard_override:
+        return False, "BLOCKED_LONG_MA5_NOT_ABOVE_MA15"
+    if side == "SHORT" and ma5 >= ma15 and not allow_override and not pivot_guard_override:
+        return False, "BLOCKED_SHORT_MA5_NOT_BELOW_MA15"
+
+    # ─── 最高鐵律二：頂峰不開多單，谷底不開空單 (Anti-Ceiling & Anti-Floor) ───
+    body_span = abs(close - opened)
+    is_outer_check = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
+    if side == "LONG":
+        upper_wick_check = high - max(opened, close)
+        if upper_wick_check >= body_span and upper_wick_check >= 0.25 * atr:
+            return False, "BLOCKED_ENTRY_MATH_LONG_WICK"
+        if not is_outer_check and close - ma15 > 1.5 * atr:
+            return False, "BLOCKED_ENTRY_MATH_LONG_CHASE"
+    elif side == "SHORT":
+        lower_wick_check = min(opened, close) - low
+        if lower_wick_check >= body_span and lower_wick_check >= 0.25 * atr:
+            return False, "BLOCKED_ENTRY_MATH_LONG_WICK"
+        if not is_outer_check and ma15 - close > 1.5 * atr:
+            return False, "BLOCKED_ENTRY_MATH_SHORT_CHASE"
+
     is_outer = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
 
     # In-channel entries: reject squeeze chop
@@ -422,7 +451,8 @@ def validate_entry_math(
         and side == "SHORT"
         and (close < latest_middle or (prev_below_mid and close <= latest_middle + retest_buffer))
         and (relaxed or ma15 - close <= 1.2 * atr)
-        and (close < opened or close <= ma5)
+        and (close < opened)
+        and (close <= ma5 or ma5 < previous_ma5)
         and previous_ma15 is not None
         and (ma15 <= previous_ma15 + 1e-6)
     ):
@@ -436,7 +466,8 @@ def validate_entry_math(
         and side == "LONG"
         and (close > latest_middle or (prev_above_mid and close >= latest_middle - retest_buffer))
         and (relaxed or close - ma15 <= 1.2 * atr)
-        and (close > opened or close >= ma5)
+        and (close > opened)
+        and (close >= ma5 or ma5 > previous_ma5)
         and previous_ma15 is not None
         and (ma15 >= previous_ma15 - 1e-6)
     ):
@@ -1539,79 +1570,13 @@ def validate_exit_at_execution(
     if str(close_reason or "").strip() == "手動平倉":
         return True, "MANUAL_EXIT_APPROVED", {"exit_type": "MANUAL"}
 
-    norm_reason = str(close_reason or "").upper()
-    if norm_reason.startswith("PRIORITY_EXIT_"):
-        from core.services.exits.priority_exit_manager import _valid_authorization
-
-        evidence = _valid_authorization(
-            position, metadata, close_reason, price,
-        )
-        if evidence is None:
-            return False, "BLOCKED_PRIORITY_EXIT_AUTHORITY", {
-                "exit_type": "BLOCKED",
-            }
-        is_pivot = "PIVOT" in norm_reason
-        code = "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED" if is_pivot else "PRIORITY_EXIT_AUTHORIZED"
-        return True, code, {
-            "exit_type": "PRIORITY_EXIT",
-            "exit_policy": "PROFIT_CONFIRMED_TRUE_PIVOT_ONLY_V1",
-            "swing_exit_authorized": True,
-            **evidence,
-        }
-
-    from core.services.mtf_kc_state_machine import (
-        MTF_KC_EXIT_REASON_PREFIX,
-        mtf_exit_is_authorized,
-    )
-    if norm_reason.startswith(MTF_KC_EXIT_REASON_PREFIX):
-        if not mtf_exit_is_authorized(
-            metadata,
-            close_reason,
-            price,
-            str(position.get("side") or "").upper(),
-        ):
-            return False, "BLOCKED_MTF_EXIT_AUTHORITY", {"exit_type": "BLOCKED"}
-        ticket = metadata.get("mtf_kc_exit_authority", {})
-        evidence = ticket.get("evidence", {}) if isinstance(ticket, Mapping) else {}
-        return True, "MTF_KC_STATE_MACHINE_EXIT_APPROVED", dict(evidence)
-
     from core.services.exits.authorized_position_exit import swing_exit_authorization
 
     allowed, authority = swing_exit_authorization(
         account, symbol, position, close_reason, price, frame, metadata,
     )
     if not allowed:
-        if "PIVOT" in norm_reason:
-            return False, "VETO_PIVOT_CONFIRMATION_OR_1ATR_NET_PROFIT", {"exit_type": "BLOCKED"}
         return False, authority, {"exit_type": "BLOCKED"}
-
-    from core.services.exits.strict_true_pivot import (
-        PROFIT_PIVOT_EXIT_POLICY,
-        PROFIT_PIVOT_PENDING_KEY,
-        PROFIT_PIVOT_REASONS,
-        pending_confirmed_pivot_exit,
-        profitable_true_pivot_exit,
-    )
-    if (
-        authority in ("VERIFIED_TRUE_SWING_END", "VERIFIED_FIRST_SWING_REVERSAL")
-        or close_reason in PROFIT_PIVOT_REASONS
-        or "PIVOT" in norm_reason
-    ):
-        pivot = pending_confirmed_pivot_exit(position, metadata, key=PROFIT_PIVOT_PENDING_KEY)
-        if pivot is None and isinstance(frame, pd.DataFrame):
-            pivot = profitable_true_pivot_exit(
-                {**position, "symbol": symbol}, frame, metadata, quote=price,
-            )
-        if pivot is None and (close_reason in PROFIT_PIVOT_REASONS or "PIVOT" in norm_reason):
-            return False, "VETO_PIVOT_CONFIRMATION_OR_1ATR_NET_PROFIT", {"exit_type": "BLOCKED"}
-        evidence = pivot[1] if pivot is not None else {}
-        return True, "PROFIT_CONFIRMED_TRUE_PIVOT_APPROVED", {
-            "exit_type": authority,
-            "exit_policy": PROFIT_PIVOT_EXIT_POLICY,
-            "swing_exit_authorized": True,
-            **evidence,
-        }
-
     return True, authority, {"exit_type": authority, "swing_exit_authorized": True}
 
 

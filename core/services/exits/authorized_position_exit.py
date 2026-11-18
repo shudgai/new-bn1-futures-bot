@@ -24,13 +24,6 @@ def swing_exit_authorization(
     metadata = metadata if isinstance(metadata, Mapping) else {}
     side = str(position.get("side") or "").upper()
 
-    if normalized.startswith("PRIORITY_EXIT_"):
-        from core.services.exits.priority_exit_manager import _valid_authorization
-
-        auth = _valid_authorization(position, metadata, reason, quote)
-        if auth is not None:
-            return True, "VERIFIED_PRIORITY_EXIT"
-
     if normalized == "PRIORITY_EXIT_P0_CIRCUIT_BREAKER":
         authorization = metadata.get("priority_exit_authorization")
         evidence = metadata.get("priority_exit_evidence")
@@ -105,26 +98,6 @@ def swing_exit_authorization(
             "MTF_KC_STATE_MACHINE",
         ))
         if wave_reason:
-            try:
-                from core.services.exits.strict_true_pivot import (
-                    PROFIT_PIVOT_PENDING_KEY,
-                    pending_confirmed_pivot_exit,
-                    profitable_true_pivot_exit,
-                )
-                pending = pending_confirmed_pivot_exit(
-                    position, metadata, key=PROFIT_PIVOT_PENDING_KEY,
-                )
-                if pending is not None:
-                    return True, "VERIFIED_TRUE_SWING_END"
-
-                pivot = profitable_true_pivot_exit(
-                    dict(position), frame, dict(metadata or {}), quote=float(quote),
-                )
-                if pivot is not None:
-                    return True, "VERIFIED_TRUE_SWING_END"
-            except Exception:
-                pass
-
             try:
                 from core.gates.holding_protection_gate import has_confirmed_true_pivot
                 confirmed, pivot_type, _ = has_confirmed_true_pivot(
@@ -449,16 +422,7 @@ class UltimateExitGatekeeper:
         from core.services.exits.strict_true_pivot import (
             PROFIT_PIVOT_REASONS, profitable_true_pivot_exit,
         )
-        is_pivot_exit = (
-            normalized_reason in PROFIT_PIVOT_REASONS
-            or any(token in normalized_reason for token in (
-                "TRUE_PEAK", "TRUE_VALLEY", "TRUE_PIVOT",
-                "EARLY_PIVOT_PEAK", "EARLY_PIVOT_VALLEY",
-                "PROFIT_CONFIRMED_TRUE_PIVOT",
-            ))
-            or "PIVOT" in normalized_reason
-        )
-        if is_pivot_exit:
+        if normalized_reason in PROFIT_PIVOT_REASONS:
             if is_bar_closed is not None and is_bar_closed is not True:
                 return False
             if meme_strategy_disaster_disabled(symbol, reason):
@@ -471,13 +435,8 @@ class UltimateExitGatekeeper:
                 dict(metadata or {}),
                 quote=exit_price,
             )
-            return pivot is not None and (
-                pivot[0] == normalized_reason
-                or normalized_reason in PROFIT_PIVOT_REASONS
-                or "PIVOT" in normalized_reason
-            )
+            return pivot is not None and pivot[0] == normalized_reason
 
-        # 順勢鐵律：中軌方向大週期方向不變就不要平倉（非真峰谷且非極端避險時雙趨勢未反轉一票否決平倉）
         if not is_dual_trend_emergency_exit(reason):
             trend_block = dual_trend_exit_block_reason(position, frame, metadata)
             if trend_block is not None:
