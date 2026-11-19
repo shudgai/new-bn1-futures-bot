@@ -427,6 +427,19 @@
                                                 <template v-if="pos.trailing_profit_lock_armed">回撤止盈監控已啟動（非固定止損價）</template>
                                                 <template v-else>待啟動</template>
                                             </span>
+                                            <span v-if="pos.position_exit_protection && pos.position_exit_protection.status === 'READY'" style="font-size: 10px; color: #a7f3d0; margin-left: 6px;">
+                                                <template v-if="pos.position_exit_protection.current_stop_roi !== null">
+                                                    ROE {{ Number(pos.position_exit_protection.current_net_roi).toFixed(2) }}% /
+                                                    線 {{ Number(pos.position_exit_protection.current_stop_roi).toFixed(2) }}% /
+                                                    峰 {{ Number(pos.position_exit_protection.max_net_roi).toFixed(2) }}%
+                                                </template>
+                                                <template v-else>
+                                                    峰值 ROE {{ Number(pos.position_exit_protection.max_net_roi).toFixed(2) }}%（未達 5% 啟動）
+                                                </template>
+                                            </span>
+                                            <span v-else-if="pos.position_exit_protection && pos.position_exit_protection.status !== 'NOT_INITIALIZED'" style="font-size: 10px; color: #fca5a5; margin-left: 6px;">
+                                                鎖利狀態不可用
+                                            </span>
                                         </span>
                                     </div>
                                 </td>

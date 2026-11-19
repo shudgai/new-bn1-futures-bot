@@ -215,9 +215,19 @@ def positions_with_triggers():
         staged_state = merged.get("staged_profit_lock_state") or meta.get("staged_profit_lock_state") or {}
         staged_armed = bool(staged_state.get("armed"))
         staged_lock_net = float(staged_state.get("lock_floor_net_pnl") or 0.0)
+        from core.services.exits.position_profit_protection import (
+            read_persisted_position_protection,
+        )
+        exit_protection = read_persisted_position_protection(symbol, pos)
+        merged["position_exit_protection"] = exit_protection
+        net_roe_lock_armed = (
+            exit_protection.get("status") == "READY"
+            and exit_protection.get("current_stop_roi") is not None
+        )
 
         merged["trailing_profit_lock_armed"] = bool(
             staged_armed
+            or net_roe_lock_armed
             or merged.get("profit_floor_armed") is True
             or meta.get("profit_floor_armed") is True
         )

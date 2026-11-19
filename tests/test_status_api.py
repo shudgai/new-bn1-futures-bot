@@ -277,3 +277,48 @@ def test_position_pnl_uses_ticker_when_mark_is_entry_price_fallback(
 
     assert row["pnl_price"] == current
     assert row["unrealized_pnl"] == pytest.approx(expected_gross)
+
+
+def test_positions_expose_persisted_net_roe_profit_lock(monkeypatch):
+    from services import api
+    from core.services.exits import position_profit_protection
+
+    symbol = "LOBSTER/USDT"
+    position = {
+        "symbol": symbol,
+        "side": "LONG",
+        "entry_price": 100.0,
+        "open_timestamp": 1_700_000_000.0,
+        "qty": 1.0,
+        "margin": 10.0,
+    }
+    protection = {
+        "status": "READY",
+        "position_uid": "position-ui-test",
+        "max_net_roi": 14.36,
+        "current_net_roi": 6.7,
+        "current_stop_roi": 11.36,
+        "profit_lock_tier": 2,
+    }
+    account = type(
+        "Account",
+        (),
+        {
+            "positions": {symbol: position},
+            "position_meta": {},
+        },
+    )()
+    monkeypatch.setattr(api, "DEFAULT_SYMBOLS", [symbol])
+    monkeypatch.setattr(api.engine, "tickers", {symbol: 101.0}, raising=False)
+    monkeypatch.setattr(api.engine, "account", account)
+    monkeypatch.setattr(api.engine, "position_triggers", {}, raising=False)
+    monkeypatch.setattr(
+        position_profit_protection,
+        "read_persisted_position_protection",
+        lambda _symbol, _position: protection,
+    )
+
+    row = api.positions_with_triggers()[0]
+
+    assert row["position_exit_protection"] == protection
+    assert row["trailing_profit_lock_armed"] is True

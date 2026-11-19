@@ -1,10 +1,13 @@
 import asyncio
+import json
+import sqlite3
 
 import pandas as pd
 import pytest
 
 from core.services.exits.position_profit_protection import (
     evaluate_and_persist_position_protection,
+    read_persisted_position_protection,
     tiered_profit_stop,
 )
 from core.services.exits import position_profit_protection
@@ -273,6 +276,58 @@ def test_profit_lock_arms_at_five_percent_and_exits_at_rising_floor(tmp_path):
         102.8,
     )
     assert retraced["reason"] == "PRIORITY_EXIT_P1_NET_ROE_PROFIT_LOCK"
+
+
+def test_read_persisted_protection_is_read_only_and_position_bound(tmp_path):
+    db_path = tmp_path / "protection.sqlite3"
+    position = _position("LONG", 100.0, (LIVE_STAMP_MS - 300_000) / 1000)
+    persisted = _evaluate(db_path, position, BASE_BARS, LIVE_STAMP_MS, 106.0)
+
+    state = read_persisted_position_protection(
+        "LOBSTER/USDT", position, db_path=db_path,
+    )
+
+    assert state["status"] == "READY"
+    assert state["position_uid"] == persisted["position_uid"]
+    assert state["max_net_roi"] == pytest.approx(
+        persisted["evidence"]["max_net_roi"],
+    )
+    assert state["current_stop_roi"] == pytest.approx(
+        persisted["evidence"]["current_stop_roi"],
+    )
+
+    uninitialized_path = tmp_path / "not-created.sqlite3"
+    uninitialized = read_persisted_position_protection(
+        "LOBSTER/USDT", position, db_path=uninitialized_path,
+    )
+    assert uninitialized == {"status": "NOT_INITIALIZED"}
+    assert not uninitialized_path.exists()
+
+
+def test_invalid_persisted_protection_state_fails_closed(tmp_path):
+    db_path = tmp_path / "protection.sqlite3"
+    position = _position("LONG", 100.0, (LIVE_STAMP_MS - 300_000) / 1000)
+    persisted = _evaluate(db_path, position, BASE_BARS, LIVE_STAMP_MS, 106.0)
+    table = position_profit_protection._TABLE_NAME
+
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            f"SELECT state_json FROM {table} WHERE position_uid = ?",
+            (persisted["position_uid"],),
+        ).fetchone()
+    valid_state = json.loads(row[0])
+
+    for invalid_state in ([], {**valid_state, "profit_lock_tier": "invalid"}):
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                f"UPDATE {table} SET state_json = ? WHERE position_uid = ?",
+                (json.dumps(invalid_state), persisted["position_uid"]),
+            )
+        result = read_persisted_position_protection(
+            "LOBSTER/USDT", position, db_path=db_path,
+        )
+        assert result["status"] == "BLOCKED"
+        assert result["reason"] == "POSITION_PROTECTION_STATE_INVALID"
 
 
 def test_profit_protection_precedes_the_midline_hold():

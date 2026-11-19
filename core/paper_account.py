@@ -2224,6 +2224,7 @@ class PaperAccount:
                 and any(token in normalized_close_reason for token in (
                     "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK",
                     "TRAILING TAKE-PROFIT", "BREAKEVEN",
+                    "CONSECUTIVE_REVERSAL_PROFIT", "STRONG_REVERSAL_PROFIT",
                 ))
             )
             if is_channel_profit_lock_close:

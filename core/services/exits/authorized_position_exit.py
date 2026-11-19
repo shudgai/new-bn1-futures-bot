@@ -8,6 +8,96 @@ import time
 from typing import Any, Mapping
 
 
+_PRIORITY_PROFIT_EXIT_TRIGGERS = {
+    "PRIORITY_EXIT_P1_NET_ROE_PROFIT_LOCK": "DYNAMIC_NET_ROE_LOCK",
+    "PRIORITY_EXIT_P1_CONSECUTIVE_REVERSAL_PROFIT": "TWO_CLOSED_REVERSAL_CANDLES",
+    "PRIORITY_EXIT_P1_STRONG_REVERSAL_PROFIT": "SINGLE_STRONG_CLOSED_REVERSAL",
+}
+
+
+def _verified_priority_profit_exit(
+    position: Mapping[str, Any],
+    reason: str,
+    quote: float,
+    metadata: Mapping[str, Any],
+) -> bool:
+    expected_trigger = _PRIORITY_PROFIT_EXIT_TRIGGERS.get(reason.upper())
+    position_uid = str(position.get("position_uid") or "")
+    authorization = metadata.get("priority_exit_authorization")
+    if (
+        expected_trigger is None
+        or not position_uid
+        or not isinstance(authorization, Mapping)
+        or str(authorization.get("position_uid") or "") != position_uid
+    ):
+        return False
+
+    from core.services.exits.priority_exit_manager import _valid_authorization
+
+    evidence = _valid_authorization(position, metadata, reason, quote)
+    if (
+        evidence is None
+        or evidence.get("trigger") != expected_trigger
+        or str(evidence.get("position_uid") or "") != position_uid
+    ):
+        return False
+
+    def finite_number(key: str) -> float | None:
+        try:
+            value = float(evidence[key])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return value if math.isfinite(value) else None
+
+    current_pnl = finite_number("current_net_pnl_usdt")
+    max_pnl = finite_number("max_net_pnl_usdt")
+    if current_pnl is None or max_pnl is None or current_pnl <= 0 or max_pnl <= 0:
+        return False
+
+    if expected_trigger == "DYNAMIC_NET_ROE_LOCK":
+        from core.services.exits.position_profit_protection import (
+            PROFIT_LOCK_DRAWDOWN_ROI,
+            PROFIT_LOCK_START_ROI,
+        )
+
+        current_roi = finite_number("current_net_roi")
+        max_roi = finite_number("max_net_roi")
+        stop_roi = finite_number("current_stop_roi")
+        return (
+            current_roi is not None
+            and max_roi is not None
+            and stop_roi is not None
+            and max_roi >= PROFIT_LOCK_START_ROI
+            and max_roi - PROFIT_LOCK_DRAWDOWN_ROI <= stop_roi + 1e-8
+            and stop_roi <= max_roi + 1e-8
+            and current_roi <= stop_roi + 1e-8
+        )
+
+    if expected_trigger == "TWO_CLOSED_REVERSAL_CANDLES":
+        try:
+            count = int(evidence.get("consecutive_opposite_candles") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return (
+            count >= 2
+            and evidence.get("close_progression_confirmed") is True
+            and finite_number("first_bar_timestamp") is not None
+            and finite_number("bar_timestamp") is not None
+        )
+
+    body = finite_number("body")
+    reference_atr = finite_number("reference_atr")
+    sequence_level = finite_number("sequence_structure_level")
+    return (
+        body is not None
+        and reference_atr is not None
+        and sequence_level is not None
+        and reference_atr > 0
+        and body >= 0.5 * reference_atr
+        and finite_number("bar_timestamp") is not None
+    )
+
+
 def swing_exit_authorization(
     account: Any,
     symbol: str,
@@ -65,6 +155,11 @@ def swing_exit_authorization(
 
     if "LIQUIDATION" in normalized:
         return True, "EXCHANGE_LIQUIDATION"
+
+    if normalized in _PRIORITY_PROFIT_EXIT_TRIGGERS:
+        if _verified_priority_profit_exit(position, normalized, quote, metadata):
+            return True, "VERIFIED_POSITION_BOUND_PROFIT_PROTECTION"
+        return False, "BLOCKED_UNVERIFIED_POSITION_BOUND_PROFIT_PROTECTION"
 
     if any(token in normalized for token in (
         "PROFIT_LOCK", "RATCHET", "TRAILING_LOCK", "BREAKEVEN",

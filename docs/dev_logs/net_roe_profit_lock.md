@@ -19,3 +19,10 @@ Verification: the final focused protection, priority-exit, hard-stop, Channel Sw
 ## Earlier 5% staged-lock proposal
 
 An earlier proposal used a 5% start, four-point stages, and a 1.5-point drawdown. It was superseded by the original implementation above. The latest authorization restores only the 5% start while keeping the implemented 5-point interval and 3-point drawdown.
+
+### [2026-11-19 09:15:00 UTC+8] - Modification Phase: P1 exit authorization and normal reentry
+- **Author**: AI assistant using Copilot SDK in VS Code
+- **Target Files & Lines**: `core/services/exits/authorized_position_exit.py` (`_verified_priority_profit_exit`); `core/services/exits/position_profit_protection.py` (`read_persisted_position_protection`); `core/services/post_profit_lock_gate.py`; `core/paper_account.py`; `services/api.py`; `web/index.html`; focused exit, persistence, and status tests
+- **Modification Description**: Permit verified, position-bound P1 net-ROE lock and profitable reversal exits through the final authorization gate; record successful positive-net exits for same-side normal-entry re-evaluation; expose persisted lock state in the status API/UI.
+- **Trigger Reason & Requirement**: User reported that a recorded 14.36% peak ROE and 11.36% lock floor did not automatically close, and requested normal same-side reentry after a successful profit exit.
+- **Verification & Test Status**: Focused exit/persistence/status tests: 49 passed. `py_compile` and `git diff --check` passed. Broader entry suites still have failures (53 failures across `test_post_close_continuation.py` and `test_closed_breakout_entry.py`); two healthy-pullback cases in `test_authorized_position_exit.py` fail because their snapshot fixture returns `None`. These failures remain unmodified and are not represented as passing.

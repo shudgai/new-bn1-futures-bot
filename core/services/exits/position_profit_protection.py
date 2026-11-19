@@ -81,6 +81,128 @@ def _position_identity(
     return f"position-{uuid.UUID(digest[:32])}", digest, opened_seconds, entry
 
 
+def read_persisted_position_protection(
+    symbol: str,
+    position: Mapping[str, Any],
+    *,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Read display state without creating or changing the protection database."""
+    identity = _position_identity(symbol, position)
+    if identity is None:
+        return {"status": "UNAVAILABLE", "reason": "POSITION_PROTECTION_IDENTITY_INVALID"}
+
+    position_uid, fingerprint, _opened_seconds, _entry = identity
+    path = Path(db_path) if db_path is not None else DEFAULT_STATE_DB_PATH
+    if not path.is_file():
+        return {"status": "NOT_INITIALIZED"}
+
+    connection = None
+    try:
+        connection = sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode=ro",
+            uri=True,
+            timeout=1.0,
+        )
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (_TABLE_NAME,),
+        ).fetchone()
+        if table is None:
+            return {"status": "NOT_INITIALIZED"}
+        row = connection.execute(
+            f"SELECT identity_hash, side, state_json, state_revision, updated_at "
+            f"FROM {_TABLE_NAME} WHERE position_uid = ?",
+            (position_uid,),
+        ).fetchone()
+    except sqlite3.Error:
+        logger.exception(
+            "POSITION_PROTECTION_READ_FAILED symbol=%s uid=%s",
+            symbol,
+            position_uid,
+        )
+        return {"status": "UNAVAILABLE", "reason": "POSITION_PROTECTION_READ_FAILED"}
+    finally:
+        if connection is not None:
+            connection.close()
+
+    if row is None:
+        return {"status": "NOT_INITIALIZED"}
+
+    identity_hash, stored_side, raw_state, revision, updated_at = row
+    try:
+        state = json.loads(raw_state)
+        if not isinstance(state, dict):
+            raise ValueError("state must be an object")
+        revision_value = int(revision)
+        updated_value = float(updated_at)
+        tier_value = int(state.get("profit_lock_tier") or 0)
+        opposite_count = int(state.get("consecutive_opposite_candles") or 0)
+    except (json.JSONDecodeError, TypeError, ValueError, OverflowError):
+        logger.error(
+            "POSITION_PROTECTION_STATE_INVALID symbol=%s uid=%s",
+            symbol,
+            position_uid,
+        )
+        return {"status": "BLOCKED", "reason": "POSITION_PROTECTION_STATE_INVALID"}
+    if (
+        identity_hash != fingerprint
+        or stored_side != str(position.get("side") or "").upper()
+        or not isinstance(state, dict)
+        or state.get("symbol") != symbol
+        or state.get("side") != stored_side
+        or state.get("position_uid") != position_uid
+        or state.get("state_revision") != revision_value
+        or revision_value <= 0
+        or not math.isfinite(updated_value)
+        or updated_value <= 0
+        or tier_value < 0
+        or opposite_count < 0
+    ):
+        logger.error(
+            "POSITION_PROTECTION_IDENTITY_CONFLICT symbol=%s uid=%s",
+            symbol,
+            position_uid,
+        )
+        return {"status": "BLOCKED", "reason": "POSITION_PROTECTION_IDENTITY_CONFLICT"}
+
+    for key in (
+        "max_net_roi", "current_net_roi", "max_net_pnl_usdt",
+        "current_net_pnl_usdt",
+    ):
+        if _finite_number(state.get(key)) is None:
+            return {"status": "BLOCKED", "reason": "POSITION_PROTECTION_STATE_INVALID"}
+    stop_roi = state.get("current_stop_roi")
+    if stop_roi is not None and _finite_number(stop_roi) is None:
+        return {"status": "BLOCKED", "reason": "POSITION_PROTECTION_STATE_INVALID"}
+    processed_timestamp = state.get("last_processed_candle_timestamp")
+    if (
+        processed_timestamp is not None
+        and _finite_number(processed_timestamp) is None
+    ):
+        return {"status": "BLOCKED", "reason": "POSITION_PROTECTION_STATE_INVALID"}
+
+    return {
+        "status": "READY",
+        "position_uid": position_uid,
+        "state_revision": revision_value,
+        "updated_at": updated_value,
+        "max_net_roi": float(state["max_net_roi"]),
+        "current_net_roi": float(state["current_net_roi"]),
+        "current_stop_roi": (
+            float(stop_roi) if stop_roi is not None else None
+        ),
+        "profit_lock_tier": tier_value,
+        "max_net_pnl_usdt": float(state["max_net_pnl_usdt"]),
+        "current_net_pnl_usdt": float(state["current_net_pnl_usdt"]),
+        "consecutive_opposite_candles": opposite_count,
+        "last_processed_candle_timestamp": processed_timestamp,
+        "opposite_candle_exit_triggered": (
+            state.get("opposite_candle_exit_triggered") is True
+        ),
+    }
+
+
 def _net_metrics(position: Mapping[str, Any], price: float, side: str) -> tuple[float, float] | None:
     entry = _finite_number(position.get("entry_price"))
     current = _finite_number(price)
@@ -604,5 +726,6 @@ __all__ = [
     "PROFIT_LOCK_START_ROI",
     "PROFIT_LOCK_STEP_ROI",
     "evaluate_and_persist_position_protection",
+    "read_persisted_position_protection",
     "tiered_profit_stop",
 ]

@@ -14,11 +14,27 @@ LOCK_TRIGGERS = frozenset({
     'TIERED_RATCHET_TP_STAGE_2', 'TIERED_RATCHET_TP_STAGE_3',
 })
 
+POSITION_PROFIT_PROTECTION_REASONS = frozenset({
+    'PRIORITY_EXIT_P1_NET_ROE_PROFIT_LOCK',
+    'PRIORITY_EXIT_P1_CONSECUTIVE_REVERSAL_PROFIT',
+    'PRIORITY_EXIT_P1_STRONG_REVERSAL_PROFIT',
+})
+
 
 def profit_exit_fields(position, reason, timestamp_ms, net_pnl=None):
     state = position.get('peak_trailing_state') or {}
     trigger = state.get('trigger', '')
     reason_text = str(reason)
+    try:
+        realized_net_pnl = float(net_pnl) if net_pnl is not None else None
+    except (TypeError, ValueError, OverflowError):
+        realized_net_pnl = None
+    priority_profit_protection = (
+        reason_text in POSITION_PROFIT_PROTECTION_REASONS
+        and realized_net_pnl is not None
+        and math.isfinite(realized_net_pnl)
+        and realized_net_pnl > 0.0
+    )
     is_lock = (
         trigger in LOCK_TRIGGERS and trigger in reason_text
     ) or any(
@@ -27,7 +43,7 @@ def profit_exit_fields(position, reason, timestamp_ms, net_pnl=None):
             'NET_ROE_THREE_TIER_GIVEBACK', 'EXIT_BY_BREAKEVEN_LOCK',
             'RATCHET_PROFIT_LOCK', 'PROFIT_LOCK',
         )
-    )
+    ) or priority_profit_protection
     is_pivot_profit = ('THREE_POINT_PIVOT' in str(reason)
                        and float(position.get('current_net_pnl_usd') or 0 if net_pnl is None else net_pnl) > 0)
     if not (is_lock or is_pivot_profit):
