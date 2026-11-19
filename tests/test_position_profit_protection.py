@@ -85,12 +85,13 @@ def _evaluate(db_path, position, bars, live_timestamp, quote):
 @pytest.mark.parametrize(
     ("peak", "previous", "expected_stop", "expected_tier"),
     [
-        (7.9, None, None, 0),
+        (4.9, None, None, 0),
+        (5.0, None, 2.0, 1),
+        (6.0, None, 3.0, 1),
         (8.0, None, 5.0, 1),
-        (9.0, None, 6.0, 1),
-        (13.0, None, 10.0, 2),
-        (18.0, None, 15.0, 3),
-        (23.0, None, 20.0, 4),
+        (10.0, None, 7.0, 2),
+        (15.0, None, 12.0, 3),
+        (20.0, None, 17.0, 4),
         (14.0, 12.0, 12.0, 2),
     ],
 )
@@ -123,7 +124,7 @@ def test_two_closed_reversal_candles_protect_profit_below_lock_threshold(
 
     initialized = _evaluate(db_path, position, BASE_BARS, LIVE_STAMP_MS, quote)
     assert initialized["status"] == "READY"
-    assert initialized["evidence"]["max_net_roi"] < 8.0
+    assert initialized["evidence"]["max_net_roi"] < 5.0
 
     first_closed = _evaluate(
         db_path, position, [*BASE_BARS, first], LIVE_STAMP_MS + 60_000, quote,
@@ -252,12 +253,12 @@ def test_position_uid_mismatch_blocks_protection(tmp_path):
     assert result["reason"] == "POSITION_PROTECTION_UID_MISMATCH"
 
 
-def test_profit_lock_arms_at_eight_percent_and_exits_at_rising_floor(tmp_path):
+def test_profit_lock_arms_at_five_percent_and_exits_at_rising_floor(tmp_path):
     db_path = tmp_path / "protection.sqlite3"
     position = _position("LONG", 100.0, (LIVE_STAMP_MS - 300_000) / 1000)
-    initial = _evaluate(db_path, position, BASE_BARS, LIVE_STAMP_MS, 109.0)
+    initial = _evaluate(db_path, position, BASE_BARS, LIVE_STAMP_MS, 106.0)
     assert initial["status"] == "READY"
-    assert initial["evidence"]["max_net_roi"] >= 8.0
+    assert 5.0 <= initial["evidence"]["max_net_roi"] < 8.0
     assert initial["evidence"]["current_stop_roi"] is not None
     assert initial["reason"] is None
 
@@ -269,7 +270,7 @@ def test_profit_lock_arms_at_eight_percent_and_exits_at_rising_floor(tmp_path):
         position,
         [*BASE_BARS, neutral],
         LIVE_STAMP_MS + 60_000,
-        105.0,
+        102.8,
     )
     assert retraced["reason"] == "PRIORITY_EXIT_P1_NET_ROE_PROFIT_LOCK"
 
@@ -314,9 +315,9 @@ def test_profit_lock_uses_existing_close_authority_and_position_uid(
         return True
 
     initial = _evaluate(
-        db_path, position, BASE_BARS, LIVE_STAMP_MS, 100.6,
+        db_path, position, BASE_BARS, LIVE_STAMP_MS, 100.4,
     )
-    assert initial["evidence"]["max_net_roi"] >= 8.0
+    assert 5.0 <= initial["evidence"]["max_net_roi"] < 8.0
     neutral = _bar(LIVE_STAMP_MS, 100.0, 100.2, 99.8, 100.0)
     frame = _frame([*BASE_BARS, neutral], LIVE_STAMP_MS + 60_000)
     now = (LIVE_STAMP_MS + 80_000) / 1000
@@ -327,7 +328,7 @@ def test_profit_lock_uses_existing_close_authority_and_position_uid(
         position,
         frame,
         None,
-        100.35,
+        100.2,
         close_position,
         now=now,
     ))
@@ -341,7 +342,7 @@ def test_profit_lock_uses_existing_close_authority_and_position_uid(
         position,
         account.position_meta["LOBSTER/USDT"],
         result["reason"],
-        100.35,
+        100.2,
         now=now,
     ) is not None
 
