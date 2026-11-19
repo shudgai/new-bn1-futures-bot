@@ -1041,6 +1041,29 @@ def _evaluate_kc_band_trend_entry(
     edge_offset = quote_value - upper if is_long else lower - quote_value
     if edge_offset > BAND_TREND_MAX_CHASE_ATR * atr:
         return None
+
+    # ── 震盪區絕對禁止開倉 (Chop / Consolidation Veto) ──
+    # 1. 均線糾纏震盪審查：近 8 根 K 棒內 MA5 與 MA15 交叉 >= 2 次，100% 拒絕開倉
+    if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
+        spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
+        if int((spread * spread.shift(1) < 0).sum()) >= 2:
+            return None
+    # 2. 通道擠壓收窄 (Squeeze Chop)：通道寬度過小（< 1.5 ATR）時拒絕開倉
+    if (upper - lower) < (1.5 * atr):
+        return None
+    # 3. 市場黑名單震盪過濾 (evaluate_market_blacklist)
+    from core.services.market_consolidation_filter import evaluate_market_blacklist
+    blocked, _, _ = evaluate_market_blacklist(
+        closed,
+        side=band_side,
+        cooldown_bars=0,
+        independent_kc_direction=True,
+        strict_consolidation=True,
+        confirmed_flat_kc_structure=False,
+    )
+    if blocked:
+        return None
+
     half_width = middle - lower
     ma5 = _number(last, "ma5")
     ma15 = _number(last, "ma15")
@@ -1159,7 +1182,7 @@ def evaluate_mtf_entry(
     if has_ltf_kc_bands:
         if "ma5" in closed.columns and "ma15" in closed.columns and len(closed) >= 8:
             spread = closed["ma5"].tail(8) - closed["ma15"].tail(8)
-            if int((spread * spread.shift(1) < 0).sum()) >= 4:
+            if int((spread * spread.shift(1) < 0).sum()) >= 2:
                 return {
                     **htf,
                     "allowed": False,
@@ -1174,11 +1197,11 @@ def evaluate_mtf_entry(
             side=expected_closed_color,
             cooldown_bars=0,
             independent_kc_direction=True,
-            meme_policy=True,
-            meme_low_trend_override=True,
-            meme_structural_entry=True,
+            meme_policy=False,
+            meme_low_trend_override=False,
+            meme_structural_entry=False,
             strict_consolidation=True,
-            confirmed_flat_kc_structure=True,
+            confirmed_flat_kc_structure=False,
         )
     )
     if consolidation_blocked:

@@ -2066,23 +2066,13 @@ async def validate_account_entry(account, symbol, side, context):
         code == GOLDEN_CROSS_FAST_LONG_CODE and side == 'LONG'
         and is_meme_breakout_symbol(symbol)
     )
-    cross_chop_problem = (
-        None if meme_golden_cross or code in KC_PENDING_CODES
-        or code in MEME_ENTRY_CODES
-        or code in (
-            'BEARISH_INSTANT_BREAKOUT', 'BULLISH_INSTANT_BREAKOUT',
-            'KC_LIVE_BODY_BREAKOUT_LONG', 'KC_LIVE_BODY_BREAKOUT_SHORT',
-            'KC_LIVE_PATTERN_BREAKOUT_LONG', 'KC_LIVE_PATTERN_BREAKOUT_SHORT',
-            'KC_REALTIME_RAIL_BREACH_SHORT',
-        ) else
-        ma5_ma15_cross_chop_problem(
-            frame, quote, symbol=symbol, log_result=True,
-            side=side,
-            allow_flat_ma15=code in (
-                GOLDEN_CROSS_FAST_LONG_CODE,
-                DEATH_CROSS_FAST_SHORT_CODE,
-            ),
-        )
+    cross_chop_problem = ma5_ma15_cross_chop_problem(
+        frame, quote, symbol=symbol, log_result=True,
+        side=side,
+        allow_flat_ma15=code in (
+            GOLDEN_CROSS_FAST_LONG_CODE,
+            DEATH_CROSS_FAST_SHORT_CODE,
+        ),
     )
     if cross_chop_problem:
         raise ValueError('[FORBIDDEN_ENTRY] ' + cross_chop_problem)

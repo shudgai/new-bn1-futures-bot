@@ -7548,6 +7548,17 @@ class ExecutionManager:
                 or pv_entry_verified_exec
                 or pv_flip_verified_exec
             )
+            # ── 震盪區絕對禁止開倉一票否決 (Execution Chop Veto) ──
+            if frame is not None and isinstance(frame, pd.DataFrame) and len(frame) >= 8:
+                from core.gates.pipeline import ma5_ma15_cross_chop_problem
+                chop_issue = ma5_ma15_cross_chop_problem(frame, price, symbol=symbol, side=side)
+                if chop_issue:
+                    cls._last_open_error[symbol] = chop_issue
+                    logger.critical(
+                        f"🛑 [EXECUTION_CHOP_VETO] {symbol} 開倉硬攔截：處於震盪糾纏區 ({chop_issue})，100% 禁止開倉！"
+                    )
+                    return False
+
             # 建立多空方向與標頭/中軌一致性門禁
             from core.symbol_aliases import is_meme_breakout_symbol
             is_meme_symbol = is_meme_breakout_symbol(symbol)

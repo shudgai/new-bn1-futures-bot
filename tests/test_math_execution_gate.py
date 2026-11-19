@@ -546,3 +546,36 @@ def test_entry_math_live_bar_fallback_stays_fail_closed_on_invalid_closed_data()
     live = _with_live_bar(closed)
     for side in ("LONG", "SHORT"):
         assert validate_entry_math(live, side) == (False, "BLOCKED_ENTRY_MATH_INVALID_DATA")
+
+
+def test_entry_math_blocks_consolidation_chop():
+    """震盪區不開倉：近 8 根 K 棒 MA5 與 MA15 糾纏交叉 >= 2 次，100% 阻斷開倉！"""
+    bars = []
+    for i in range(10):
+        # 糾纏：MA5 在 100.2 與 99.8 之間來回穿梭
+        m5 = 100.2 if (i % 2 == 0) else 99.8
+        bars.append({
+            "timestamp": 60_000 * (i + 1),
+            "open": 100.0,
+            "high": 100.5,
+            "low": 99.5,
+            "close": 100.1 if (i % 2 == 0) else 99.9,
+            "ma5": m5,
+            "ma15": 100.0,
+            "atr": 1.0,
+            "kc_upper": 102.5,
+            "kc_middle": 100.0,
+            "kc_lower": 97.5,
+            "is_closed": True,
+        })
+    # 最後一根稍微站上，但過去 8 根糾纏交叉 >= 2 次
+    bars[-1]["open"] = 100.0
+    bars[-1]["close"] = 100.5
+    bars[-1]["high"] = 100.6
+    bars[-1]["low"] = 99.9
+    bars[-1]["ma5"] = 100.3
+    bars[-1]["ma15"] = 100.0
+    df = pd.DataFrame(bars)
+    allowed, reason = validate_entry_math(df, side="LONG")
+    assert allowed is False
+    assert reason == "BLOCKED_MA5_MA15_CROSS_CHOP"

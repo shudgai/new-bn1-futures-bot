@@ -3914,35 +3914,10 @@ def evaluate_entry_contract(frame, price=None, code=None, *, account=None, symbo
         if market_structure_problem:
             return reject(market_structure_problem)
 
-        cross_chop_problem = (
-            None if decision.get('entry_phase') in (
-                'KC_2BAR_CLOSED_CONFIRM', 'KC_LIVE_OUTER_BREAKOUT',
-                'KC_LIVE_PATTERN_BREAKOUT', 'MEME_BREAKOUT_ENTRY',
-                'MEME_AMBUSH_ENTRY', 'MEME_PYRAMID_ADDITION',
-            )
-            or decision.get('type') in MEME_ENTRY_CODES
-            or decision.get('type') == REALTIME_RAIL_BREACH_SHORT_CODE
-            or decision.get('type') in (
-                BEARISH_INSTANT_BREAKOUT_CODE,
-                BULLISH_INSTANT_BREAKOUT_CODE,
-                'AUTHORIZED_BY_PEAK_FLIP_SHORT',
-                GOLDEN_CROSS_FAST_LONG_CODE,
-                DEATH_CROSS_FAST_SHORT_CODE,
-                'TRIGGER_B_MA_CROSS',
-                'TRIGGER_A_KC_BREAKOUT',
-                'TRIGGER_C_CONTINUATION',
-                'KC_LIVE_BODY_BREAKOUT_LONG',
-                'KC_LIVE_BODY_BREAKOUT_SHORT',
-                'CLOSED_BODY_BREAKOUT_LONG',
-                'CLOSED_BODY_BREAKOUT_SHORT',
-                'RE_ENTRY_LONG',
-                'RE_ENTRY_SHORT',
-            )
-            else ma5_ma15_cross_chop_problem(
-                frame, quote, symbol=symbol, log_result=True,
-                side=decision.get('side'),
-                allow_flat_ma15=is_fast_cross,
-            )
+        cross_chop_problem = ma5_ma15_cross_chop_problem(
+            frame, quote, symbol=symbol, log_result=True,
+            side=decision.get('side'),
+            allow_flat_ma15=is_fast_cross,
         )
         if cross_chop_problem:
             return reject(cross_chop_problem)

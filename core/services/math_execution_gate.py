@@ -169,6 +169,18 @@ def validate_entry_math(
         two_bar_breakout_authorized = (
             entry_method_context.get("entry_method_authority") == KC_TWO_BAR_BREAKOUT
         )
+
+    # ─── 震盪區絕對禁止開倉一票否決 (Consolidation & Chop Hard Lock) ───
+    # 近 8 根已收線 K 棒內若存在頻繁交錯糾纏（Chop >= 2 次），100% 阻斷開倉！
+    if len(closed_bars) >= 8:
+        ma5_vals = [_number(b.get("ma5")) for b in closed_bars[-8:]]
+        ma15_vals = [_number(b.get("ma15")) for b in closed_bars[-8:]]
+        if all(v is not None for v in ma5_vals) and all(v is not None for v in ma15_vals):
+            spreads = [m5 - m15 for m5, m15 in zip(ma5_vals, ma15_vals)]
+            cross_count = sum(1 for s1, s2 in zip(spreads[:-1], spreads[1:]) if (s1 * s2 < 0))
+            if cross_count >= 2:
+                return False, "BLOCKED_MA5_MA15_CROSS_CHOP"
+
     allow_override = bool(
         is_swing_pivot
         or entry_method_authorized
@@ -327,8 +339,8 @@ def validate_entry_math(
 
     is_outer = is_swing_pivot or is_outer_entry or (side == "LONG" and close > upper) or (side == "SHORT" and close < lower)
 
-    # In-channel entries: reject squeeze chop
-    if not is_outer and not allow_override and not peak_valley_verified:
+    # KC 擠壓狹窄震盪區 (Squeeze Chop)：通道寬度過小（< 1.5 ATR）且非破軌，100% 阻斷開倉！
+    if not is_outer:
         kc_width = upper - lower
         if kc_width < (atr * 1.5):
             return False, "BLOCKED_ENTRY_KC_CHANNEL_SQUEEZE_CHOP"
