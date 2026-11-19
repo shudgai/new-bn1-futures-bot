@@ -125,6 +125,92 @@ def _confirmed_true_pivot(
     return True, {"true_pivot_type": expected_reason, **dict(evidence or {})}
 
 
+def _is_trend_still_aligned(
+    side: str,
+    frame: Any,
+    live_pair: tuple[pd.Series, pd.Series] | None,
+    *,
+    price: float | None = None,
+    position: Mapping[str, Any] | None = None,
+    now: float | None = None,
+) -> bool:
+    """Check if the active trend is still upward (LONG) or downward (SHORT).
+
+    Defends against premature HTF reversal exits when price is holding above/below
+    KC midline or MA15, or MA5 is strongly aligned, or during early position holding breathing period.
+    """
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return False
+    try:
+        from core.services.candle_data import closed_entry_candles
+
+        closed = closed_entry_candles(frame)
+        if len(closed) < 1:
+            return False
+        last_closed = closed.iloc[-1]
+        prev_closed = closed.iloc[-2] if len(closed) >= 2 else None
+
+        # 1. 剛開倉呼吸保護期（開倉 180 秒內，即 3 根 1m K 棒）
+        if position is not None and now is not None:
+            open_ts = _timestamp_ms(
+                position.get("open_timestamp") or position.get("entry_timestamp")
+            )
+            if open_ts is not None:
+                current_ms = float(now) * 1000.0
+                if 0 <= current_ms - open_ts <= 180_000.0:
+                    return True
+
+        curr_mid = _number(last_closed, "kc_middle")
+        curr_ma15 = _number(last_closed, "ma15")
+        curr_ma5 = _number(last_closed, "ma5")
+        last_close = _number(last_closed, "close")
+
+        live_mid = curr_mid
+        live_ma15 = curr_ma15
+        live_ma5 = curr_ma5
+        if live_pair is not None and live_pair[0] is not None:
+            live_mid = _number(live_pair[0], "kc_middle") or curr_mid
+            live_ma15 = _number(live_pair[0], "ma15") or curr_ma15
+            live_ma5 = _number(live_pair[0], "ma5") or curr_ma5
+
+        prev_mid = _number(prev_closed, "kc_middle") if prev_closed is not None else None
+
+        if side == "LONG":
+            # 多單：1m 中軌向上或 MA5 >= MA15，且價格守穩在 KC 中軌或 MA15 之上（主升結構未破）
+            mid_up = (curr_mid is not None and prev_mid is not None and curr_mid >= prev_mid)
+            ma_bullish = (
+                (live_ma5 is not None and live_ma15 is not None and live_ma5 >= live_ma15)
+                or (curr_ma5 is not None and curr_ma15 is not None and curr_ma5 >= curr_ma15)
+            )
+            price_above = (
+                (price is not None and live_mid is not None and price >= live_mid)
+                or (price is not None and live_ma15 is not None and price >= live_ma15)
+                or (last_close is not None and curr_mid is not None and last_close >= curr_mid)
+                or (last_close is not None and curr_ma15 is not None and last_close >= curr_ma15)
+            )
+            if (mid_up or ma_bullish) and price_above:
+                return True
+        elif side == "SHORT":
+            # 空單：1m 中軌向下或 MA5 <= MA15，且價格壓制在 KC 中軌或 MA15 之下（主跌結構未破）
+            mid_down = (curr_mid is not None and prev_mid is not None and curr_mid <= prev_mid)
+            ma_bearish = (
+                (live_ma5 is not None and live_ma15 is not None and live_ma5 <= live_ma15)
+                or (curr_ma5 is not None and curr_ma15 is not None and curr_ma5 <= curr_ma15)
+            )
+            price_below = (
+                (price is not None and live_mid is not None and price <= live_mid)
+                or (price is not None and live_ma15 is not None and price <= live_ma15)
+                or (last_close is not None and curr_mid is not None and last_close <= curr_mid)
+                or (last_close is not None and curr_ma15 is not None and last_close <= curr_ma15)
+            )
+            if (mid_down or ma_bearish) and price_below:
+                return True
+
+        return False
+    except Exception:
+        return False
+
+
 def _ltf_midline_exit_direction(
     side: str,
     frame: Any,
@@ -150,6 +236,7 @@ def _ltf_midline_exit_direction(
             or current_ms - previous_ms != 60_000
         ):
             return None
+
         if current_mid == previous_mid:
             return "FLAT"
         aligned = (
@@ -831,6 +918,41 @@ def evaluate_priority_exit(
             )
         )
         if htf_reversed:
+            # 趨勢還往上嚴禁平多，趨勢還往下嚴禁平空（守穩中軌與MA15，死抱主升/主跌浪）
+            if side == "LONG" and _is_trend_still_aligned(
+                "LONG", frame_1m, live_pair, price=price, position=position, now=current_time,
+            ):
+                return {
+                    "priority": None,
+                    "reason": None,
+                    "state_changed": state_changed,
+                    "htf_valid": bool(htf.get("valid")),
+                    "htf_reason": htf.get("reason"),
+                    "hold_reason": "LONG_HOLD_TREND_STILL_UPWARD",
+                    "evidence": {
+                        "htf_state": htf_state or None,
+                        "htf_slope": htf_slope,
+                        "trend_direction": "UPWARD",
+                        "quote": price,
+                    },
+                }
+            if side == "SHORT" and _is_trend_still_aligned(
+                "SHORT", frame_1m, live_pair, price=price, position=position, now=current_time,
+            ):
+                return {
+                    "priority": None,
+                    "reason": None,
+                    "state_changed": state_changed,
+                    "htf_valid": bool(htf.get("valid")),
+                    "htf_reason": htf.get("reason"),
+                    "hold_reason": "SHORT_HOLD_TREND_STILL_DOWNWARD",
+                    "evidence": {
+                        "htf_state": htf_state or None,
+                        "htf_slope": htf_slope,
+                        "trend_direction": "DOWNWARD",
+                        "quote": price,
+                    },
+                }
             return {
                 "priority": 1,
                 "reason": "PRIORITY_EXIT_P1_HTF_KC_REVERSAL",

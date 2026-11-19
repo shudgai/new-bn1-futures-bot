@@ -251,6 +251,42 @@ def test_priority_one_ignores_htf_slopes_inside_flat_threshold(
     assert result["reason"] is None
 
 
+def test_priority_one_does_not_close_long_when_trend_is_still_upward():
+    """龍蝦實戰回歸：趨勢還往上（價格守穩中軌與MA15、或剛開倉呼吸中），HTF 逆向 slope 嚴禁平多！"""
+    now = time.time()
+    # 剛開倉 30 秒，價格 100.5 站在中軌 100.0 與 MA15 之上
+    pos = _position("LONG", entry=100.0, opened=now - 30.0)
+    result = evaluate_priority_exit(
+        pos,
+        _ltf(now, quote=100.5, closed_mid=100.0),
+        _htf(now, slope=-0.05),
+        100.5,
+        {},
+        now=now,
+    )
+    assert result["priority"] is None
+    assert result["reason"] is None
+    assert "HOLD" in str(result.get("hold_reason"))
+
+
+def test_priority_one_does_not_close_short_when_trend_is_still_downward():
+    """空單實戰回歸：趨勢還往下（價格受壓中軌與MA15、或剛開倉呼吸中），HTF 逆向 slope 嚴禁平空！"""
+    now = time.time()
+    # 剛開倉 30 秒，價格 99.5 壓制在中軌 100.0 與 MA15 之下
+    pos = _position("SHORT", entry=100.0, opened=now - 30.0)
+    result = evaluate_priority_exit(
+        pos,
+        _ltf(now, quote=99.5, closed_mid=100.0),
+        _htf(now, slope=0.05),
+        99.5,
+        {},
+        now=now,
+    )
+    assert result["priority"] is None
+    assert result["reason"] is None
+    assert "HOLD" in str(result.get("hold_reason"))
+
+
 def test_per_position_atr_hard_stop_does_not_close_without_market_emergency():
     now = time.time()
     result = evaluate_priority_exit(
